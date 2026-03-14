@@ -12,9 +12,8 @@
 #' @param num_draws Number of post-warmup draws per chain.
 #' @param num_chains Number of parallel chains.
 #' @param seed Random seed for reproducibility.
-#' @return A matrix of draws with dimensions `(num_draws * num_chains)` by
-#'   number of parameters. Column names are the constrained parameter names
-#'   (including transformed parameters and generated quantities).
+#' @return A `posterior::draws_array` with dimensions
+#'   `(num_draws, num_chains, n_params)`.
 #' @export
 nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           num_chains = 4L, seed = NULL) {
@@ -23,13 +22,16 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   if (is.null(seed)) {
     seed <- sample.int(.Machine$integer.max, 1L)
   }
-  sample_stan(
+  num_draws <- as.integer(num_draws)
+  num_chains <- as.integer(num_chains)
+  mat <- sample_stan(
     lib_path,
     data_json,
-    as.integer(num_draws),
-    as.integer(num_chains),
+    num_draws,
+    num_chains,
     as.integer(seed)
   )
+  matrix_to_draws_array(mat, num_draws, num_chains)
 }
 
 resolve_model <- function(model) {
