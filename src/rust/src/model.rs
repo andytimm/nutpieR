@@ -1,3 +1,4 @@
+use anyhow::Context;
 use nuts_rs::{CpuLogpFunc, CpuMath, CpuMathError, HasDims, Model};
 use rand::RngExt;
 use std::collections::HashMap;
@@ -62,7 +63,8 @@ impl nuts_rs::LogpError for StanLogpError {
 pub struct StanModel {
     inner: Arc<bridgestan::Model<Arc<bridgestan::StanLibrary>>>,
     ndim: usize,
-    param_names: Vec<String>,
+    num_constrained: usize,
+    constrained_param_names: Vec<String>,
 }
 
 impl StanModel {
@@ -106,16 +108,19 @@ impl StanModel {
         };
         let model = bridgestan::Model::new(Arc::clone(&lib), data.as_deref(), seed)?;
         let ndim = model.param_unc_num();
-        let param_names = model
-            .param_names(false, false)
+        let num_constrained = model.param_num(true, true);
+        let constrained_param_names: Vec<String> = model
+            .param_names(true, true)
             .split(',')
+            .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
             .collect();
         let inner = Arc::new(model);
         Ok(StanModel {
             inner,
             ndim,
-            param_names,
+            num_constrained,
+            constrained_param_names,
         })
     }
 
@@ -123,8 +128,12 @@ impl StanModel {
         self.ndim
     }
 
-    pub fn param_names(&self) -> &[String] {
-        &self.param_names
+    pub fn num_constrained(&self) -> usize {
+        self.num_constrained
+    }
+
+    pub fn constrained_param_names(&self) -> &[String] {
+        &self.constrained_param_names
     }
 }
 
@@ -133,10 +142,13 @@ impl Model for StanModel {
 
     fn math<R: rand::Rng + ?Sized>(
         &self,
-        _rng: &mut R,
+        rng: &mut R,
     ) -> anyhow::Result<Self::Math<'_>> {
+        let bs_rng = self.inner.new_rng(rng.next_u32())?;
         Ok(CpuMath::new(StanDensity {
             model: self,
+            rng: bs_rng,
+            expanded_buffer: vec![0f64; self.num_constrained],
         }))
     }
 
@@ -156,12 +168,14 @@ impl Model for StanModel {
 
 pub struct StanDensity<'model> {
     model: &'model StanModel,
+    rng: bridgestan::Rng<&'model bridgestan::StanLibrary>,
+    expanded_buffer: Vec<f64>,
 }
 
 impl<'model> HasDims for StanDensity<'model> {
     fn dim_sizes(&self) -> HashMap<String, u64> {
         let mut m = HashMap::new();
-        m.insert("dim".to_string(), self.model.ndim as u64);
+        m.insert("dim".to_string(), self.model.num_constrained as u64);
         m
     }
 }
@@ -195,7 +209,17 @@ impl<'model> CpuLogpFunc for StanDensity<'model> {
         _rng: &mut R,
         array: &[f64],
     ) -> std::result::Result<Self::ExpandedVector, CpuMathError> {
-        // MVP: return unconstrained params directly (no constrained transform)
-        Ok(array.to_vec())
+        self.model
+            .inner
+            .param_constrain(
+                array,
+                true,
+                true,
+                &mut self.expanded_buffer,
+                Some(&mut self.rng),
+            )
+            .context("Failed to constrain parameters")
+            .map_err(|e| CpuMathError::ExpandError(format!("{}", e)))?;
+        Ok(self.expanded_buffer.clone())
     }
 }

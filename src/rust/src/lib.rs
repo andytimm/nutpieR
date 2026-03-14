@@ -192,7 +192,8 @@ fn sample_stan(lib_path: &str, data_json: &str, num_draws: i32, num_chains: i32,
     )
     .expect("Failed to load Stan model");
 
-    let ndim = stan_model.ndim();
+    let ndim = stan_model.num_constrained();
+    let param_names: Vec<String> = stan_model.constrained_param_names().to_vec();
 
     let mut settings = DiagGradNutsSettings::default();
     settings.num_tune = 300;
@@ -244,7 +245,17 @@ fn sample_stan(lib_path: &str, data_json: &str, num_draws: i32, num_chains: i32,
     }
 
     let matrix = RMatrix::new_matrix(total_rows, ndim, |r, c| data[r + c * total_rows]);
-    matrix.into_robj()
+    let mut robj = matrix.into_robj();
+    // Set column names from constrained parameter names
+    if !param_names.is_empty() {
+        let colnames: Vec<&str> = param_names.iter().map(|s| s.as_str()).collect();
+        let dimnames = List::from_values(&[
+            ().into_robj(), // rownames = NULL
+            colnames.into_robj(),
+        ]);
+        robj.set_attrib("dimnames", dimnames).ok();
+    }
+    robj
 }
 
 extendr_module! {
