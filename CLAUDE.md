@@ -71,7 +71,13 @@ model.param_names(true, true);  // parameter names
 ### nuts-rs `Sampler` (parallel chain orchestration)
 ```rust
 Sampler::new(model, settings, trace_config, num_cores, callback)?;
-sampler.wait_timeout(duration);  // blocks until done or timeout
+// wait_timeout takes ownership (self, not &mut self)
+// Returns SamplerWaitResult enum, NOT Result
+match sampler.wait_timeout(duration) {
+    SamplerWaitResult::Trace(traces) => { /* Vec<ArrowTrace> */ },
+    SamplerWaitResult::Timeout(sampler) => { /* get sampler back */ },
+    SamplerWaitResult::Err(e, partial) => { /* anyhow::Error + Option<traces> */ },
+}
 ```
 
 ## How nutpie Does It (our reference)
@@ -120,14 +126,41 @@ devtools::test()        # Run tests
 devtools::check()       # Full R CMD check
 ```
 
-## Windows Environment Note
+## Windows Environment Notes
 
-This project is developed on Windows with Git Bash (MINGW64). Multi-line `Rscript -e` commands cause segfaults due to newline handling.
+This project is developed on Windows with Git Bash (MINGW64).
+
+### Rscript newline handling
+Multi-line `Rscript -e` commands cause segfaults due to newline handling.
 
 **Workarounds:**
 - Use semicolons: `Rscript -e "x <- 1; y <- 2; print(x+y)"`
 - Use multiple -e flags: `Rscript -e "x <- 1" -e "print(x)"`
 - Write to a temp .R file for complex scripts
+
+### Spaces in paths (CRITICAL)
+The project lives under `Documents/R packages/nutpieR` — the space in `R packages` breaks:
+- **dlltool / assembler**: Rust's import library generation splits `--temp-prefix` at spaces. The `Makevars.win.in` template redirects `TARGET_DIR` and `CARGO_HOME` to `$(TEMP)/nutpieR-*` (no spaces) to work around this.
+- **CARGO_HOME export**: Must be quoted in Makevars (`export CARGO_HOME="$(CARGOTMP)"`).
+- **Any new Makevars paths** that touch `$(CURDIR)` will hit this — always use the temp dir pattern or quote paths.
+
+### extendr `Result` type conflict
+`extendr_api::prelude::*` imports `Result<T>` (1 generic param), which shadows `std::result::Result<T, E>`. In trait impls for nuts-rs, use fully qualified `std::result::Result<T, E>`.
+
+## Spike Learnings (Validated)
+
+### What works
+- **extendr + nuts-rs on Windows**: Full dependency tree (nuts-rs 0.17.4, faer 0.24, rayon, pulp, arrow 57) compiles cleanly with `x86_64-pc-windows-gnu` target and Rust 1.94.0.
+- **Parallel sampling via rayon**: Multiple chains run in parallel without issues (rayon threads don't call R API).
+- **Arrow trace output**: `ArrowConfig` produces `Vec<ArrowTrace>` (one per chain), each with `posterior` and `sample_stats` RecordBatches.
+
+### Arrow output format details
+- The `posterior` RecordBatch has a `value` column of type `LargeList(Float64)` (NOT `FixedSizeList`). Column metadata has `dims` and `shape` keys.
+- The RecordBatch includes **both warmup and post-warmup draws** (`num_tune + num_draws` rows). Must skip the first `num_tune` rows when extracting draws.
+- `Vec<f64>` implements `Storable<P>` out of the box via nuts-storable — produces a single `value` column.
+
+### rand 0.10 API
+- `random_range()` requires `use rand::RngExt` (it's an extension trait in rand 0.10, not on `Rng` directly).
 
 ## R Dependencies
 
@@ -143,12 +176,14 @@ No dependency on the BridgeStan R package — compilation and model loading are 
 | Crate | Role |
 |-------|------|
 | `nuts-rs` (~0.17, features: arrow) | The NUTS sampler + Arrow trace storage |
-| `extendr-api` | R ↔ Rust FFI |
+| `extendr-api` (0.8.1) | R ↔ Rust FFI |
 | `bridgestan` (~2.7, features: download-bridgestan-src) | Compiles + loads Stan models |
 | `arrow-extendr` | Arrow transfer R ↔ Rust via nanoarrow |
-| `arrow` (~57) | Arrow arrays (must match nuts-rs version) |
+| `arrow` (~57, default-features = false) | Arrow arrays (must match nuts-rs version) |
+| `anyhow` | Error handling (required by Model trait signatures) |
+| `thiserror` | Error type derivation |
+| `rand` (~0.10) | RNG (must match nuts-rs version) |
 | `rayon` | Parallel chains (pulled in by nuts-rs) |
-| `thiserror` / `anyhow` | Error handling |
 
 ## Design Decisions
 
@@ -161,21 +196,9 @@ No dependency on the BridgeStan R package — compilation and model loading are 
 - **Stan-only** for MVP (no R-function-as-logp backend)
 - **Not targeting CRAN** — no vendoring or MSRV constraints. Windows support matters.
 
-## Phase 1: Feasibility Spike
+## Remaining Spike Work
 
-Validate: can extendr + nuts-rs + bridgestan compile and run together on Windows?
-
-1. `rextendr::use_extendr()` to scaffold Rust inside the package
-2. Add `nuts-rs` to Cargo.toml, implement trivial 10-d normal CpuLogpFunc
-3. Expose `sample_normal(n_draws)` to R → verify it returns draws matrix
-4. Add `bridgestan` Rust crate, implement CpuLogpFunc calling BridgeStan
-5. Test: `sample_stan(lib_path, data_json, n_draws)` on a precompiled bernoulli model
-
-### What to watch for
-- Does the full dependency tree (nuts-rs + faer + rayon + bridgestan + libloading) compile in extendr context on Windows?
-- Does `bridgestan::open_library()` work on Windows (.dll loading)?
-- Does `bridgestan` build.rs + `bindgen` work on Windows? (needs libclang)
-- Arrow version alignment: nuts-rs uses arrow 57, does arrow-extendr support that?
+- [ ] **BridgeStan integration** (Phase 1, step 4-5): Add bridgestan crate, implement CpuLogpFunc calling BridgeStan, test with a precompiled Stan model. Requires libclang/LLVM for bindgen on Windows.
 
 ## Phase 2: MVP
 
@@ -194,11 +217,11 @@ Validate: can extendr + nuts-rs + bridgestan compile and run together on Windows
 
 ## Known Risks & Uncertainties
 
-1. **extendr + nuts-rs compilation on Windows**: nuts-rs pulls in faer, rayon, pulp — verify builds cleanly
+1. ~~**extendr + nuts-rs compilation on Windows**~~: ✅ VALIDATED — builds cleanly
 2. **bridgestan on Windows**: `libloading` + `.dll` loading may need special path handling
 3. **bridgestan build.rs uses bindgen**: requires `libclang` / `LIBCLANG_PATH` on Windows
 4. **Arrow version alignment**: nuts-rs uses arrow 57.0, arrow-extendr must support same major version
-5. **nuts-rs edition 2024**: requires Rust 1.85+ — verify local toolchain has this
+5. ~~**nuts-rs edition 2024**~~: ✅ Rust 1.94.0 handles this fine
 6. **STAN_THREADS=true**: bridgestan Rust `compile_model` already sets this env var (confirmed in source), but pre-compiled models must also have it
 
 ## Reference Repos (in ai_context/)

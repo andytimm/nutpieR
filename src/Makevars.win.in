@@ -1,6 +1,7 @@
 TARGET = $(subst 64,x86_64,$(subst 32,i686,$(WIN)))-pc-windows-gnu
 
-TARGET_DIR = ./rust/target
+# Use a temp dir without spaces to avoid dlltool/assembler path issues
+TARGET_DIR = $(TEMP)/nutpieR-rust-target
 LIBDIR = $(TARGET_DIR)/$(TARGET)/@LIBDIR@
 STATLIB = $(LIBDIR)/libnutpieR.a
 PKG_LIBS = -L$(LIBDIR) -lnutpieR -lws2_32 -ladvapi32 -luserenv -lbcrypt -lntdll
@@ -11,7 +12,7 @@ all: $(SHLIB) rust_clean
 
 $(SHLIB): $(STATLIB)
 
-CARGOTMP = $(CURDIR)/.cargo
+CARGOTMP = $(TEMP)/nutpieR-cargo-home
 VENDOR_DIR = vendor
 
 $(STATLIB):
@@ -20,20 +21,20 @@ $(STATLIB):
 
 	if [ -f ./rust/vendor.tar.xz ]; then \
 		tar xf rust/vendor.tar.xz && \
-		mkdir -p $(CARGOTMP) && \
-		cp rust/vendor-config.toml $(CARGOTMP)/config.toml; \
+		mkdir -p "$(CARGOTMP)" && \
+		cp rust/vendor-config.toml "$(CARGOTMP)/config.toml"; \
 	fi
 
 	# Build the project using Cargo with additional flags
 	export CARGO_HOME="$(CARGOTMP)" && \
-	export LIBRARY_PATH="$(LIBRARY_PATH);$(CURDIR)/$(TARGET_DIR)/libgcc_mock" && \
+	export LIBRARY_PATH="$(LIBRARY_PATH);$(TARGET_DIR)/libgcc_mock" && \
 	RUSTFLAGS="$(RUSTFLAGS) --print=native-static-libs" cargo build @CRAN_FLAGS@ --target=$(TARGET) --lib @PROFILE@ --manifest-path=rust/Cargo.toml --target-dir="$(TARGET_DIR)"
 
 	# Always clean up CARGOTMP
-	rm -Rf $(CARGOTMP);
+	rm -Rf "$(CARGOTMP)";
 
 rust_clean: $(SHLIB)
-	rm -Rf $(CARGOTMP) $(VENDOR_DIR) @CLEAN_TARGET@
+	rm -Rf "$(CARGOTMP)" $(VENDOR_DIR) @CLEAN_TARGET@
 
 clean:
 	rm -Rf $(SHLIB) $(STATLIB) $(OBJECTS) $(TARGET_DIR) $(VENDOR_DIR)

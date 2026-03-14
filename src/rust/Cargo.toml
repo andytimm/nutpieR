@@ -11,6 +11,11 @@ name = 'nutpieR'
 
 [dependencies]
 extendr-api = '0.8.1'
+nuts-rs = { version = '0.17', features = ['arrow'] }
+anyhow = '1'
+thiserror = '2'
+rand = '0.10'
+arrow = { version = '57', default-features = false }
 
 [profile.release]
 lto = true

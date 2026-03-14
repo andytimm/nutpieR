@@ -10,9 +10,13 @@
 #' @useDynLib nutpieR, .registration = TRUE
 NULL
 
-#' Return string `"Hello world!"` to R.
+#' Sample from a 10-d standard normal using nuts-rs.
+#' Returns a matrix of draws (rows = draws*chains, cols = parameters).
+#' @param num_draws Number of draws per chain after warmup.
+#' @param num_chains Number of parallel chains.
+#' @param seed Random seed.
 #' @export
-hello_world <- function() .Call(wrap__hello_world)
+sample_normal <- function(num_draws, num_chains, seed) .Call(wrap__sample_normal, num_draws, num_chains, seed)
 
 
 # nolint end
