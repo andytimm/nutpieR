@@ -3,7 +3,7 @@ name = 'nutpieR'
 publish = false
 version = '0.1.0'
 edition = '2021'
-rust-version = '1.65'
+rust-version = '1.85'
 
 [lib]
 crate-type = [ 'staticlib' ]
@@ -16,7 +16,10 @@ anyhow = '1'
 thiserror = '2'
 rand = '0.10'
 arrow = { version = '57', default-features = false }
+bridgestan = { version = '2.7', features = ['download-bridgestan-src'] }
+dirs = '6'
+libloading = '0.8'
 
 [profile.release]
-lto = true
-codegen-units = 1
+lto = "thin"
+codegen-units = 4

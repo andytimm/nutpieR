@@ -18,5 +18,22 @@ NULL
 #' @export
 sample_normal <- function(num_draws, num_chains, seed) .Call(wrap__sample_normal, num_draws, num_chains, seed)
 
+#' Compile a Stan model to a shared library using BridgeStan.
+#' Downloads BridgeStan sources if needed (first call is slow).
+#' @param stan_file Path to the .stan file.
+#' @return Path to the compiled shared library.
+#' @export
+compile_stan_model <- function(stan_file) .Call(wrap__compile_stan_model, stan_file)
+
+#' Sample from a Stan model using nuts-rs NUTS sampler.
+#' @param lib_path Path to the compiled Stan shared library.
+#' @param data_json JSON string with model data (empty string for no data).
+#' @param num_draws Number of draws per chain after warmup.
+#' @param num_chains Number of parallel chains.
+#' @param seed Random seed.
+#' @return A matrix of draws (rows = draws*chains, cols = parameters).
+#' @export
+sample_stan <- function(lib_path, data_json, num_draws, num_chains, seed) .Call(wrap__sample_stan, lib_path, data_json, num_draws, num_chains, seed)
+
 
 # nolint end
