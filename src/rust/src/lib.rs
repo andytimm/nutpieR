@@ -1,8 +1,9 @@
 use extendr_api::prelude::*;
 use nuts_rs::{
-    ArrowConfig, CpuLogpFunc, CpuMath, DiagGradNutsSettings, HasDims, Model,
-    Sampler, SamplerWaitResult,
+    ArrowConfig, ArrowTrace, ChainProgress, CpuLogpFunc, CpuMath, DiagGradNutsSettings, HasDims,
+    Model, ProgressCallback, Sampler, SamplerWaitResult,
 };
+use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
 use rand::RngExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -179,12 +180,26 @@ fn compile_stan_model(stan_file: &str) -> String {
 /// @param lib_path Path to the compiled Stan shared library.
 /// @param data_json JSON string with model data (empty string for no data).
 /// @param num_draws Number of draws per chain after warmup.
+/// @param num_warmup Number of warmup (tuning) draws per chain.
 /// @param num_chains Number of parallel chains.
 /// @param seed Random seed.
-/// @return A matrix of draws (rows = draws*chains, cols = parameters).
+/// @param max_treedepth Maximum tree depth for NUTS.
+/// @param target_accept Target acceptance probability for step size adaptation.
+/// @param show_progress Whether to show progress bars.
+/// @return A named list with draws matrix, num_warmup, num_chains, and diagnostics.
 /// @keywords internal
 #[extendr]
-fn sample_stan(lib_path: &str, data_json: &str, num_draws: i32, num_chains: i32, seed: i32) -> Robj {
+fn sample_stan(
+    lib_path: &str,
+    data_json: &str,
+    num_draws: i32,
+    num_warmup: i32,
+    num_chains: i32,
+    seed: i32,
+    max_treedepth: i32,
+    target_accept: f64,
+    show_progress: bool,
+) -> List {
     let stan_model = model::StanModel::new(
         std::path::Path::new(lib_path),
         data_json,
@@ -196,13 +211,22 @@ fn sample_stan(lib_path: &str, data_json: &str, num_draws: i32, num_chains: i32,
     let param_names: Vec<String> = stan_model.constrained_param_names().to_vec();
 
     let mut settings = DiagGradNutsSettings::default();
-    settings.num_tune = 300;
+    settings.num_tune = num_warmup as u64;
     settings.num_draws = num_draws as u64;
     settings.num_chains = num_chains as usize;
     settings.seed = seed as u64;
+    settings.maxdepth = max_treedepth as u64;
+    settings.adapt_options.step_size_settings.target_accept = target_accept;
 
-    let sampler = Sampler::new(stan_model, settings, ArrowConfig::new(), num_chains as usize, None)
-        .expect("Failed to create sampler");
+    let callback = if show_progress {
+        Some(make_progress_callback())
+    } else {
+        None
+    };
+
+    let sampler =
+        Sampler::new(stan_model, settings, ArrowConfig::new(), num_chains as usize, callback)
+            .expect("Failed to create sampler");
 
     let results = match sampler.wait_timeout(Duration::from_secs(600)) {
         SamplerWaitResult::Trace(traces) => traces,
@@ -246,7 +270,6 @@ fn sample_stan(lib_path: &str, data_json: &str, num_draws: i32, num_chains: i32,
 
     let matrix = RMatrix::new_matrix(total_rows, ndim, |r, c| data[r + c * total_rows]);
     let mut robj = matrix.into_robj();
-    // Set column names from constrained parameter names
     if !param_names.is_empty() {
         let colnames: Vec<&str> = param_names.iter().map(|s| s.as_str()).collect();
         let dimnames = List::from_values(&[
@@ -255,7 +278,246 @@ fn sample_stan(lib_path: &str, data_json: &str, num_draws: i32, num_chains: i32,
         ]);
         robj.set_attrib("dimnames", dimnames).ok();
     }
-    robj
+
+    let diagnostics = extract_diagnostics(&results, num_tune, n_draws_per_chain);
+
+    list!(
+        draws = robj,
+        num_warmup = num_warmup,
+        num_chains = num_chains,
+        diagnostics = diagnostics
+    )
+}
+
+/// Extract diagnostic statistics from sample_stats RecordBatches.
+/// Returns a named R list with one vector per diagnostic field.
+/// Vectors are ordered chain-contiguous: all draws from chain 1, then chain 2, etc.
+fn extract_diagnostics(results: &[ArrowTrace], num_tune: usize, n_draws: usize) -> List {
+    let n_chains = results.len();
+    let total = n_draws * n_chains;
+
+    let mut diverging = vec![false; total];
+    let mut depth = vec![0i32; total];
+    let mut energy = vec![0.0f64; total];
+    let mut energy_error = vec![0.0f64; total];
+    let mut logp = vec![0.0f64; total];
+    let mut n_steps = vec![0i32; total];
+    let mut step_size_bar = vec![0.0f64; total];
+    let mut mean_tree_accept = vec![0.0f64; total];
+
+    for (chain_idx, trace) in results.iter().enumerate() {
+        let stats = &trace.sample_stats;
+        let offset = chain_idx * n_draws;
+
+        extract_bool(stats, "diverging", &mut diverging, offset, num_tune, n_draws);
+        extract_u64_as_i32(stats, "depth", &mut depth, offset, num_tune, n_draws);
+        extract_f64(stats, "energy", &mut energy, offset, num_tune, n_draws);
+        extract_f64(stats, "energy_error", &mut energy_error, offset, num_tune, n_draws);
+        extract_f64(stats, "logp", &mut logp, offset, num_tune, n_draws);
+        extract_u64_as_i32(stats, "n_steps", &mut n_steps, offset, num_tune, n_draws);
+        extract_f64(stats, "step_size_bar", &mut step_size_bar, offset, num_tune, n_draws);
+        extract_f64(stats, "mean_tree_accept", &mut mean_tree_accept, offset, num_tune, n_draws);
+    }
+
+    list!(
+        diverging = diverging,
+        depth = depth,
+        energy = energy,
+        energy_error = energy_error,
+        logp = logp,
+        n_steps = n_steps,
+        step_size_bar = step_size_bar,
+        mean_tree_accept = mean_tree_accept
+    )
+}
+
+fn extract_bool(
+    batch: &arrow::record_batch::RecordBatch,
+    name: &str,
+    out: &mut [bool],
+    offset: usize,
+    skip: usize,
+    n: usize,
+) {
+    if let Some(col) = batch.column_by_name(name) {
+        if let Some(arr) = col.as_any().downcast_ref::<arrow::array::BooleanArray>() {
+            for i in 0..n {
+                out[offset + i] = arr.value(skip + i);
+            }
+        }
+    }
+}
+
+fn extract_u64_as_i32(
+    batch: &arrow::record_batch::RecordBatch,
+    name: &str,
+    out: &mut [i32],
+    offset: usize,
+    skip: usize,
+    n: usize,
+) {
+    if let Some(col) = batch.column_by_name(name) {
+        if let Some(arr) = col.as_any().downcast_ref::<arrow::array::UInt64Array>() {
+            for i in 0..n {
+                out[offset + i] = arr.value(skip + i) as i32;
+            }
+        }
+    }
+}
+
+fn extract_f64(
+    batch: &arrow::record_batch::RecordBatch,
+    name: &str,
+    out: &mut [f64],
+    offset: usize,
+    skip: usize,
+    n: usize,
+) {
+    if let Some(col) = batch.column_by_name(name) {
+        if let Some(arr) = col.as_any().downcast_ref::<arrow::array::Float64Array>() {
+            for i in 0..n {
+                out[offset + i] = arr.value(skip + i);
+            }
+        }
+    }
+}
+
+/// Create an indicatif-based progress callback for sampling.
+fn make_progress_callback() -> ProgressCallback {
+    let multibar = MultiProgress::new();
+    let mut bars: Vec<TerminalBar> = vec![];
+    let mut finished = false;
+
+    let header = multibar.add(ProgressBar::new(0));
+    header.set_style(ProgressStyle::default_bar().template("{msg:.bold}").unwrap());
+    header.set_message(format!(
+        "  {:<35}   {:<10} {:<12} {:<11} {:<12} {:<10}",
+        "Progress", "Draws", "Divergences", "Step size", "Grad evals", "Elapsed"
+    ));
+    header.tick();
+
+    let separator = multibar
+        .add(ProgressBar::new(0))
+        .with_finish(ProgressFinish::Abandon);
+    separator.set_style(ProgressStyle::default_bar().template("{msg}").unwrap());
+    separator.set_message(format!(" {}", "─".repeat(95)));
+    separator.tick();
+
+    let callback = move |_elapsed: Duration, progress: Box<[ChainProgress]>| {
+        if bars.is_empty() {
+            for chain in progress.iter() {
+                bars.push(TerminalBar::new(&multibar, chain.total_draws as u64));
+            }
+        }
+
+        if finished {
+            return;
+        }
+
+        for (bar, chain) in bars.iter_mut().zip(progress.iter()) {
+            if !bar.is_finished() && chain.finished_draws == chain.total_draws {
+                bar.pb.set_position(chain.total_draws as u64);
+                bar.finish();
+            }
+        }
+
+        if progress
+            .iter()
+            .all(|chain| chain.finished_draws == chain.total_draws)
+        {
+            finished = true;
+            header.finish();
+            separator.finish();
+        }
+
+        for (bar, chain) in bars.iter_mut().zip(progress.iter()) {
+            if chain.divergences > 0 {
+                bar.set_mode(ChainState::Divergences);
+            }
+            bar.update_position(chain);
+        }
+    };
+
+    ProgressCallback {
+        callback: Box::new(callback),
+        rate: Duration::from_millis(100),
+    }
+}
+
+#[derive(PartialEq, Eq)]
+enum ChainState {
+    Normal,
+    Divergences,
+    Finished,
+}
+
+struct TerminalBar {
+    pb: ProgressBar,
+    last_position: u64,
+    mode: ChainState,
+    segment_style: String,
+}
+
+impl TerminalBar {
+    fn new(mb: &MultiProgress, draws: u64) -> Self {
+        let segment_style = "━━╸  ".to_string();
+        let pb = mb
+            .add(ProgressBar::new(draws))
+            .with_finish(ProgressFinish::Abandon);
+        pb.set_style(
+            ProgressStyle::with_template("  {bar:35.blue}   {pos:10} {msg} {elapsed:10}")
+                .unwrap()
+                .progress_chars(&segment_style),
+        );
+        Self {
+            pb,
+            last_position: 0,
+            mode: ChainState::Normal,
+            segment_style,
+        }
+    }
+
+    fn set_mode(&mut self, mode: ChainState) {
+        if self.mode != mode {
+            let color = match mode {
+                ChainState::Normal => "blue",
+                ChainState::Divergences => "red",
+                ChainState::Finished => "green",
+            };
+            self.pb.set_style(
+                ProgressStyle::with_template(&format!(
+                    "  {{bar:35.{color}}}   {{pos:10}} {{msg}} {{elapsed:10}}"
+                ))
+                .unwrap()
+                .progress_chars(&self.segment_style),
+            );
+            self.mode = mode;
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.pb.is_finished()
+    }
+
+    fn finish(&mut self) {
+        if self.mode != ChainState::Divergences {
+            self.set_mode(ChainState::Finished);
+        }
+        self.pb.finish();
+    }
+
+    fn update_position(&mut self, chain: &ChainProgress) {
+        let position = chain.finished_draws as u64;
+        let delta = position.saturating_sub(self.last_position);
+        if delta > 0 && !self.is_finished() {
+            self.pb.set_position(position);
+            self.pb.set_message(format!(
+                "{:<12} {:<11.2} {:<12}",
+                chain.divergences, chain.step_size, chain.latest_num_steps
+            ));
+            self.last_position = position;
+        }
+    }
 }
 
 extendr_module! {

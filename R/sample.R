@@ -10,28 +10,43 @@
 #'   - A path to a `.json` file
 #'   - `NULL` for models with no data block
 #' @param num_draws Number of post-warmup draws per chain.
+#' @param num_warmup Number of warmup (tuning) draws per chain.
 #' @param num_chains Number of parallel chains.
 #' @param seed Random seed for reproducibility.
+#' @param max_treedepth Maximum tree depth for NUTS. The number of leapfrog
+#'   steps per draw is at most `2^max_treedepth`.
+#' @param target_accept Target acceptance probability for step size adaptation.
+#' @param progress Whether to show progress bars during sampling.
 #' @return A `posterior::draws_array` with dimensions
-#'   `(num_draws, num_chains, n_params)`.
+#'   `(num_draws, num_chains, n_params)`. Sampler diagnostics are attached
+#'   as an attribute and can be retrieved with [nutpie_diagnostics()].
 #' @export
 nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
-                          num_chains = 4L, seed = NULL) {
+                          num_warmup = 400L, num_chains = 4L, seed = NULL,
+                          max_treedepth = 10L, target_accept = 0.8,
+                          progress = TRUE) {
   lib_path <- resolve_model(model)
   data_json <- resolve_data(data)
   if (is.null(seed)) {
     seed <- sample.int(.Machine$integer.max, 1L)
   }
   num_draws <- as.integer(num_draws)
+  num_warmup <- as.integer(num_warmup)
   num_chains <- as.integer(num_chains)
-  mat <- sample_stan(
+  raw <- sample_stan(
     lib_path,
     data_json,
     num_draws,
+    num_warmup,
     num_chains,
-    as.integer(seed)
+    as.integer(seed),
+    as.integer(max_treedepth),
+    as.double(target_accept),
+    isTRUE(progress)
   )
-  matrix_to_draws_array(mat, num_draws, num_chains)
+  draws <- matrix_to_draws_array(raw$draws, num_draws, num_chains)
+  attr(draws, "diagnostics") <- raw$diagnostics
+  draws
 }
 
 resolve_model <- function(model) {

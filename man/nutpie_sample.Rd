@@ -8,8 +8,12 @@ nutpie_sample(
   model,
   data = NULL,
   num_draws = 1000L,
+  num_warmup = 400L,
   num_chains = 4L,
-  seed = NULL
+  seed = NULL,
+  max_treedepth = 10L,
+  target_accept = 0.8,
+  progress = TRUE
 )
 }
 \arguments{
@@ -26,13 +30,23 @@ or a path to a compiled shared library.}
 
 \item{num_draws}{Number of post-warmup draws per chain.}
 
+\item{num_warmup}{Number of warmup (tuning) draws per chain.}
+
 \item{num_chains}{Number of parallel chains.}
 
 \item{seed}{Random seed for reproducibility.}
+
+\item{max_treedepth}{Maximum tree depth for NUTS. The number of leapfrog
+steps per draw is at most \code{2^max_treedepth}.}
+
+\item{target_accept}{Target acceptance probability for step size adaptation.}
+
+\item{progress}{Whether to show progress bars during sampling.}
 }
 \value{
 A \code{posterior::draws_array} with dimensions
-\verb{(num_draws, num_chains, n_params)}.
+\verb{(num_draws, num_chains, n_params)}. Sampler diagnostics are attached
+as an attribute and can be retrieved with \code{\link[=nutpie_diagnostics]{nutpie_diagnostics()}}.
 }
 \description{
 Runs the nuts-rs NUTS sampler on a compiled Stan model.

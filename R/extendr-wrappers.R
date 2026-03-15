@@ -29,11 +29,15 @@ compile_stan_model <- function(stan_file) .Call(wrap__compile_stan_model, stan_f
 #' @param lib_path Path to the compiled Stan shared library.
 #' @param data_json JSON string with model data (empty string for no data).
 #' @param num_draws Number of draws per chain after warmup.
+#' @param num_warmup Number of warmup (tuning) draws per chain.
 #' @param num_chains Number of parallel chains.
 #' @param seed Random seed.
-#' @return A matrix of draws (rows = draws*chains, cols = parameters).
+#' @param max_treedepth Maximum tree depth for NUTS.
+#' @param target_accept Target acceptance probability for step size adaptation.
+#' @param show_progress Whether to show progress bars.
+#' @return A named list with draws matrix, num_warmup, num_chains, and diagnostics.
 #' @keywords internal
-sample_stan <- function(lib_path, data_json, num_draws, num_chains, seed) .Call(wrap__sample_stan, lib_path, data_json, num_draws, num_chains, seed)
+sample_stan <- function(lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, show_progress) .Call(wrap__sample_stan, lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, show_progress)
 
 
 # nolint end

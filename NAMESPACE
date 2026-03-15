@@ -2,5 +2,6 @@
 
 S3method(print,nutpie_model)
 export(nutpie_compile_model)
+export(nutpie_diagnostics)
 export(nutpie_sample)
 useDynLib(nutpieR, .registration = TRUE)

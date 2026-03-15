@@ -4,7 +4,17 @@
 \alias{sample_stan}
 \title{Sample from a Stan model using nuts-rs NUTS sampler.}
 \usage{
-sample_stan(lib_path, data_json, num_draws, num_chains, seed)
+sample_stan(
+  lib_path,
+  data_json,
+  num_draws,
+  num_warmup,
+  num_chains,
+  seed,
+  max_treedepth,
+  target_accept,
+  show_progress
+)
 }
 \arguments{
 \item{lib_path}{Path to the compiled Stan shared library.}
@@ -13,12 +23,20 @@ sample_stan(lib_path, data_json, num_draws, num_chains, seed)
 
 \item{num_draws}{Number of draws per chain after warmup.}
 
+\item{num_warmup}{Number of warmup (tuning) draws per chain.}
+
 \item{num_chains}{Number of parallel chains.}
 
 \item{seed}{Random seed.}
+
+\item{max_treedepth}{Maximum tree depth for NUTS.}
+
+\item{target_accept}{Target acceptance probability for step size adaptation.}
+
+\item{show_progress}{Whether to show progress bars.}
 }
 \value{
-A matrix of draws (rows = draws*chains, cols = parameters).
+A named list with draws matrix, num_warmup, num_chains, and diagnostics.
 }
 \description{
 Sample from a Stan model using nuts-rs NUTS sampler.
