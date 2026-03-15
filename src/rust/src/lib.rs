@@ -195,7 +195,7 @@ fn compile_stan_model(stan_file: &str, stanc_args: Strings, compile_args: String
 /// @param seed Random seed.
 /// @param max_treedepth Maximum tree depth for NUTS.
 /// @param target_accept Target acceptance probability for step size adaptation.
-/// @param show_progress Whether to show progress bars.
+/// @param refresh Print progress every `refresh` draws per chain (0 = no progress).
 /// @param init_mean Optional numeric vector of initial values in unconstrained space.
 /// @param save_warmup Whether to return warmup draws.
 /// @param num_cores Number of CPU cores to use for parallel sampling.
@@ -214,7 +214,7 @@ fn sample_stan(
     seed: i32,
     max_treedepth: i32,
     target_accept: f64,
-    show_progress: bool,
+    refresh: i32,
     init_mean: Robj,
     save_warmup: bool,
     num_cores: i32,
@@ -253,8 +253,20 @@ fn sample_stan(
     settings.store_divergences = store_divergences;
     settings.adapt_options.mass_matrix_options.store_mass_matrix = store_mass_matrix;
 
-    // Progress reporting: store chain progress in shared state, poll from main thread
-    let progress_state: Arc<Mutex<Vec<(usize, usize, usize)>>> =
+    // Progress reporting: store per-chain state, poll from main thread
+    let show_progress = refresh > 0;
+    let refresh = refresh.max(0) as usize;
+
+    #[derive(Clone, Default)]
+    struct ChainState {
+        finished_draws: usize,
+        total_draws: usize,
+        divergences: usize,
+        tuning: bool,
+        step_size: f64,
+    }
+
+    let progress_state: Arc<Mutex<Vec<ChainState>>> =
         Arc::new(Mutex::new(Vec::new()));
     let state_clone = progress_state.clone();
 
@@ -262,14 +274,20 @@ fn sample_stan(
         Some(ProgressCallback {
             callback: Box::new(
                 move |_elapsed: Duration, progress: Box<[ChainProgress]>| {
-                    let snapshot: Vec<(usize, usize, usize)> = progress
+                    let snapshot: Vec<ChainState> = progress
                         .iter()
-                        .map(|c| (c.finished_draws, c.total_draws, c.divergences))
+                        .map(|c| ChainState {
+                            finished_draws: c.finished_draws,
+                            total_draws: c.total_draws,
+                            divergences: c.divergences,
+                            tuning: c.tuning,
+                            step_size: c.step_size,
+                        })
                         .collect();
                     *state_clone.lock().unwrap() = snapshot;
                 },
             ),
-            rate: Duration::from_millis(200),
+            rate: Duration::from_millis(100),
         })
     } else {
         None
@@ -281,11 +299,12 @@ fn sample_stan(
     );
 
     let start = Instant::now();
-    let mut last_print = Instant::now() - Duration::from_secs(10); // force first print
+    // Track last reported draws per chain to detect when refresh threshold is crossed
+    let mut last_reported: Vec<usize> = vec![0; num_chains as usize];
 
     if show_progress {
         rprintln!(
-            "Sampling {} chains, {} draws each ({} warmup)...",
+            "Sampling {} chains, {} draws each ({} warmup)...\n",
             num_chains,
             num_draws,
             num_warmup
@@ -303,22 +322,38 @@ fn sample_stan(
             SamplerWaitResult::Trace(traces) => break traces,
             SamplerWaitResult::Timeout(s) => {
                 sampler_opt = Some(s);
-                if show_progress && last_print.elapsed() >= Duration::from_secs(1) {
+                if show_progress {
                     let state = progress_state.lock().unwrap();
                     if !state.is_empty() {
-                        let total_finished: usize = state.iter().map(|&(f, _, _)| f).sum();
-                        let total_draws: usize = state.iter().map(|&(_, t, _)| t).sum();
-                        let total_divs: usize = state.iter().map(|&(_, _, d)| d).sum();
-                        let elapsed = start.elapsed().as_secs_f64();
-                        rprintln!(
-                            "  [{:.1}s] {}/{} draws | {} divergences",
-                            elapsed,
-                            total_finished,
-                            total_draws,
-                            total_divs
-                        );
+                        for (i, chain) in state.iter().enumerate() {
+                            let draws_since = chain.finished_draws.saturating_sub(last_reported[i]);
+                            if draws_since >= refresh {
+                                let phase = if chain.tuning { "warmup" } else { "sample" };
+                                let elapsed = start.elapsed().as_secs_f64();
+                                if chain.divergences > 0 {
+                                    rprintln!(
+                                        "  Chain {} [{phase}] {}/{} draws ({} divergences, step size {:.3}) [{:.1}s]",
+                                        i + 1,
+                                        chain.finished_draws,
+                                        chain.total_draws,
+                                        chain.divergences,
+                                        chain.step_size,
+                                        elapsed
+                                    );
+                                } else {
+                                    rprintln!(
+                                        "  Chain {} [{phase}] {}/{} draws (step size {:.3}) [{:.1}s]",
+                                        i + 1,
+                                        chain.finished_draws,
+                                        chain.total_draws,
+                                        chain.step_size,
+                                        elapsed
+                                    );
+                                }
+                                last_reported[i] = chain.finished_draws;
+                            }
+                        }
                     }
-                    last_print = Instant::now();
                 }
             }
             SamplerWaitResult::Err(e, _) => return Err(r_err(e)),
@@ -327,7 +362,7 @@ fn sample_stan(
 
     if show_progress {
         let elapsed = start.elapsed().as_secs_f64();
-        rprintln!("Sampling complete ({:.1}s)", elapsed);
+        rprintln!("\nSampling complete ({:.1}s)", elapsed);
     }
 
     let num_tune = settings.num_tune as usize;

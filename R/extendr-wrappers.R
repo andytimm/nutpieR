@@ -36,7 +36,7 @@ compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__
 #' @param seed Random seed.
 #' @param max_treedepth Maximum tree depth for NUTS.
 #' @param target_accept Target acceptance probability for step size adaptation.
-#' @param show_progress Whether to show progress bars.
+#' @param refresh Print progress every `refresh` draws per chain (0 = no progress).
 #' @param init_mean Optional numeric vector of initial values in unconstrained space.
 #' @param save_warmup Whether to return warmup draws.
 #' @param num_cores Number of CPU cores to use for parallel sampling.
@@ -45,7 +45,7 @@ compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__
 #' @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 #'   and optionally warmup_draws and warmup_diagnostics.
 #' @keywords internal
-sample_stan <- function(lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, show_progress, init_mean, save_warmup, num_cores, store_divergences, store_mass_matrix) .Call(wrap__sample_stan, lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, show_progress, init_mean, save_warmup, num_cores, store_divergences, store_mass_matrix)
+sample_stan <- function(lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_mean, save_warmup, num_cores, store_divergences, store_mass_matrix) .Call(wrap__sample_stan, lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_mean, save_warmup, num_cores, store_divergences, store_mass_matrix)
 
 
 # nolint end

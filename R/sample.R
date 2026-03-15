@@ -16,7 +16,8 @@
 #' @param max_treedepth Maximum tree depth for NUTS. The number of leapfrog
 #'   steps per draw is at most `2^max_treedepth`.
 #' @param target_accept Target acceptance probability for step size adaptation.
-#' @param progress Whether to show progress bars during sampling.
+#' @param refresh How often to print progress updates, in draws per chain.
+#'   Set to `0` to suppress progress output. Default is `100`.
 #' @param init_mean Optional numeric vector of initial values in unconstrained
 #'   parameter space. Each chain starts at `init_mean + small jitter`. Length
 #'   must match the number of unconstrained parameters. If `NULL` (default),
@@ -37,7 +38,7 @@
 nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           num_warmup = 400L, num_chains = 4L, seed = NULL,
                           max_treedepth = 10L, target_accept = 0.8,
-                          progress = TRUE, init_mean = NULL,
+                          refresh = 100L, init_mean = NULL,
                           save_warmup = FALSE, cores = NULL,
                           store_divergences = FALSE,
                           store_mass_matrix = FALSE) {
@@ -64,7 +65,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     as.integer(seed),
     as.integer(max_treedepth),
     as.double(target_accept),
-    isTRUE(progress),
+    as.integer(refresh),
     init_mean,
     isTRUE(save_warmup),
     cores,

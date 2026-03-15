@@ -56,7 +56,7 @@ test_that("nutpie_sample returns draws_array with correct dims", {
   model <- nutpie_compile_model(stan_file)
   draws <- nutpie_sample(model,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 200, num_chains = 2, seed = 42, progress = FALSE
+    num_draws = 200, num_chains = 2, seed = 42, refresh = 0
   )
 
   expect_s3_class(draws, "draws_array")
@@ -73,7 +73,7 @@ test_that("nutpie_sample bernoulli theta is reasonable", {
   model <- nutpie_compile_model(stan_file)
   draws <- nutpie_sample(model,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 500, num_chains = 4, seed = 123, progress = FALSE
+    num_draws = 500, num_chains = 4, seed = 123, refresh = 0
   )
 
   summ <- posterior::summarize_draws(draws)
@@ -89,7 +89,7 @@ test_that("nutpie_sample normal model param names correct", {
   model <- nutpie_compile_model(stan_file)
   draws <- nutpie_sample(model,
     data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-    num_draws = 200, num_chains = 2, seed = 42, progress = FALSE
+    num_draws = 200, num_chains = 2, seed = 42, refresh = 0
   )
 
   expect_s3_class(draws, "draws_array")
@@ -107,7 +107,7 @@ test_that("nutpie_sample accepts sampling parameters", {
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
     num_draws = 100, num_warmup = 200, num_chains = 2,
     max_treedepth = 8, target_accept = 0.9, seed = 42,
-    progress = FALSE
+    refresh = 0
   )
 
   expect_s3_class(draws, "draws_array")
@@ -122,7 +122,7 @@ test_that("nutpie_diagnostics returns expected fields", {
   model <- nutpie_compile_model(stan_file)
   draws <- nutpie_sample(model,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 100, num_chains = 2, seed = 42, progress = FALSE
+    num_draws = 100, num_chains = 2, seed = 42, refresh = 0
   )
 
   diag <- nutpie_diagnostics(draws)
@@ -183,7 +183,7 @@ test_that("sampling with bad data gives R error, not crash", {
   model <- nutpie_compile_model(stan_file)
   expect_error(
     nutpie_sample(model, data = '{"bad": "json format"}',
-                  num_draws = 10, num_chains = 1, seed = 42, progress = FALSE)
+                  num_draws = 10, num_chains = 1, seed = 42, refresh = 0)
   )
 })
 
@@ -197,7 +197,7 @@ test_that("save_warmup returns warmup draws", {
   draws <- nutpie_sample(model,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
     num_draws = 100, num_warmup = 50, num_chains = 2, seed = 42,
-    progress = FALSE, save_warmup = TRUE
+    refresh = 0, save_warmup = TRUE
   )
 
   warmup <- nutpie_warmup_draws(draws)
@@ -218,7 +218,7 @@ test_that("nutpie_warmup_draws errors without save_warmup", {
   model <- nutpie_compile_model(stan_file)
   draws <- nutpie_sample(model,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 50, num_chains = 1, seed = 42, progress = FALSE
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0
   )
 
   expect_error(nutpie_warmup_draws(draws), "save_warmup")
@@ -233,7 +233,7 @@ test_that("cores parameter works", {
   model <- nutpie_compile_model(stan_file)
   draws <- nutpie_sample(model,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 50, num_chains = 4, cores = 2, seed = 42, progress = FALSE
+    num_draws = 50, num_chains = 4, cores = 2, seed = 42, refresh = 0
   )
 
   expect_s3_class(draws, "draws_array")
@@ -249,7 +249,7 @@ test_that("store_divergences adds divergence detail fields", {
   model <- nutpie_compile_model(stan_file)
   draws <- nutpie_sample(model,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 50, num_chains = 1, seed = 42, progress = FALSE,
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
     store_divergences = TRUE
   )
 
@@ -269,7 +269,7 @@ test_that("store_mass_matrix adds mass_matrix_inv field", {
   model <- nutpie_compile_model(stan_file)
   draws <- nutpie_sample(model,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 50, num_chains = 1, seed = 42, progress = FALSE,
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
     store_mass_matrix = TRUE
   )
 

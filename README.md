@@ -82,6 +82,7 @@ draws <- nutpie_sample(
   seed = 604,              # RNG seed
   max_treedepth = 10,     # maximum tree depth
   target_accept = 0.8,    # target acceptance rate
+  refresh = 100,          # progress every N draws (0 = off)
   save_warmup = FALSE,    # save warmup draws?
   store_divergences = FALSE,  # store divergence details?
   store_mass_matrix = FALSE   # store mass matrix?
