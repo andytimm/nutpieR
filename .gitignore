@@ -10,3 +10,4 @@ src/Makevars.win
 .claude/
 *.so
 *.dll
+src/rust/.rustc_info.json
