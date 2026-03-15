@@ -9,7 +9,7 @@
 Lightweight R interface to the nutpie No-U-Turn Sampler (NUTS) implemented in Rust (nuts-rs), using BridgeStan for model gradients.
 }
 \author{
-\strong{Maintainer}: Tim Mastny \email{tim.mastny@gmail.com}
+\strong{Maintainer}: Andy Timm \email{timmandrew1@gmail.com}
 
 }
 \keyword{internal}
