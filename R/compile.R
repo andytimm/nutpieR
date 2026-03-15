@@ -24,6 +24,23 @@ nutpie_compile_model <- function(stan_file = NULL, code = NULL,
     stop("Provide exactly one of `stan_file` or `code`.", call. = FALSE)
   }
 
+  # bridgestan::compile_model shells out to make
+
+  if (Sys.which("make") == "") {
+    platform_hint <- if (.Platform$OS.type == "windows") {
+      "Install Rtools (https://cran.r-project.org/bin/windows/Rtools/) and ensure it is on your PATH."
+    } else if (Sys.info()[["sysname"]] == "Darwin") {
+      "Install Xcode Command Line Tools: xcode-select --install"
+    } else {
+      "Install build-essential: sudo apt install build-essential (Debian/Ubuntu) or sudo dnf install make gcc-c++ (Fedora)"
+    }
+    stop(
+      "`make` is required to compile Stan models but was not found on PATH.\n",
+      platform_hint,
+      call. = FALSE
+    )
+  }
+
   if (!is.null(code)) {
     stan_file <- tempfile(fileext = ".stan")
     writeLines(code, stan_file)
