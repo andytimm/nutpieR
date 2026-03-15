@@ -1,0 +1,36 @@
+[package]
+name = "bridgestan"
+version = "2.7.0"
+edition = "2021"
+rust-version = "1.69"
+description = "Rust interface for BridgeStan"
+repository = "https://github.com/roualdes/bridgestan"
+license = "BSD-3-Clause"
+homepage = "https://roualdes.us/bridgestan/latest/"
+
+[dependencies]
+libloading = "0.8.0"
+thiserror = "2.0.3"
+path-absolutize = { version = "3.1" }
+log = { version = "0.4" }
+ureq = { version = "3.0", optional = true }
+tar = { version = "0.4", optional = true }
+flate2 = { version = "1.0", optional = true }
+dirs = { version = "6.0", optional = true }
+
+[features]
+download-bridgestan-src = ["dep:ureq", "dep:tar", "dep:flate2", "dep:dirs"]
+
+[build-dependencies]
+bindgen = "0.72.0"
+
+[dev-dependencies]
+approx = "0.5.1"
+rand = "0.9.0"
+env_logger = "0.11"
+
+[[example]]
+name = "example"
+
+[package.metadata.docs.rs]
+all-features = true

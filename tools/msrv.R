@@ -54,9 +54,10 @@ no_rustc_msg <- c(
 )
 
 # Add {user}/.cargo/bin to path before checking
+path_sep <- if (.Platform$OS.type == "windows") ";" else ":"
 new_path <- paste0(
   Sys.getenv("PATH"),
-  ":",
+  path_sep,
   paste0(Sys.getenv("HOME"), "/.cargo/bin")
 )
 

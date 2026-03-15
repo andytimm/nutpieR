@@ -1,5 +1,14 @@
 TARGET = $(subst 64,x86_64,$(subst 32,i686,$(WIN)))-pc-windows-gnu
 
+# Ensure cargo is on PATH (Windows R subprocess may not inherit it)
+CARGO_BIN = $(HOME)/.cargo/bin
+export PATH := $(CARGO_BIN):$(PATH)
+
+# bindgen needs libclang for bridgestan's build.rs.
+# Check LIBCLANG_PATH env var first, then common install locations.
+LIBCLANG_PATH ?= $(firstword $(wildcard C:/Program\ Files/LLVM/bin) $(wildcard C:/LLVM/bin))
+export LIBCLANG_PATH
+
 # Use a temp dir without spaces to avoid dlltool/assembler path issues
 TARGET_DIR = $(TEMP)/nutpieR-rust-target
 LIBDIR = $(TARGET_DIR)/$(TARGET)/@LIBDIR@

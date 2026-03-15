@@ -315,8 +315,6 @@ checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 [[package]]
 name = "bridgestan"
 version = "2.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6d0e34116970162606ca313a4d3cf76b4828600877ae30959f6f122e434cb29"
 dependencies = [
  "bindgen",
  "dirs",

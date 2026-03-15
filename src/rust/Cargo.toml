@@ -20,6 +20,13 @@ bridgestan = { version = '2.7', features = ['download-bridgestan-src'] }
 indicatif = '0.17'
 dirs = '6'
 
+[patch.crates-io]
+# Patch bridgestan to add allowlist filters in build.rs.
+# On Windows, bindgen picks up CRT symbols from stddef.h/stdbool.h
+# (e.g. _errno, __security_init_cookie) which are not exported by
+# the Stan model DLL, causing GetProcAddress failures at load time.
+bridgestan = { path = "patches/bridgestan-2.7.0" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 4
