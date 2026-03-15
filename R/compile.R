@@ -11,12 +11,17 @@
 #'   `stanc` compiler (e.g., `"--O1"` for optimization).
 #' @param compile_args Character vector of extra arguments passed to `make`
 #'   during compilation.
+#' @param verbose Integer controlling compilation output. `0` = silent,
+#'   `1` (default) = print status messages.
+#'   Note: full make/stanc output (verbose=2) is not yet supported because
+#'   bridgestan captures subprocess output internally rather than streaming it.
 #' @return An object of class `"nutpie_model"` containing the path to the
 #'   compiled shared library.
 #' @export
 nutpie_compile_model <- function(stan_file = NULL, code = NULL,
                                  stanc_args = character(),
-                                 compile_args = character()) {
+                                 compile_args = character(),
+                                 verbose = 1L) {
   if (!is.null(stan_file) && !is.null(code)) {
     stop("Provide exactly one of `stan_file` or `code`, not both.", call. = FALSE)
   }
@@ -57,8 +62,17 @@ nutpie_compile_model <- function(stan_file = NULL, code = NULL,
     file.copy(stan_file, tmp_stan)
     stan_file <- tmp_stan
   }
+  verbose <- as.integer(verbose)
+  if (verbose >= 1L) {
+    message("Compiling Stan model...")
+    start_time <- proc.time()[["elapsed"]]
+  }
   lib_path <- compile_stan_model(stan_file, as.character(stanc_args),
                                   as.character(compile_args))
+  if (verbose >= 1L) {
+    elapsed <- proc.time()[["elapsed"]] - start_time
+    message(sprintf("Compiled in %.1fs", elapsed))
+  }
   structure(
     list(lib_path = lib_path, stan_file = stan_file),
     class = "nutpie_model"
