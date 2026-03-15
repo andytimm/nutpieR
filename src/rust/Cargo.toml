@@ -17,7 +17,6 @@ thiserror = '2'
 rand = '0.10'
 arrow = { version = '57', default-features = false }
 bridgestan = { version = '2.7', features = ['download-bridgestan-src'] }
-indicatif = '0.17'
 dirs = '6'
 
 [patch.crates-io]

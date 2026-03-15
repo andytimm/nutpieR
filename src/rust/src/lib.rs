@@ -1,14 +1,16 @@
+#![allow(non_snake_case)]
+
 use arrow::array::Array;
 use extendr_api::prelude::*;
 use nuts_rs::{
     ArrowConfig, ArrowTrace, ChainProgress, CpuLogpFunc, CpuMath, DiagGradNutsSettings, HasDims,
     Model, ProgressCallback, Sampler, SamplerWaitResult,
 };
-use indicatif::{MultiProgress, ProgressBar, ProgressFinish, ProgressStyle};
 use rand::RngExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 mod model;
 
@@ -251,21 +253,82 @@ fn sample_stan(
     settings.store_divergences = store_divergences;
     settings.adapt_options.mass_matrix_options.store_mass_matrix = store_mass_matrix;
 
+    // Progress reporting: store chain progress in shared state, poll from main thread
+    let progress_state: Arc<Mutex<Vec<(usize, usize, usize)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let state_clone = progress_state.clone();
+
     let callback = if show_progress {
-        Some(make_progress_callback())
+        Some(ProgressCallback {
+            callback: Box::new(
+                move |_elapsed: Duration, progress: Box<[ChainProgress]>| {
+                    let snapshot: Vec<(usize, usize, usize)> = progress
+                        .iter()
+                        .map(|c| (c.finished_draws, c.total_draws, c.divergences))
+                        .collect();
+                    *state_clone.lock().unwrap() = snapshot;
+                },
+            ),
+            rate: Duration::from_millis(200),
+        })
     } else {
         None
     };
 
-    let sampler =
+    let mut sampler_opt = Some(
         Sampler::new(stan_model, settings, ArrowConfig::new(), num_cores as usize, callback)
-            .map_err(r_err)?;
+            .map_err(r_err)?,
+    );
 
-    let results = match sampler.wait_timeout(Duration::from_secs(600)) {
-        SamplerWaitResult::Trace(traces) => traces,
-        SamplerWaitResult::Timeout(_) => return Err(Error::Other("Sampling timed out".into())),
-        SamplerWaitResult::Err(e, _) => return Err(r_err(e)),
+    let start = Instant::now();
+    let mut last_print = Instant::now() - Duration::from_secs(10); // force first print
+
+    if show_progress {
+        rprintln!(
+            "Sampling {} chains, {} draws each ({} warmup)...",
+            num_chains,
+            num_draws,
+            num_warmup
+        );
+    }
+
+    let results = loop {
+        let sampler = sampler_opt.take().unwrap();
+        let wait_dur = if show_progress {
+            Duration::from_millis(200)
+        } else {
+            Duration::from_secs(600)
+        };
+        match sampler.wait_timeout(wait_dur) {
+            SamplerWaitResult::Trace(traces) => break traces,
+            SamplerWaitResult::Timeout(s) => {
+                sampler_opt = Some(s);
+                if show_progress && last_print.elapsed() >= Duration::from_secs(1) {
+                    let state = progress_state.lock().unwrap();
+                    if !state.is_empty() {
+                        let total_finished: usize = state.iter().map(|&(f, _, _)| f).sum();
+                        let total_draws: usize = state.iter().map(|&(_, t, _)| t).sum();
+                        let total_divs: usize = state.iter().map(|&(_, _, d)| d).sum();
+                        let elapsed = start.elapsed().as_secs_f64();
+                        rprintln!(
+                            "  [{:.1}s] {}/{} draws | {} divergences",
+                            elapsed,
+                            total_finished,
+                            total_draws,
+                            total_divs
+                        );
+                    }
+                    last_print = Instant::now();
+                }
+            }
+            SamplerWaitResult::Err(e, _) => return Err(r_err(e)),
+        }
     };
+
+    if show_progress {
+        let elapsed = start.elapsed().as_secs_f64();
+        rprintln!("Sampling complete ({:.1}s)", elapsed);
+    }
 
     let num_tune = settings.num_tune as usize;
     let n_draws_per_chain = num_draws as usize;
@@ -560,144 +623,6 @@ fn extract_large_list_f64(
                     }
                 }
             }
-        }
-    }
-}
-
-/// Create an indicatif-based progress callback for sampling.
-fn make_progress_callback() -> ProgressCallback {
-    let multibar = MultiProgress::new();
-    let mut bars: Vec<TerminalBar> = vec![];
-    let mut finished = false;
-
-    let header = multibar.add(ProgressBar::new(0));
-    header.set_style(ProgressStyle::default_bar().template("{msg:.bold}").unwrap());
-    header.set_message(format!(
-        "  {:<35}   {:<10} {:<12} {:<11} {:<12} {:<10}",
-        "Progress", "Draws", "Divergences", "Step size", "Grad evals", "Elapsed"
-    ));
-    header.tick();
-
-    let separator = multibar
-        .add(ProgressBar::new(0))
-        .with_finish(ProgressFinish::Abandon);
-    separator.set_style(ProgressStyle::default_bar().template("{msg}").unwrap());
-    separator.set_message(format!(" {}", "─".repeat(95)));
-    separator.tick();
-
-    let callback = move |_elapsed: Duration, progress: Box<[ChainProgress]>| {
-        if bars.is_empty() {
-            for chain in progress.iter() {
-                bars.push(TerminalBar::new(&multibar, chain.total_draws as u64));
-            }
-        }
-
-        if finished {
-            return;
-        }
-
-        for (bar, chain) in bars.iter_mut().zip(progress.iter()) {
-            if !bar.is_finished() && chain.finished_draws == chain.total_draws {
-                bar.pb.set_position(chain.total_draws as u64);
-                bar.finish();
-            }
-        }
-
-        if progress
-            .iter()
-            .all(|chain| chain.finished_draws == chain.total_draws)
-        {
-            finished = true;
-            header.finish();
-            separator.finish();
-        }
-
-        for (bar, chain) in bars.iter_mut().zip(progress.iter()) {
-            if chain.divergences > 0 {
-                bar.set_mode(ChainState::Divergences);
-            }
-            bar.update_position(chain);
-        }
-    };
-
-    ProgressCallback {
-        callback: Box::new(callback),
-        rate: Duration::from_millis(100),
-    }
-}
-
-#[derive(PartialEq, Eq)]
-enum ChainState {
-    Normal,
-    Divergences,
-    Finished,
-}
-
-struct TerminalBar {
-    pb: ProgressBar,
-    last_position: u64,
-    mode: ChainState,
-    segment_style: String,
-}
-
-impl TerminalBar {
-    fn new(mb: &MultiProgress, draws: u64) -> Self {
-        let segment_style = "━━╸  ".to_string();
-        let pb = mb
-            .add(ProgressBar::new(draws))
-            .with_finish(ProgressFinish::Abandon);
-        pb.set_style(
-            ProgressStyle::with_template("  {bar:35.blue}   {pos:10} {msg} {elapsed:10}")
-                .unwrap()
-                .progress_chars(&segment_style),
-        );
-        Self {
-            pb,
-            last_position: 0,
-            mode: ChainState::Normal,
-            segment_style,
-        }
-    }
-
-    fn set_mode(&mut self, mode: ChainState) {
-        if self.mode != mode {
-            let color = match mode {
-                ChainState::Normal => "blue",
-                ChainState::Divergences => "red",
-                ChainState::Finished => "green",
-            };
-            self.pb.set_style(
-                ProgressStyle::with_template(&format!(
-                    "  {{bar:35.{color}}}   {{pos:10}} {{msg}} {{elapsed:10}}"
-                ))
-                .unwrap()
-                .progress_chars(&self.segment_style),
-            );
-            self.mode = mode;
-        }
-    }
-
-    fn is_finished(&self) -> bool {
-        self.pb.is_finished()
-    }
-
-    fn finish(&mut self) {
-        if self.mode != ChainState::Divergences {
-            self.set_mode(ChainState::Finished);
-        }
-        self.pb.finish();
-    }
-
-    fn update_position(&mut self, chain: &ChainProgress) {
-        let position = chain.finished_draws as u64;
-        let delta = position.saturating_sub(self.last_position);
-        if delta > 0 && !self.is_finished() {
-            self.pb.set_position(position);
-            self.pb.set_message(format!(
-                "{:<12} {:<11.2} {:<12}",
-                chain.divergences, chain.step_size, chain.latest_num_steps
-            ));
-            self.last_position = position;
         }
     }
 }

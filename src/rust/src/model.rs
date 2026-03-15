@@ -112,10 +112,6 @@ impl StanModel {
         })
     }
 
-    pub fn ndim(&self) -> usize {
-        self.ndim
-    }
-
     pub fn num_constrained(&self) -> usize {
         self.num_constrained
     }

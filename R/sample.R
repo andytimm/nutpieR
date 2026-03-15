@@ -73,6 +73,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   )
   draws <- matrix_to_draws_array(raw$draws, num_draws, num_chains)
   attr(draws, "diagnostics") <- raw$diagnostics
+  attr(draws, "num_chains") <- num_chains
 
   if (isTRUE(save_warmup) && !is.null(raw$warmup_draws)) {
     warmup <- matrix_to_draws_array(raw$warmup_draws, num_warmup, num_chains)
