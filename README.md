@@ -89,6 +89,26 @@ draws <- nutpie_sample(
 )
 ```
 
+### Low-rank mass matrix adaptation
+
+For models with correlated parameters, nutpieR supports low-rank modified mass
+matrix adaptation from nuts-rs. This captures posterior correlations more
+effectively than the default diagonal mass matrix, and can significantly improve
+sampling efficiency on challenging geometries.
+
+```r
+draws <- nutpie_sample(
+  model,
+  data = dat,
+  low_rank_modified_mass_matrix = TRUE,  # enable low-rank adaptation
+  mass_matrix_gamma = 1e-5,              # regularisation (default)
+  mass_matrix_eigval_cutoff = 2.0        # eigenvalue cutoff (default)
+)
+```
+
+When enabled, the sampler defaults to 800 warmup draws (vs 400 for diagonal) to
+allow the low-rank structure to stabilize.
+
 ## How it works
 
 nutpieR compiles Stan models via the BridgeStan Rust crate and samples using the nuts-rs NUTS sampler. During sampling, Rust calls the compiled Stan shared library directly through BridgeStan's C ABI -- R is not involved in the sampling loop. Each chain runs on its own thread via rayon.

@@ -42,10 +42,13 @@ compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__
 #' @param num_cores Number of CPU cores to use for parallel sampling.
 #' @param store_divergences Whether to store detailed divergence information.
 #' @param store_mass_matrix Whether to store the mass matrix at each draw.
+#' @param low_rank Whether to use low-rank modified mass matrix adaptation.
+#' @param mass_matrix_gamma Regularisation parameter for low-rank mass matrix.
+#' @param eigval_cutoff Eigenvalue cutoff for low-rank mass matrix.
 #' @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 #'   and optionally warmup_draws and warmup_diagnostics.
 #' @keywords internal
-sample_stan <- function(lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_mean, save_warmup, num_cores, store_divergences, store_mass_matrix) .Call(wrap__sample_stan, lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_mean, save_warmup, num_cores, store_divergences, store_mass_matrix)
+sample_stan <- function(lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_mean, save_warmup, num_cores, store_divergences, store_mass_matrix, low_rank, mass_matrix_gamma, eigval_cutoff) .Call(wrap__sample_stan, lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_mean, save_warmup, num_cores, store_divergences, store_mass_matrix, low_rank, mass_matrix_gamma, eigval_cutoff)
 
 
 # nolint end

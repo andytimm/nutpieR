@@ -282,3 +282,22 @@ test_that("store_mass_matrix adds mass_matrix_inv field", {
   expect_true(length(non_null) > 0)
   expect_type(non_null[[1]], "double")
 })
+
+# --- Item 8: low-rank mass matrix ---
+
+test_that("low_rank_modified_mass_matrix produces valid draws", {
+  stan_file <- test_path("test_models", "bernoulli.stan")
+  skip_if_not(file.exists(stan_file), "Stan file not found")
+
+  model <- nutpie_compile_model(stan_file)
+  draws <- nutpie_sample(model,
+    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
+    num_draws = 100, num_chains = 2, seed = 42, refresh = 0,
+    low_rank_modified_mass_matrix = TRUE
+  )
+
+  expect_s3_class(draws, "draws_array")
+  expect_equal(posterior::niterations(draws), 100)
+  expect_equal(posterior::nchains(draws), 2)
+  expect_true("theta" %in% posterior::variables(draws))
+})

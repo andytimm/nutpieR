@@ -31,6 +31,16 @@
 #'   list columns to diagnostics.
 #' @param store_mass_matrix If `TRUE`, store the inverse mass matrix diagonal
 #'   at each draw. Adds a list column to diagnostics.
+#' @param low_rank_modified_mass_matrix If `TRUE`, use low-rank modified mass
+#'   matrix adaptation. This can improve sampling efficiency for models with
+#'   correlated parameters by capturing posterior correlations in the mass
+#'   matrix. Default is `FALSE` (diagonal mass matrix).
+#' @param mass_matrix_gamma Regularisation parameter for low-rank mass matrix
+#'   adaptation. Only used when `low_rank_modified_mass_matrix = TRUE`.
+#'   Default is `1e-5`.
+#' @param mass_matrix_eigval_cutoff Eigenvalue cutoff for low-rank mass matrix.
+#'   Eigenvalues outside `(1/cutoff, cutoff)` are ignored. Only used when
+#'   `low_rank_modified_mass_matrix = TRUE`. Default is `2.0`.
 #' @return A `posterior::draws_array` with dimensions
 #'   `(num_draws, num_chains, n_params)`. Sampler diagnostics are attached
 #'   as an attribute and can be retrieved with [nutpie_diagnostics()].
@@ -41,7 +51,10 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           refresh = 100L, init_mean = NULL,
                           save_warmup = FALSE, cores = NULL,
                           store_divergences = FALSE,
-                          store_mass_matrix = FALSE) {
+                          store_mass_matrix = FALSE,
+                          low_rank_modified_mass_matrix = FALSE,
+                          mass_matrix_gamma = 1e-5,
+                          mass_matrix_eigval_cutoff = 2.0) {
   lib_path <- resolve_model(model)
   data_json <- resolve_data(data)
   if (is.null(seed)) {
@@ -70,7 +83,10 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     isTRUE(save_warmup),
     cores,
     isTRUE(store_divergences),
-    isTRUE(store_mass_matrix)
+    isTRUE(store_mass_matrix),
+    isTRUE(low_rank_modified_mass_matrix),
+    as.double(mass_matrix_gamma),
+    as.double(mass_matrix_eigval_cutoff)
   )
   draws <- matrix_to_draws_array(raw$draws, num_draws, num_chains)
   attr(draws, "diagnostics") <- raw$diagnostics

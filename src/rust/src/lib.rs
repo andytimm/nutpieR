@@ -4,7 +4,8 @@ use arrow::array::Array;
 use extendr_api::prelude::*;
 use nuts_rs::{
     ArrowConfig, ArrowTrace, ChainProgress, CpuLogpFunc, CpuMath, DiagGradNutsSettings, HasDims,
-    Model, ProgressCallback, Sampler, SamplerWaitResult,
+    LowRankNutsSettings, Model, ProgressCallback, Sampler, SamplerWaitResult,
+    Settings,
 };
 use rand::RngExt;
 use std::collections::HashMap;
@@ -187,73 +188,16 @@ fn compile_stan_model(stan_file: &str, stanc_args: Strings, compile_args: String
 }
 
 /// Sample from a Stan model using nuts-rs NUTS sampler.
-/// @param lib_path Path to the compiled Stan shared library.
-/// @param data_json JSON string with model data (empty string for no data).
-/// @param num_draws Number of draws per chain after warmup.
-/// @param num_warmup Number of warmup (tuning) draws per chain.
-/// @param num_chains Number of parallel chains.
-/// @param seed Random seed.
-/// @param max_treedepth Maximum tree depth for NUTS.
-/// @param target_accept Target acceptance probability for step size adaptation.
-/// @param refresh Print progress every `refresh` draws per chain (0 = no progress).
-/// @param init_mean Optional numeric vector of initial values in unconstrained space.
-/// @param save_warmup Whether to return warmup draws.
-/// @param num_cores Number of CPU cores to use for parallel sampling.
-/// @param store_divergences Whether to store detailed divergence information.
-/// @param store_mass_matrix Whether to store the mass matrix at each draw.
-/// @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
-///   and optionally warmup_draws and warmup_diagnostics.
-/// @keywords internal
-#[extendr]
-fn sample_stan(
-    lib_path: &str,
-    data_json: &str,
+/// Run the sampler with progress reporting. Generic over Settings type.
+fn run_sampler<S: Settings>(
+    stan_model: model::StanModel,
+    settings: S,
+    num_chains: i32,
     num_draws: i32,
     num_warmup: i32,
-    num_chains: i32,
-    seed: i32,
-    max_treedepth: i32,
-    target_accept: f64,
-    refresh: i32,
-    init_mean: Robj,
-    save_warmup: bool,
     num_cores: i32,
-    store_divergences: bool,
-    store_mass_matrix: bool,
-) -> Result<List> {
-    // Parse init_mean from R (NULL or numeric vector)
-    let init_mean_vec: Option<Vec<f64>> = if init_mean.is_null() {
-        None
-    } else {
-        Some(
-            init_mean
-                .as_real_vector()
-                .ok_or_else(|| Error::Other("init_mean must be a numeric vector".into()))?,
-        )
-    };
-
-    let stan_model = model::StanModel::new(
-        std::path::Path::new(lib_path),
-        data_json,
-        seed as u32,
-        init_mean_vec,
-    )
-    .map_err(r_err)?;
-
-    let ndim = stan_model.num_constrained();
-    let param_names: Vec<String> = stan_model.constrained_param_names().to_vec();
-
-    let mut settings = DiagGradNutsSettings::default();
-    settings.num_tune = num_warmup as u64;
-    settings.num_draws = num_draws as u64;
-    settings.num_chains = num_chains as usize;
-    settings.seed = seed as u64;
-    settings.maxdepth = max_treedepth as u64;
-    settings.adapt_options.step_size_settings.target_accept = target_accept;
-    settings.store_divergences = store_divergences;
-    settings.adapt_options.mass_matrix_options.store_mass_matrix = store_mass_matrix;
-
-    // Progress reporting: store per-chain state, poll from main thread
+    refresh: i32,
+) -> Result<Vec<ArrowTrace>> {
     let show_progress = refresh > 0;
     let refresh = refresh.max(0) as usize;
 
@@ -299,7 +243,6 @@ fn sample_stan(
     );
 
     let start = Instant::now();
-    // Track last reported draws per chain to detect when refresh threshold is crossed
     let mut last_reported: Vec<usize> = vec![0; num_chains as usize];
 
     if show_progress {
@@ -365,8 +308,100 @@ fn sample_stan(
         rprintln!("\nSampling complete ({:.1}s)", elapsed);
     }
 
-    let num_tune = settings.num_tune as usize;
+    Ok(results)
+}
+
+/// @param lib_path Path to the compiled Stan shared library.
+/// @param data_json JSON string with model data (empty string for no data).
+/// @param num_draws Number of draws per chain after warmup.
+/// @param num_warmup Number of warmup (tuning) draws per chain.
+/// @param num_chains Number of parallel chains.
+/// @param seed Random seed.
+/// @param max_treedepth Maximum tree depth for NUTS.
+/// @param target_accept Target acceptance probability for step size adaptation.
+/// @param refresh Print progress every `refresh` draws per chain (0 = no progress).
+/// @param init_mean Optional numeric vector of initial values in unconstrained space.
+/// @param save_warmup Whether to return warmup draws.
+/// @param num_cores Number of CPU cores to use for parallel sampling.
+/// @param store_divergences Whether to store detailed divergence information.
+/// @param store_mass_matrix Whether to store the mass matrix at each draw.
+/// @param low_rank Whether to use low-rank modified mass matrix adaptation.
+/// @param mass_matrix_gamma Regularisation parameter for low-rank mass matrix (default 1e-5).
+/// @param eigval_cutoff Eigenvalue cutoff for low-rank mass matrix (default 2.0).
+/// @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
+///   and optionally warmup_draws and warmup_diagnostics.
+/// @keywords internal
+#[extendr]
+fn sample_stan(
+    lib_path: &str,
+    data_json: &str,
+    num_draws: i32,
+    num_warmup: i32,
+    num_chains: i32,
+    seed: i32,
+    max_treedepth: i32,
+    target_accept: f64,
+    refresh: i32,
+    init_mean: Robj,
+    save_warmup: bool,
+    num_cores: i32,
+    store_divergences: bool,
+    store_mass_matrix: bool,
+    low_rank: bool,
+    mass_matrix_gamma: f64,
+    eigval_cutoff: f64,
+) -> Result<List> {
+    // Parse init_mean from R (NULL or numeric vector)
+    let init_mean_vec: Option<Vec<f64>> = if init_mean.is_null() {
+        None
+    } else {
+        Some(
+            init_mean
+                .as_real_vector()
+                .ok_or_else(|| Error::Other("init_mean must be a numeric vector".into()))?,
+        )
+    };
+
+    let stan_model = model::StanModel::new(
+        std::path::Path::new(lib_path),
+        data_json,
+        seed as u32,
+        init_mean_vec,
+    )
+    .map_err(r_err)?;
+
+    let ndim = stan_model.num_constrained();
+    let param_names: Vec<String> = stan_model.constrained_param_names().to_vec();
+
+    let num_tune = num_warmup as usize;
     let n_draws_per_chain = num_draws as usize;
+
+    // Branch on mass matrix type — both implement Settings but are different types
+    let results = if low_rank {
+        let mut settings = LowRankNutsSettings::default();
+        settings.num_tune = num_warmup as u64;
+        settings.num_draws = num_draws as u64;
+        settings.num_chains = num_chains as usize;
+        settings.seed = seed as u64;
+        settings.maxdepth = max_treedepth as u64;
+        settings.adapt_options.step_size_settings.target_accept = target_accept;
+        settings.store_divergences = store_divergences;
+        settings.adapt_options.mass_matrix_options.store_mass_matrix = store_mass_matrix;
+        settings.adapt_options.mass_matrix_options.gamma = mass_matrix_gamma;
+        settings.adapt_options.mass_matrix_options.eigval_cutoff = eigval_cutoff;
+        run_sampler(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
+    } else {
+        let mut settings = DiagGradNutsSettings::default();
+        settings.num_tune = num_warmup as u64;
+        settings.num_draws = num_draws as u64;
+        settings.num_chains = num_chains as usize;
+        settings.seed = seed as u64;
+        settings.maxdepth = max_treedepth as u64;
+        settings.adapt_options.step_size_settings.target_accept = target_accept;
+        settings.store_divergences = store_divergences;
+        settings.adapt_options.mass_matrix_options.store_mass_matrix = store_mass_matrix;
+        run_sampler(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
+    };
 
     // Build post-warmup draws matrix (column-major for R)
     let draws_robj = build_draws_matrix(&results, ndim, num_tune, n_draws_per_chain, &param_names)?;
