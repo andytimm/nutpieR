@@ -17,6 +17,19 @@
 #'   steps per draw is at most `2^max_treedepth`.
 #' @param target_accept Target acceptance probability for step size adaptation.
 #' @param progress Whether to show progress bars during sampling.
+#' @param init_mean Optional numeric vector of initial values in unconstrained
+#'   parameter space. Each chain starts at `init_mean + small jitter`. Length
+#'   must match the number of unconstrained parameters. If `NULL` (default),
+#'   chains are initialized with `Uniform(-2, 2)`.
+#' @param save_warmup If `TRUE`, warmup draws and diagnostics are attached as
+#'   attributes. Retrieve them with [nutpie_warmup_draws()].
+#' @param cores Number of CPU cores to use for parallel sampling. Defaults to
+#'   `min(num_chains, parallel::detectCores())`.
+#' @param store_divergences If `TRUE`, store detailed information about each
+#'   divergent transition (start/end positions, momentum, gradient). Adds
+#'   list columns to diagnostics.
+#' @param store_mass_matrix If `TRUE`, store the inverse mass matrix diagonal
+#'   at each draw. Adds a list column to diagnostics.
 #' @return A `posterior::draws_array` with dimensions
 #'   `(num_draws, num_chains, n_params)`. Sampler diagnostics are attached
 #'   as an attribute and can be retrieved with [nutpie_diagnostics()].
@@ -24,7 +37,10 @@
 nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           num_warmup = 400L, num_chains = 4L, seed = NULL,
                           max_treedepth = 10L, target_accept = 0.8,
-                          progress = TRUE) {
+                          progress = TRUE, init_mean = NULL,
+                          save_warmup = FALSE, cores = NULL,
+                          store_divergences = FALSE,
+                          store_mass_matrix = FALSE) {
   lib_path <- resolve_model(model)
   data_json <- resolve_data(data)
   if (is.null(seed)) {
@@ -33,6 +49,12 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   num_draws <- as.integer(num_draws)
   num_warmup <- as.integer(num_warmup)
   num_chains <- as.integer(num_chains)
+
+  if (is.null(cores)) {
+    cores <- min(num_chains, parallel::detectCores())
+  }
+  cores <- as.integer(cores)
+
   raw <- sample_stan(
     lib_path,
     data_json,
@@ -42,10 +64,22 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     as.integer(seed),
     as.integer(max_treedepth),
     as.double(target_accept),
-    isTRUE(progress)
+    isTRUE(progress),
+    init_mean,
+    isTRUE(save_warmup),
+    cores,
+    isTRUE(store_divergences),
+    isTRUE(store_mass_matrix)
   )
   draws <- matrix_to_draws_array(raw$draws, num_draws, num_chains)
   attr(draws, "diagnostics") <- raw$diagnostics
+
+  if (isTRUE(save_warmup) && !is.null(raw$warmup_draws)) {
+    warmup <- matrix_to_draws_array(raw$warmup_draws, num_warmup, num_chains)
+    attr(draws, "warmup_draws") <- warmup
+    attr(draws, "warmup_diagnostics") <- raw$warmup_diagnostics
+  }
+
   draws
 }
 

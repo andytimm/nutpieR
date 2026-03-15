@@ -4,10 +4,25 @@
 \alias{nutpie_compile_model}
 \title{Compile a Stan model}
 \usage{
-nutpie_compile_model(stan_file)
+nutpie_compile_model(
+  stan_file = NULL,
+  code = NULL,
+  stanc_args = character(),
+  compile_args = character()
+)
 }
 \arguments{
-\item{stan_file}{Path to a \code{.stan} file.}
+\item{stan_file}{Path to a \code{.stan} file. Exactly one of \code{stan_file} or
+\code{code} must be provided.}
+
+\item{code}{A string containing Stan model code. If provided, the code is
+written to a temporary \code{.stan} file and compiled.}
+
+\item{stanc_args}{Character vector of extra arguments passed to the
+\code{stanc} compiler (e.g., \code{"--O1"} for optimization).}
+
+\item{compile_args}{Character vector of extra arguments passed to \code{make}
+during compilation.}
 }
 \value{
 An object of class \code{"nutpie_model"} containing the path to the

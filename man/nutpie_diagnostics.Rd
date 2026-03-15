@@ -13,7 +13,11 @@ nutpie_diagnostics(draws)
 A named list of diagnostic vectors (one value per draw, ordered
 chain-contiguous). Fields include \code{diverging}, \code{depth}, \code{energy},
 \code{energy_error}, \code{logp}, \code{n_steps}, \code{step_size_bar}, and
-\code{mean_tree_accept}.
+\code{mean_tree_accept}. When \code{store_divergences = TRUE} was used, additional
+list columns \code{divergence_start}, \code{divergence_end},
+\code{divergence_momentum}, and \code{divergence_start_gradient} are included.
+When \code{store_mass_matrix = TRUE} was used, a \code{mass_matrix_inv} list
+column is included.
 }
 \description{
 Extract sampler diagnostics from nutpie draws

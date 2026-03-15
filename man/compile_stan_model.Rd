@@ -5,10 +5,14 @@
 \title{Compile a Stan model to a shared library using BridgeStan.
 Downloads BridgeStan sources if needed (first call is slow).}
 \usage{
-compile_stan_model(stan_file)
+compile_stan_model(stan_file, stanc_args, compile_args)
 }
 \arguments{
 \item{stan_file}{Path to the .stan file.}
+
+\item{stanc_args}{Character vector of extra arguments for stanc compiler.}
+
+\item{compile_args}{Character vector of extra arguments for make.}
 }
 \value{
 Path to the compiled shared library.

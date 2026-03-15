@@ -65,41 +65,17 @@ pub struct StanModel {
     ndim: usize,
     num_constrained: usize,
     constrained_param_names: Vec<String>,
+    init_mean: Option<Vec<f64>>,
 }
 
 impl StanModel {
-    pub fn new(lib_path: &Path, data_json: &str, seed: u32) -> anyhow::Result<Self> {
+    pub fn new(
+        lib_path: &Path,
+        data_json: &str,
+        seed: u32,
+        init_mean: Option<Vec<f64>>,
+    ) -> anyhow::Result<Self> {
         add_tbb_to_path();
-        // Debug: try loading with libloading directly to diagnose symbol issues
-        {
-            let test_lib = unsafe { libloading::Library::new(lib_path) };
-            match test_lib {
-                Ok(lib) => {
-                    eprintln!("DEBUG: Library loaded OK with libloading");
-                    let symbols = [
-                        "bs_major_version", "bs_minor_version", "bs_patch_version",
-                        "bs_model_construct", "bs_model_destruct", "bs_free_error_msg",
-                        "bs_name", "bs_model_info", "bs_param_names", "bs_param_unc_names",
-                        "bs_param_num", "bs_param_unc_num", "bs_param_constrain",
-                        "bs_param_unconstrain", "bs_param_unconstrain_json",
-                        "bs_log_density", "bs_log_density_gradient",
-                        "bs_log_density_hessian", "bs_log_density_hessian_vector_product",
-                        "bs_rng_construct", "bs_rng_destruct", "bs_set_print_callback",
-                    ];
-                    for sym in &symbols {
-                        let mut name = sym.as_bytes().to_vec();
-                        name.push(0);
-                        let result: std::result::Result<libloading::Symbol<*const ()>, _> =
-                            unsafe { lib.get(&name) };
-                        match result {
-                            Ok(_) => eprintln!("  OK: {}", sym),
-                            Err(e) => eprintln!("  FAIL: {} -> {}", sym, e),
-                        }
-                    }
-                }
-                Err(e) => eprintln!("DEBUG: Library load FAILED: {}", e),
-            }
-        }
         let lib = Arc::new(bridgestan::open_library(lib_path)?);
         let data = if data_json.is_empty() {
             None
@@ -108,6 +84,17 @@ impl StanModel {
         };
         let model = bridgestan::Model::new(Arc::clone(&lib), data.as_deref(), seed)?;
         let ndim = model.param_unc_num();
+
+        // Validate init_mean length
+        if let Some(ref im) = init_mean {
+            anyhow::ensure!(
+                im.len() == ndim,
+                "init_mean length ({}) does not match model dimension ({})",
+                im.len(),
+                ndim
+            );
+        }
+
         let num_constrained = model.param_num(true, true);
         let constrained_param_names: Vec<String> = model
             .param_names(true, true)
@@ -121,6 +108,7 @@ impl StanModel {
             ndim,
             num_constrained,
             constrained_param_names,
+            init_mean,
         })
     }
 
@@ -157,8 +145,17 @@ impl Model for StanModel {
         rng: &mut R,
         position: &mut [f64],
     ) -> anyhow::Result<()> {
-        for p in position.iter_mut() {
-            *p = rng.random_range(-2.0..2.0);
+        match &self.init_mean {
+            Some(im) => {
+                for (p, &m) in position.iter_mut().zip(im.iter()) {
+                    *p = m + rng.random_range(-0.5..0.5);
+                }
+            }
+            None => {
+                for p in position.iter_mut() {
+                    *p = rng.random_range(-2.0..2.0);
+                }
+            }
         }
         Ok(())
     }

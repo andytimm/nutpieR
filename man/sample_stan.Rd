@@ -13,7 +13,12 @@ sample_stan(
   seed,
   max_treedepth,
   target_accept,
-  show_progress
+  show_progress,
+  init_mean,
+  save_warmup,
+  num_cores,
+  store_divergences,
+  store_mass_matrix
 )
 }
 \arguments{
@@ -34,9 +39,20 @@ sample_stan(
 \item{target_accept}{Target acceptance probability for step size adaptation.}
 
 \item{show_progress}{Whether to show progress bars.}
+
+\item{init_mean}{Optional numeric vector of initial values in unconstrained space.}
+
+\item{save_warmup}{Whether to return warmup draws.}
+
+\item{num_cores}{Number of CPU cores to use for parallel sampling.}
+
+\item{store_divergences}{Whether to store detailed divergence information.}
+
+\item{store_mass_matrix}{Whether to store the mass matrix at each draw.}
 }
 \value{
-A named list with draws matrix, num_warmup, num_chains, and diagnostics.
+A named list with draws matrix, num_warmup, num_chains, diagnostics,
+and optionally warmup_draws and warmup_diagnostics.
 }
 \description{
 Sample from a Stan model using nuts-rs NUTS sampler.

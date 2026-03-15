@@ -21,9 +21,11 @@ sample_normal <- function(num_draws, num_chains, seed) .Call(wrap__sample_normal
 #' Compile a Stan model to a shared library using BridgeStan.
 #' Downloads BridgeStan sources if needed (first call is slow).
 #' @param stan_file Path to the .stan file.
+#' @param stanc_args Character vector of extra arguments for stanc compiler.
+#' @param compile_args Character vector of extra arguments for make.
 #' @return Path to the compiled shared library.
 #' @keywords internal
-compile_stan_model <- function(stan_file) .Call(wrap__compile_stan_model, stan_file)
+compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__compile_stan_model, stan_file, stanc_args, compile_args)
 
 #' Sample from a Stan model using nuts-rs NUTS sampler.
 #' @param lib_path Path to the compiled Stan shared library.
@@ -35,9 +37,15 @@ compile_stan_model <- function(stan_file) .Call(wrap__compile_stan_model, stan_f
 #' @param max_treedepth Maximum tree depth for NUTS.
 #' @param target_accept Target acceptance probability for step size adaptation.
 #' @param show_progress Whether to show progress bars.
-#' @return A named list with draws matrix, num_warmup, num_chains, and diagnostics.
+#' @param init_mean Optional numeric vector of initial values in unconstrained space.
+#' @param save_warmup Whether to return warmup draws.
+#' @param num_cores Number of CPU cores to use for parallel sampling.
+#' @param store_divergences Whether to store detailed divergence information.
+#' @param store_mass_matrix Whether to store the mass matrix at each draw.
+#' @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
+#'   and optionally warmup_draws and warmup_diagnostics.
 #' @keywords internal
-sample_stan <- function(lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, show_progress) .Call(wrap__sample_stan, lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, show_progress)
+sample_stan <- function(lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, show_progress, init_mean, save_warmup, num_cores, store_divergences, store_mass_matrix) .Call(wrap__sample_stan, lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, show_progress, init_mean, save_warmup, num_cores, store_divergences, store_mass_matrix)
 
 
 # nolint end

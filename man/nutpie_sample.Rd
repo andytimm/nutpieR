@@ -13,7 +13,12 @@ nutpie_sample(
   seed = NULL,
   max_treedepth = 10L,
   target_accept = 0.8,
-  progress = TRUE
+  progress = TRUE,
+  init_mean = NULL,
+  save_warmup = FALSE,
+  cores = NULL,
+  store_divergences = FALSE,
+  store_mass_matrix = FALSE
 )
 }
 \arguments{
@@ -42,6 +47,24 @@ steps per draw is at most \code{2^max_treedepth}.}
 \item{target_accept}{Target acceptance probability for step size adaptation.}
 
 \item{progress}{Whether to show progress bars during sampling.}
+
+\item{init_mean}{Optional numeric vector of initial values in unconstrained
+parameter space. Each chain starts at \verb{init_mean + small jitter}. Length
+must match the number of unconstrained parameters. If \code{NULL} (default),
+chains are initialized with \code{Uniform(-2, 2)}.}
+
+\item{save_warmup}{If \code{TRUE}, warmup draws and diagnostics are attached as
+attributes. Retrieve them with \code{\link[=nutpie_warmup_draws]{nutpie_warmup_draws()}}.}
+
+\item{cores}{Number of CPU cores to use for parallel sampling. Defaults to
+\code{min(num_chains, parallel::detectCores())}.}
+
+\item{store_divergences}{If \code{TRUE}, store detailed information about each
+divergent transition (start/end positions, momentum, gradient). Adds
+list columns to diagnostics.}
+
+\item{store_mass_matrix}{If \code{TRUE}, store the inverse mass matrix diagonal
+at each draw. Adds a list column to diagnostics.}
 }
 \value{
 A \code{posterior::draws_array} with dimensions
