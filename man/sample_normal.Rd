@@ -18,3 +18,4 @@ sample_normal(num_draws, num_chains, seed)
 Sample from a 10-d standard normal using nuts-rs.
 Returns a matrix of draws (rows = draws*chains, cols = parameters).
 }
+\keyword{internal}

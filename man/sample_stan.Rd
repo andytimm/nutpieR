@@ -23,3 +23,4 @@ A matrix of draws (rows = draws*chains, cols = parameters).
 \description{
 Sample from a Stan model using nuts-rs NUTS sampler.
 }
+\keyword{internal}

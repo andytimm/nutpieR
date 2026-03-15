@@ -17,3 +17,4 @@ Path to the compiled shared library.
 Compile a Stan model to a shared library using BridgeStan.
 Downloads BridgeStan sources if needed (first call is slow).
 }
+\keyword{internal}

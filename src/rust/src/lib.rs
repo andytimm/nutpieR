@@ -97,7 +97,7 @@ impl Model for NormalModel {
 /// @param num_draws Number of draws per chain after warmup.
 /// @param num_chains Number of parallel chains.
 /// @param seed Random seed.
-/// @export
+/// @keywords internal
 #[extendr]
 fn sample_normal(num_draws: i32, num_chains: i32, seed: i32) -> Robj {
     let mut settings = DiagGradNutsSettings::default();
@@ -164,7 +164,7 @@ fn sample_normal(num_draws: i32, num_chains: i32, seed: i32) -> Robj {
 /// Downloads BridgeStan sources if needed (first call is slow).
 /// @param stan_file Path to the .stan file.
 /// @return Path to the compiled shared library.
-/// @export
+/// @keywords internal
 #[extendr]
 fn compile_stan_model(stan_file: &str) -> String {
     let bs_path = bridgestan::download_bridgestan_src()
@@ -182,7 +182,7 @@ fn compile_stan_model(stan_file: &str) -> String {
 /// @param num_chains Number of parallel chains.
 /// @param seed Random seed.
 /// @return A matrix of draws (rows = draws*chains, cols = parameters).
-/// @export
+/// @keywords internal
 #[extendr]
 fn sample_stan(lib_path: &str, data_json: &str, num_draws: i32, num_chains: i32, seed: i32) -> Robj {
     let stan_model = model::StanModel::new(

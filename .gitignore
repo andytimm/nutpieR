@@ -7,3 +7,6 @@ ai_context/
 src/rust/vendor
 src/Makevars
 src/Makevars.win
+.claude/
+*.so
+*.dll
