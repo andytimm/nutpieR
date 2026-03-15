@@ -25,8 +25,12 @@ matrix_to_draws_array <- function(flat_matrix, n_draws, n_chains) {
 #' `beta[1,2]`. Scalar parameters (no trailing digits) are left unchanged.
 #' @noRd
 dot_to_bracket <- function(names) {
-  # First turn dots between digits into commas: theta.1.2 -> theta.1,2
-  out <- gsub("(?<=\\d)\\.(?=\\d)", ",", names, perl = TRUE)
-  # Then wrap trailing digit/comma sequence in brackets: theta.1,2 -> theta[1,2]
-  gsub("\\.(\\d[\\d,]*)$", "[\\1]", out, perl = TRUE)
+  vapply(names, function(nm) {
+    # Match trailing .digit(.digit)* sequence
+    m <- regexpr("\\.(\\d+(?:\\.\\d+)*)$", nm, perl = TRUE)
+    if (m == -1L) return(nm)
+    prefix <- substr(nm, 1, m - 1)
+    indices <- gsub("\\.", ",", substr(nm, m + 1, nchar(nm)))
+    paste0(prefix, "[", indices, "]")
+  }, character(1), USE.NAMES = FALSE)
 }
