@@ -47,6 +47,16 @@ nutpie_compile_model <- function(stan_file = NULL, code = NULL,
   }
 
   stan_file <- normalizePath(stan_file, mustWork = TRUE)
+
+  # bridgestan shells out to make, which can't handle spaces in paths.
+  # Copy the stan file to a temp dir if the path contains spaces.
+  if (grepl(" ", stan_file)) {
+    tmp_dir <- tempfile("nutpie_model_")
+    dir.create(tmp_dir)
+    tmp_stan <- file.path(tmp_dir, basename(stan_file))
+    file.copy(stan_file, tmp_stan)
+    stan_file <- tmp_stan
+  }
   lib_path <- compile_stan_model(stan_file, as.character(stanc_args),
                                   as.character(compile_args))
   structure(
