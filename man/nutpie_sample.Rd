@@ -13,12 +13,15 @@ nutpie_sample(
   seed = NULL,
   max_treedepth = 10L,
   target_accept = 0.8,
-  progress = TRUE,
+  refresh = 100L,
   init_mean = NULL,
   save_warmup = FALSE,
   cores = NULL,
   store_divergences = FALSE,
-  store_mass_matrix = FALSE
+  store_mass_matrix = FALSE,
+  low_rank_modified_mass_matrix = FALSE,
+  mass_matrix_gamma = 1e-05,
+  mass_matrix_eigval_cutoff = 2
 )
 }
 \arguments{
@@ -46,7 +49,8 @@ steps per draw is at most \code{2^max_treedepth}.}
 
 \item{target_accept}{Target acceptance probability for step size adaptation.}
 
-\item{progress}{Whether to show progress bars during sampling.}
+\item{refresh}{How often to print progress updates, in draws per chain.
+Set to \code{0} to suppress progress output. Default is \code{100}.}
 
 \item{init_mean}{Optional numeric vector of initial values in unconstrained
 parameter space. Each chain starts at \verb{init_mean + small jitter}. Length
@@ -65,6 +69,19 @@ list columns to diagnostics.}
 
 \item{store_mass_matrix}{If \code{TRUE}, store the inverse mass matrix diagonal
 at each draw. Adds a list column to diagnostics.}
+
+\item{low_rank_modified_mass_matrix}{If \code{TRUE}, use low-rank modified mass
+matrix adaptation. This can improve sampling efficiency for models with
+correlated parameters by capturing posterior correlations in the mass
+matrix. Default is \code{FALSE} (diagonal mass matrix).}
+
+\item{mass_matrix_gamma}{Regularisation parameter for low-rank mass matrix
+adaptation. Only used when \code{low_rank_modified_mass_matrix = TRUE}.
+Default is \code{1e-5}.}
+
+\item{mass_matrix_eigval_cutoff}{Eigenvalue cutoff for low-rank mass matrix.
+Eigenvalues outside \verb{(1/cutoff, cutoff)} are ignored. Only used when
+\code{low_rank_modified_mass_matrix = TRUE}. Default is \code{2.0}.}
 }
 \value{
 A \code{posterior::draws_array} with dimensions

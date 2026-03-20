@@ -6,13 +6,11 @@ R is not in the hot loop -- parallel chains run entirely in Rust.
 
 ## Installation
 
-<!-- TODO: uncomment when R-universe is set up
 ```r
 install.packages("nutpieR", repos = "https://andytimm.r-universe.dev")
 ```
--->
 
-Install from source (requires a [Rust toolchain](https://rustup.rs/)):
+Or install from source (requires a [Rust toolchain](https://rustup.rs/)):
 
 ```r
 remotes::install_github("andytimm/nutpieR")

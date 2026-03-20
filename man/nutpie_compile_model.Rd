@@ -8,7 +8,8 @@ nutpie_compile_model(
   stan_file = NULL,
   code = NULL,
   stanc_args = character(),
-  compile_args = character()
+  compile_args = character(),
+  verbose = 1L
 )
 }
 \arguments{
@@ -23,6 +24,11 @@ written to a temporary \code{.stan} file and compiled.}
 
 \item{compile_args}{Character vector of extra arguments passed to \code{make}
 during compilation.}
+
+\item{verbose}{Integer controlling compilation output. \code{0} = silent,
+\code{1} (default) = print status messages.
+Note: full make/stanc output (verbose=2) is not yet supported because
+bridgestan captures subprocess output internally rather than streaming it.}
 }
 \value{
 An object of class \code{"nutpie_model"} containing the path to the

@@ -13,12 +13,15 @@ sample_stan(
   seed,
   max_treedepth,
   target_accept,
-  show_progress,
+  refresh,
   init_mean,
   save_warmup,
   num_cores,
   store_divergences,
-  store_mass_matrix
+  store_mass_matrix,
+  low_rank,
+  mass_matrix_gamma,
+  eigval_cutoff
 )
 }
 \arguments{
@@ -38,7 +41,7 @@ sample_stan(
 
 \item{target_accept}{Target acceptance probability for step size adaptation.}
 
-\item{show_progress}{Whether to show progress bars.}
+\item{refresh}{Print progress every \code{refresh} draws per chain (0 = no progress).}
 
 \item{init_mean}{Optional numeric vector of initial values in unconstrained space.}
 
@@ -49,6 +52,12 @@ sample_stan(
 \item{store_divergences}{Whether to store detailed divergence information.}
 
 \item{store_mass_matrix}{Whether to store the mass matrix at each draw.}
+
+\item{low_rank}{Whether to use low-rank modified mass matrix adaptation.}
+
+\item{mass_matrix_gamma}{Regularisation parameter for low-rank mass matrix.}
+
+\item{eigval_cutoff}{Eigenvalue cutoff for low-rank mass matrix.}
 }
 \value{
 A named list with draws matrix, num_warmup, num_chains, diagnostics,
