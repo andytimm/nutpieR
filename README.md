@@ -42,7 +42,7 @@ draws <- nutpie_sample(
   data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
   num_draws = 1000,
   num_chains = 4,
-  seed = 42
+  seed = 604
 )
 
 # Returns a posterior::draws_array -- works with all posterior/bayesplot tools
