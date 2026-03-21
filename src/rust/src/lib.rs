@@ -178,9 +178,9 @@ fn compile_stan_model(stan_file: &str, stanc_args: Strings, compile_args: String
     let stan_path = PathBuf::from(stan_file);
 
     let stanc_vec: Vec<String> = stanc_args.iter().map(|s| s.to_string()).collect();
-    let stanc_refs: Vec<&str> = stanc_vec.iter().map(|s| s.as_str()).collect();
+    let stanc_refs: Vec<&str> = stanc_vec.iter().map(String::as_str).collect();
     let compile_vec: Vec<String> = compile_args.iter().map(|s| s.to_string()).collect();
-    let compile_refs: Vec<&str> = compile_vec.iter().map(|s| s.as_str()).collect();
+    let compile_refs: Vec<&str> = compile_vec.iter().map(String::as_str).collect();
 
     let lib_path =
         bridgestan::compile_model(&bs_path, &stan_path, &stanc_refs, &compile_refs).map_err(r_err)?;
@@ -376,30 +376,30 @@ fn sample_stan(
     let num_tune = num_warmup as usize;
     let n_draws_per_chain = num_draws as usize;
 
-    // Branch on mass matrix type — both implement Settings but are different types
+    // Branch on mass matrix type — both implement Settings but are different types.
+    // Common fields are set via the configure_settings! macro to avoid duplication.
+    macro_rules! configure_settings {
+        ($settings:expr) => {{
+            $settings.num_tune = num_warmup as u64;
+            $settings.num_draws = num_draws as u64;
+            $settings.num_chains = num_chains as usize;
+            $settings.seed = seed as u64;
+            $settings.maxdepth = max_treedepth as u64;
+            $settings.adapt_options.step_size_settings.target_accept = target_accept;
+            $settings.store_divergences = store_divergences;
+            $settings.adapt_options.mass_matrix_options.store_mass_matrix = store_mass_matrix;
+        }};
+    }
+
     let results = if low_rank {
         let mut settings = LowRankNutsSettings::default();
-        settings.num_tune = num_warmup as u64;
-        settings.num_draws = num_draws as u64;
-        settings.num_chains = num_chains as usize;
-        settings.seed = seed as u64;
-        settings.maxdepth = max_treedepth as u64;
-        settings.adapt_options.step_size_settings.target_accept = target_accept;
-        settings.store_divergences = store_divergences;
-        settings.adapt_options.mass_matrix_options.store_mass_matrix = store_mass_matrix;
+        configure_settings!(settings);
         settings.adapt_options.mass_matrix_options.gamma = mass_matrix_gamma;
         settings.adapt_options.mass_matrix_options.eigval_cutoff = eigval_cutoff;
         run_sampler(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
     } else {
         let mut settings = DiagGradNutsSettings::default();
-        settings.num_tune = num_warmup as u64;
-        settings.num_draws = num_draws as u64;
-        settings.num_chains = num_chains as usize;
-        settings.seed = seed as u64;
-        settings.maxdepth = max_treedepth as u64;
-        settings.adapt_options.step_size_settings.target_accept = target_accept;
-        settings.store_divergences = store_divergences;
-        settings.adapt_options.mass_matrix_options.store_mass_matrix = store_mass_matrix;
+        configure_settings!(settings);
         run_sampler(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
     };
 
@@ -564,31 +564,15 @@ fn extract_diagnostics(
         }
     }
 
-    let div_start_robj: Robj = if include_divergence_detail {
-        List::from_values(div_start).into_robj()
-    } else {
-        ().into_robj()
-    };
-    let div_end_robj: Robj = if include_divergence_detail {
-        List::from_values(div_end).into_robj()
-    } else {
-        ().into_robj()
-    };
-    let div_momentum_robj: Robj = if include_divergence_detail {
-        List::from_values(div_momentum).into_robj()
-    } else {
-        ().into_robj()
-    };
-    let div_start_grad_robj: Robj = if include_divergence_detail {
-        List::from_values(div_start_grad).into_robj()
-    } else {
-        ().into_robj()
-    };
-    let mass_matrix_robj: Robj = if include_mass_matrix {
-        List::from_values(mass_matrix).into_robj()
-    } else {
-        ().into_robj()
-    };
+    fn optional_list(values: Vec<Robj>, include: bool) -> Robj {
+        if include { List::from_values(values).into_robj() } else { ().into_robj() }
+    }
+
+    let div_start_robj = optional_list(div_start, include_divergence_detail);
+    let div_end_robj = optional_list(div_end, include_divergence_detail);
+    let div_momentum_robj = optional_list(div_momentum, include_divergence_detail);
+    let div_start_grad_robj = optional_list(div_start_grad, include_divergence_detail);
+    let mass_matrix_robj = optional_list(mass_matrix, include_mass_matrix);
 
     list!(
         diverging = diverging,

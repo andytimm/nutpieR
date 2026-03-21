@@ -47,7 +47,7 @@ print.nutpie_diagnostics <- function(x, ...) {
     cat("  target_accept or reparameterizing the model.\n")
   }
 
-  cat("\nUse `str(nutpie_diagnostics(draws))` for raw diagnostic vectors.\n")
+  cat("\nUse `str(attr(draws, \"diagnostics\"))` for raw diagnostic vectors.\n")
   invisible(x)
 }
 

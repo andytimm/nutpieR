@@ -6,6 +6,8 @@ R is not in the hot loop -- parallel chains run entirely in Rust.
 
 ## Installation
 
+Precompiled binaries are available from R-universe (no Rust toolchain needed):
+
 ```r
 install.packages("nutpieR", repos = "https://andytimm.r-universe.dev")
 ```
@@ -18,11 +20,11 @@ remotes::install_github("andytimm/nutpieR")
 
 ### System requirements
 
-- **Rust**: `rustc >= 1.85` and `cargo` ([install via rustup](https://rustup.rs/))
-- **C++ toolchain** (for compiling Stan models):
+- **C++ toolchain** (required — Stan models are compiled at runtime via BridgeStan):
   - Windows: [Rtools](https://cran.r-project.org/bin/windows/Rtools/)
   - macOS: Xcode Command Line Tools (`xcode-select --install`)
   - Linux: `build-essential` (Debian/Ubuntu) or equivalent
+- **Rust**: `rustc >= 1.85` and `cargo` ([install via rustup](https://rustup.rs/)) — only needed when installing from source
 
 ## Usage
 
