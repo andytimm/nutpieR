@@ -9,8 +9,8 @@ test_that("sample_normal means are near 0 and SDs near 1", {
   draws <- sample_normal(500L, 4L, 42L)
   col_means <- colMeans(draws)
   col_sds <- apply(draws, 2, sd)
-  expect_true(all(abs(col_means) < 0.5))
-  expect_true(all(abs(col_sds - 1) < 0.5))
+  expect_true(all(abs(col_means) < 0.1))
+  expect_true(all(abs(col_sds - 1) < 0.15))
 })
 
 test_that("resolve_data handles NULL", {
@@ -78,8 +78,8 @@ test_that("nutpie_sample bernoulli theta is reasonable", {
 
   summ <- posterior::summarize_draws(draws)
   theta_mean <- summ$mean[summ$variable == "theta"]
-  # With 2/10 successes, posterior mean should be ~0.25
-  expect_true(abs(theta_mean - 0.25) < 0.15)
+  # With 2/10 successes + Beta(1,1) prior, posterior is Beta(3,9), mean = 0.25
+  expect_true(abs(theta_mean - 0.25) < 0.05)
 })
 
 test_that("nutpie_sample normal model param names correct", {
@@ -96,6 +96,13 @@ test_that("nutpie_sample normal model param names correct", {
   vars <- posterior::variables(draws)
   expect_true("mu" %in% vars)
   expect_true("sigma" %in% vars)
+
+  # y = 1..5, so posterior mean of mu should be near 3, sigma near 1.4
+  summ <- posterior::summarize_draws(draws)
+  mu_mean <- summ$mean[summ$variable == "mu"]
+  sigma_mean <- summ$mean[summ$variable == "sigma"]
+  expect_true(abs(mu_mean - 3.0) < 0.5)
+  expect_true(abs(sigma_mean - 1.6) < 0.5)
 })
 
 test_that("nutpie_sample accepts sampling parameters", {
@@ -300,4 +307,9 @@ test_that("low_rank_modified_mass_matrix produces valid draws", {
   expect_equal(posterior::niterations(draws), 100)
   expect_equal(posterior::nchains(draws), 2)
   expect_true("theta" %in% posterior::variables(draws))
+
+  # Should get similar posterior as standard mass matrix
+  summ <- posterior::summarize_draws(draws)
+  theta_mean <- summ$mean[summ$variable == "theta"]
+  expect_true(abs(theta_mean - 0.25) < 0.1)
 })
