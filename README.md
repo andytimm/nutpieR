@@ -1,6 +1,6 @@
 # nutpieR
 
-R bindings for the [nuts-rs](https://github.com/pymc-devs/nuts-rs) NUTS sampler, using [BridgeStan](https://github.com/roualdes/bridgestan) for Stan model evaluation. The R equivalent of [nutpie](https://github.com/pymc-devs/nutpie) (Python).
+R bindings for the [nuts-rs](https://github.com/pymc-devs/nuts-rs) NUTS sampler, using [BridgeStan](https://github.com/roualdes/bridgestan) for Stan model evaluation. The R equivalent of the official [nutpie](https://github.com/pymc-devs/nutpie) (Python).
 
 R is not in the hot loop -- parallel chains run entirely in Rust.
 

@@ -510,34 +510,16 @@ fn extract_diagnostics(
     let mut step_size_bar = vec![0.0f64; total];
     let mut mean_tree_accept = vec![0.0f64; total];
 
-    // Optional divergence detail vectors
-    let mut div_start: Vec<Robj> = if include_divergence_detail {
-        (0..total).map(|_| ().into_robj()).collect()
-    } else {
-        vec![]
-    };
-    let mut div_end: Vec<Robj> = if include_divergence_detail {
-        (0..total).map(|_| ().into_robj()).collect()
-    } else {
-        vec![]
-    };
-    let mut div_momentum: Vec<Robj> = if include_divergence_detail {
-        (0..total).map(|_| ().into_robj()).collect()
-    } else {
-        vec![]
-    };
-    let mut div_start_grad: Vec<Robj> = if include_divergence_detail {
-        (0..total).map(|_| ().into_robj()).collect()
-    } else {
-        vec![]
-    };
+    // Pre-allocate optional vectors with R NULLs (non-divergent draws stay NULL)
+    fn null_robj_vec(n: usize, include: bool) -> Vec<Robj> {
+        if include { (0..n).map(|_| ().into_robj()).collect() } else { vec![] }
+    }
 
-    // Optional mass matrix vectors
-    let mut mass_matrix: Vec<Robj> = if include_mass_matrix {
-        (0..total).map(|_| ().into_robj()).collect()
-    } else {
-        vec![]
-    };
+    let mut div_start = null_robj_vec(total, include_divergence_detail);
+    let mut div_end = null_robj_vec(total, include_divergence_detail);
+    let mut div_momentum = null_robj_vec(total, include_divergence_detail);
+    let mut div_start_grad = null_robj_vec(total, include_divergence_detail);
+    let mut mass_matrix = null_robj_vec(total, include_mass_matrix);
 
     for (chain_idx, trace) in results.iter().enumerate() {
         let stats = &trace.sample_stats;
