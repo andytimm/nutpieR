@@ -64,6 +64,7 @@ model <- nutpie_compile_model(stan_file = "my_model.stan")
 nutpie_diagnostics(draws)
 
 # Access warmup draws (if save_warmup = TRUE)
+dat <- list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1))
 draws <- nutpie_sample(model, data = dat, save_warmup = TRUE)
 nutpie_warmup_draws(draws)
 nutpie_warmup_diagnostics(draws)
@@ -79,7 +80,7 @@ draws <- nutpie_sample(
   num_warmup = 1000,      # warmup draws per chain
   num_chains = 4,         # number of chains
   cores = 4,              # parallel cores
-  seed = 604,              # RNG seed
+  seed = 604,             # RNG seed
   max_treedepth = 10,     # maximum tree depth
   target_accept = 0.8,    # target acceptance rate
   refresh = 100,          # progress every N draws (0 = off)
