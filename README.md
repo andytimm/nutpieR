@@ -20,7 +20,7 @@ remotes::install_github("andytimm/nutpieR")
 
 ### System requirements
 
-- **C++ toolchain** (required — Stan models are compiled at runtime via BridgeStan):
+- **C++ toolchain** (same as what Stan needs — Stan models are compiled to C++ at runtime via BridgeStan):
   - Windows: [Rtools](https://cran.r-project.org/bin/windows/Rtools/)
   - macOS: Xcode Command Line Tools (`xcode-select --install`)
   - Linux: `build-essential` (Debian/Ubuntu) or equivalent
@@ -31,7 +31,7 @@ remotes::install_github("andytimm/nutpieR")
 ```r
 library(nutpieR)
 
-# Compile a Stan model
+# Compile a Stan model (inline here for a runnable demo; .stan files work too)
 model <- nutpie_compile_model(code = "
   data { int<lower=0> N; array[N] int<lower=0,upper=1> y; }
   parameters { real<lower=0,upper=1> theta; }
@@ -51,7 +51,7 @@ draws <- nutpie_sample(
 posterior::summarize_draws(draws)
 ```
 
-You can also compile from a `.stan` file:
+In practice, you'll usually compile from a `.stan` file:
 
 ```r
 model <- nutpie_compile_model(stan_file = "my_model.stan")
