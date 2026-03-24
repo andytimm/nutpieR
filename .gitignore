@@ -12,3 +12,4 @@ src/Makevars.win
 *.dll
 src/rust/.rustc_info.json
 .vscode/
+benchmarks/results/
