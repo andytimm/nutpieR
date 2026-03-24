@@ -44,6 +44,8 @@
 #' @return A `posterior::draws_array` with dimensions
 #'   `(num_draws, num_chains, n_params)`. Sampler diagnostics are attached
 #'   as an attribute and can be retrieved with [nutpie_diagnostics()].
+#'   The attributes `"num_warmup"` and `"num_draws"` record the sampling
+#'   configuration (accessible via `attr(draws, "num_warmup")` etc.).
 #' @export
 nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           num_warmup = 400L, num_chains = 4L, seed = NULL,
@@ -91,6 +93,8 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   draws <- matrix_to_draws_array(raw$draws, num_draws, num_chains)
   attr(draws, "diagnostics") <- raw$diagnostics
   attr(draws, "num_chains") <- num_chains
+  attr(draws, "num_warmup") <- num_warmup
+  attr(draws, "num_draws") <- num_draws
 
   if (isTRUE(save_warmup) && !is.null(raw$warmup_draws)) {
     warmup <- matrix_to_draws_array(raw$warmup_draws, num_warmup, num_chains)

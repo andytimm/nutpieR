@@ -159,6 +159,35 @@ test_that("nutpie_diagnostics errors on non-nutpie object", {
   expect_error(nutpie_diagnostics(1:10), "No diagnostics found")
 })
 
+test_that("num_warmup and num_draws attributes are set", {
+  stan_file <- test_path("test_models", "bernoulli.stan")
+  skip_if_not(file.exists(stan_file), "Stan file not found")
+
+  model <- nutpie_compile_model(stan_file)
+  draws <- nutpie_sample(model,
+    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
+    num_draws = 100, num_warmup = 200, num_chains = 2, seed = 42,
+    refresh = 0
+  )
+
+  expect_equal(attr(draws, "num_warmup"), 200L)
+  expect_equal(attr(draws, "num_draws"), 100L)
+})
+
+test_that("num_warmup attribute is set even without save_warmup", {
+  stan_file <- test_path("test_models", "bernoulli.stan")
+  skip_if_not(file.exists(stan_file), "Stan file not found")
+
+  model <- nutpie_compile_model(stan_file)
+  draws <- nutpie_sample(model,
+    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0
+  )
+
+  expect_equal(attr(draws, "num_warmup"), 400L)  # default
+  expect_equal(attr(draws, "num_draws"), 50L)
+})
+
 # --- Item 1: Compile from Stan code string ---
 
 test_that("nutpie_compile_model accepts code string", {
