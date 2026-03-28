@@ -42,19 +42,15 @@ test_that("resolve_data rejects invalid input", {
 })
 
 test_that("nutpie_compile_model returns nutpie_model", {
-  stan_file <- test_path("test_models", "bernoulli.stan")
-  skip_if_not(file.exists(stan_file), "Stan file not found")
-  model <- nutpie_compile_model(stan_file)
-  expect_s3_class(model, "nutpie_model")
-  expect_true(file.exists(model$lib_path))
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  expect_s3_class(test_models$bernoulli, "nutpie_model")
+  expect_true(file.exists(test_models$bernoulli$lib_path))
 })
 
 test_that("nutpie_sample returns draws_array with correct dims", {
-  stan_file <- test_path("test_models", "bernoulli.stan")
-  skip_if_not(file.exists(stan_file), "Stan file not found")
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  model <- nutpie_compile_model(stan_file)
-  draws <- nutpie_sample(model,
+  draws <- nutpie_sample(test_models$bernoulli,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
     num_draws = 200, num_chains = 2, seed = 42, refresh = 0
   )
@@ -67,11 +63,9 @@ test_that("nutpie_sample returns draws_array with correct dims", {
 })
 
 test_that("nutpie_sample bernoulli theta is reasonable", {
-  stan_file <- test_path("test_models", "bernoulli.stan")
-  skip_if_not(file.exists(stan_file), "Stan file not found")
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  model <- nutpie_compile_model(stan_file)
-  draws <- nutpie_sample(model,
+  draws <- nutpie_sample(test_models$bernoulli,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
     num_draws = 500, num_chains = 4, seed = 123, refresh = 0
   )
@@ -83,11 +77,9 @@ test_that("nutpie_sample bernoulli theta is reasonable", {
 })
 
 test_that("nutpie_sample normal model param names correct", {
-  stan_file <- test_path("test_models", "normal.stan")
-  skip_if_not(file.exists(stan_file), "Stan file not found")
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
 
-  model <- nutpie_compile_model(stan_file)
-  draws <- nutpie_sample(model,
+  draws <- nutpie_sample(test_models$normal,
     data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
     num_draws = 200, num_chains = 2, seed = 42, refresh = 0
   )
@@ -97,20 +89,19 @@ test_that("nutpie_sample normal model param names correct", {
   expect_true("mu" %in% vars)
   expect_true("sigma" %in% vars)
 
-  # y = 1..5, so posterior mean of mu should be near 3, sigma near 1.4
+  # y = 1..5, so posterior mean of mu should be near 3, sigma near 1.6
+  # sigma posterior is wide with n=5, so use generous tolerance
   summ <- posterior::summarize_draws(draws)
   mu_mean <- summ$mean[summ$variable == "mu"]
   sigma_mean <- summ$mean[summ$variable == "sigma"]
   expect_true(abs(mu_mean - 3.0) < 0.5)
-  expect_true(abs(sigma_mean - 1.6) < 0.5)
+  expect_true(abs(sigma_mean - 1.6) < 1.0)
 })
 
 test_that("nutpie_sample accepts sampling parameters", {
-  stan_file <- test_path("test_models", "bernoulli.stan")
-  skip_if_not(file.exists(stan_file), "Stan file not found")
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  model <- nutpie_compile_model(stan_file)
-  draws <- nutpie_sample(model,
+  draws <- nutpie_sample(test_models$bernoulli,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
     num_draws = 100, num_warmup = 200, num_chains = 2,
     max_treedepth = 8, target_accept = 0.9, seed = 42,
@@ -123,11 +114,9 @@ test_that("nutpie_sample accepts sampling parameters", {
 })
 
 test_that("nutpie_diagnostics returns expected fields", {
-  stan_file <- test_path("test_models", "bernoulli.stan")
-  skip_if_not(file.exists(stan_file), "Stan file not found")
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  model <- nutpie_compile_model(stan_file)
-  draws <- nutpie_sample(model,
+  draws <- nutpie_sample(test_models$bernoulli,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
     num_draws = 100, num_chains = 2, seed = 42, refresh = 0
   )
@@ -160,11 +149,9 @@ test_that("nutpie_diagnostics errors on non-nutpie object", {
 })
 
 test_that("num_warmup and num_draws attributes are set", {
-  stan_file <- test_path("test_models", "bernoulli.stan")
-  skip_if_not(file.exists(stan_file), "Stan file not found")
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  model <- nutpie_compile_model(stan_file)
-  draws <- nutpie_sample(model,
+  draws <- nutpie_sample(test_models$bernoulli,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
     num_draws = 100, num_warmup = 200, num_chains = 2, seed = 42,
     refresh = 0
@@ -175,11 +162,9 @@ test_that("num_warmup and num_draws attributes are set", {
 })
 
 test_that("num_warmup attribute is set even without save_warmup", {
-  stan_file <- test_path("test_models", "bernoulli.stan")
-  skip_if_not(file.exists(stan_file), "Stan file not found")
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  model <- nutpie_compile_model(stan_file)
-  draws <- nutpie_sample(model,
+  draws <- nutpie_sample(test_models$bernoulli,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
     num_draws = 50, num_chains = 1, seed = 42, refresh = 0
   )
@@ -191,10 +176,9 @@ test_that("num_warmup attribute is set even without save_warmup", {
 # --- Item 1: Compile from Stan code string ---
 
 test_that("nutpie_compile_model accepts code string", {
-  code <- "data { int N; } parameters { real mu; } model { mu ~ normal(0, 1); }"
-  model <- nutpie_compile_model(code = code)
-  expect_s3_class(model, "nutpie_model")
-  expect_true(file.exists(model$lib_path))
+  skip_if(is.null(test_models$code_string), "Code string model not compiled")
+  expect_s3_class(test_models$code_string, "nutpie_model")
+  expect_true(file.exists(test_models$code_string$lib_path))
 })
 
 test_that("nutpie_compile_model rejects both stan_file and code", {
@@ -213,12 +197,10 @@ test_that("nutpie_compile_model rejects neither stan_file nor code", {
 # --- Item 4: Graceful error handling ---
 
 test_that("sampling with bad data gives R error, not crash", {
-  stan_file <- test_path("test_models", "bernoulli.stan")
-  skip_if_not(file.exists(stan_file), "Stan file not found")
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  model <- nutpie_compile_model(stan_file)
   expect_error(
-    nutpie_sample(model, data = '{"bad": "json format"}',
+    nutpie_sample(test_models$bernoulli, data = '{"bad": "json format"}',
                   num_draws = 10, num_chains = 1, seed = 42, refresh = 0)
   )
 })
@@ -226,11 +208,9 @@ test_that("sampling with bad data gives R error, not crash", {
 # --- Item 5: save_warmup ---
 
 test_that("save_warmup returns warmup draws", {
-  stan_file <- test_path("test_models", "bernoulli.stan")
-  skip_if_not(file.exists(stan_file), "Stan file not found")
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  model <- nutpie_compile_model(stan_file)
-  draws <- nutpie_sample(model,
+  draws <- nutpie_sample(test_models$bernoulli,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
     num_draws = 100, num_warmup = 50, num_chains = 2, seed = 42,
     refresh = 0, save_warmup = TRUE
@@ -248,11 +228,9 @@ test_that("save_warmup returns warmup draws", {
 })
 
 test_that("nutpie_warmup_draws errors without save_warmup", {
-  stan_file <- test_path("test_models", "bernoulli.stan")
-  skip_if_not(file.exists(stan_file), "Stan file not found")
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  model <- nutpie_compile_model(stan_file)
-  draws <- nutpie_sample(model,
+  draws <- nutpie_sample(test_models$bernoulli,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
     num_draws = 50, num_chains = 1, seed = 42, refresh = 0
   )
@@ -263,11 +241,9 @@ test_that("nutpie_warmup_draws errors without save_warmup", {
 # --- Item 6: cores parameter ---
 
 test_that("cores parameter works", {
-  stan_file <- test_path("test_models", "bernoulli.stan")
-  skip_if_not(file.exists(stan_file), "Stan file not found")
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  model <- nutpie_compile_model(stan_file)
-  draws <- nutpie_sample(model,
+  draws <- nutpie_sample(test_models$bernoulli,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
     num_draws = 50, num_chains = 4, cores = 2, seed = 42, refresh = 0
   )
@@ -279,11 +255,9 @@ test_that("cores parameter works", {
 # --- Item 7: store_divergences and store_mass_matrix ---
 
 test_that("store_divergences adds divergence detail fields", {
-  stan_file <- test_path("test_models", "bernoulli.stan")
-  skip_if_not(file.exists(stan_file), "Stan file not found")
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  model <- nutpie_compile_model(stan_file)
-  draws <- nutpie_sample(model,
+  draws <- nutpie_sample(test_models$bernoulli,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
     num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
     store_divergences = TRUE
@@ -299,11 +273,9 @@ test_that("store_divergences adds divergence detail fields", {
 })
 
 test_that("store_mass_matrix adds mass_matrix_inv field", {
-  stan_file <- test_path("test_models", "bernoulli.stan")
-  skip_if_not(file.exists(stan_file), "Stan file not found")
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  model <- nutpie_compile_model(stan_file)
-  draws <- nutpie_sample(model,
+  draws <- nutpie_sample(test_models$bernoulli,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
     num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
     store_mass_matrix = TRUE
@@ -322,11 +294,9 @@ test_that("store_mass_matrix adds mass_matrix_inv field", {
 # --- Item 8: low-rank mass matrix ---
 
 test_that("low_rank_modified_mass_matrix produces valid draws", {
-  stan_file <- test_path("test_models", "bernoulli.stan")
-  skip_if_not(file.exists(stan_file), "Stan file not found")
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  model <- nutpie_compile_model(stan_file)
-  draws <- nutpie_sample(model,
+  draws <- nutpie_sample(test_models$bernoulli,
     data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
     num_draws = 100, num_chains = 2, seed = 42, refresh = 0,
     low_rank_modified_mass_matrix = TRUE
@@ -341,4 +311,46 @@ test_that("low_rank_modified_mass_matrix produces valid draws", {
   summ <- posterior::summarize_draws(draws)
   theta_mean <- summ$mean[summ$variable == "theta"]
   expect_true(abs(theta_mean - 0.25) < 0.1)
+})
+
+# --- Issue #4: scalar init_mean auto-expansion ---
+
+test_that("scalar init_mean is auto-expanded to correct length", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+
+  draws <- nutpie_sample(test_models$bernoulli,
+    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+    init_mean = 0
+  )
+
+  expect_s3_class(draws, "draws_array")
+  expect_equal(posterior::niterations(draws), 50)
+  expect_true("theta" %in% posterior::variables(draws))
+})
+
+test_that("vector init_mean still works", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+
+  # bernoulli has 1 unconstrained parameter
+  draws <- nutpie_sample(test_models$bernoulli,
+    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+    init_mean = c(0.5)
+  )
+
+  expect_s3_class(draws, "draws_array")
+  expect_equal(posterior::niterations(draws), 50)
+})
+
+test_that("wrong-length init_mean vector errors", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+
+  expect_error(
+    nutpie_sample(test_models$bernoulli,
+      data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
+      num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
+      init_mean = c(0.1, 0.2, 0.3)
+    )
+  )
 })

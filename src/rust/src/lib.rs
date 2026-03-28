@@ -10,6 +10,7 @@ use nuts_rs::{
 use rand::RngExt;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -352,7 +353,7 @@ fn sample_stan(
     eigval_cutoff: f64,
 ) -> Result<List> {
     // Parse init_mean from R (NULL or numeric vector)
-    let init_mean_vec: Option<Vec<f64>> = if init_mean.is_null() {
+    let init_mean_raw: Option<Vec<f64>> = if init_mean.is_null() {
         None
     } else {
         Some(
@@ -362,16 +363,25 @@ fn sample_stan(
         )
     };
 
+    // Create model first (without init_mean) to learn ndim, then set init_mean
     let stan_model = model::StanModel::new(
         std::path::Path::new(lib_path),
         data_json,
         seed as u32,
-        init_mean_vec,
+        None,
     )
     .map_err(r_err)?;
 
+    // Auto-expand scalar init_mean to the correct length
+    let init_mean_vec: Option<Vec<f64>> = match init_mean_raw {
+        Some(v) if v.len() == 1 => Some(vec![v[0]; stan_model.param_unc_num()]),
+        other => other,
+    };
+    let stan_model = stan_model.with_init_mean(init_mean_vec).map_err(r_err)?;
+
     let ndim = stan_model.num_constrained();
     let param_names: Vec<String> = stan_model.constrained_param_names().to_vec();
+    let expand_error_count = stan_model.expand_error_count_handle();
 
     let num_tune = num_warmup as usize;
     let n_draws_per_chain = num_draws as usize;
@@ -427,13 +437,16 @@ fn sample_stan(
         ().into_robj()
     };
 
+    let n_expand_errors = expand_error_count.load(Ordering::Relaxed) as i32;
+
     Ok(list!(
         draws = draws_robj,
         num_warmup = num_warmup,
         num_chains = num_chains,
         diagnostics = diagnostics,
         warmup_draws = warmup_draws_robj,
-        warmup_diagnostics = warmup_diagnostics_robj
+        warmup_diagnostics = warmup_diagnostics_robj,
+        expand_errors = n_expand_errors
     ))
 }
 

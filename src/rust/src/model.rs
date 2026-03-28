@@ -1,9 +1,9 @@
-use anyhow::Context;
 use nuts_rs::{CpuLogpFunc, CpuMath, CpuMathError, HasDims, Model};
 use rand::RngExt;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// Find the TBB DLL directory in the BridgeStan source tree and add it to PATH.
@@ -66,6 +66,8 @@ pub struct StanModel {
     num_constrained: usize,
     constrained_param_names: Vec<String>,
     init_mean: Option<Vec<f64>>,
+    /// Count of draws where param_constrain failed (GQ filled with NaN).
+    expand_errors: Arc<AtomicUsize>,
 }
 
 impl StanModel {
@@ -109,6 +111,7 @@ impl StanModel {
             num_constrained,
             constrained_param_names,
             init_mean,
+            expand_errors: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -118,6 +121,30 @@ impl StanModel {
 
     pub fn constrained_param_names(&self) -> &[String] {
         &self.constrained_param_names
+    }
+
+    /// Number of unconstrained parameters (for init_mean sizing).
+    pub fn param_unc_num(&self) -> usize {
+        self.ndim
+    }
+
+    /// Set init_mean after construction (enables scalar expansion in caller).
+    pub fn with_init_mean(mut self, init_mean: Option<Vec<f64>>) -> anyhow::Result<Self> {
+        if let Some(ref im) = init_mean {
+            anyhow::ensure!(
+                im.len() == self.ndim,
+                "init_mean length ({}) does not match model dimension ({})",
+                im.len(),
+                self.ndim
+            );
+        }
+        self.init_mean = init_mean;
+        Ok(self)
+    }
+
+    /// Get a handle to the expand error counter (survives model consumption by sampler).
+    pub fn expand_error_count_handle(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.expand_errors)
     }
 }
 
@@ -133,6 +160,7 @@ impl Model for StanModel {
             model: self,
             rng: bs_rng,
             expanded_buffer: vec![0f64; self.num_constrained],
+            expand_errors: Arc::clone(&self.expand_errors),
         }))
     }
 
@@ -163,6 +191,7 @@ pub struct StanDensity<'model> {
     model: &'model StanModel,
     rng: bridgestan::Rng<&'model bridgestan::StanLibrary>,
     expanded_buffer: Vec<f64>,
+    expand_errors: Arc<AtomicUsize>,
 }
 
 impl<'model> HasDims for StanDensity<'model> {
@@ -202,17 +231,21 @@ impl<'model> CpuLogpFunc for StanDensity<'model> {
         _rng: &mut R,
         array: &[f64],
     ) -> std::result::Result<Self::ExpandedVector, CpuMathError> {
-        self.model
-            .inner
-            .param_constrain(
-                array,
-                true,
-                true,
-                &mut self.expanded_buffer,
-                Some(&mut self.rng),
-            )
-            .context("Failed to constrain parameters")
-            .map_err(|e| CpuMathError::ExpandError(format!("{}", e)))?;
-        Ok(self.expanded_buffer.clone())
+        match self.model.inner.param_constrain(
+            array,
+            true,
+            true,
+            &mut self.expanded_buffer,
+            Some(&mut self.rng),
+        ) {
+            Ok(()) => Ok(self.expanded_buffer.clone()),
+            Err(_) => {
+                // param_constrain failed (e.g. generated quantities bounds violation).
+                // The draw itself is valid — fill expanded vector with NaN and continue.
+                self.expand_errors.fetch_add(1, Ordering::Relaxed);
+                self.expanded_buffer.fill(f64::NAN);
+                Ok(self.expanded_buffer.clone())
+            }
+        }
     }
 }

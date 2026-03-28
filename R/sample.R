@@ -18,9 +18,10 @@
 #' @param target_accept Target acceptance probability for step size adaptation.
 #' @param refresh How often to print progress updates, in draws per chain.
 #'   Set to `0` to suppress progress output. Default is `100`.
-#' @param init_mean Optional numeric vector of initial values in unconstrained
-#'   parameter space. Each chain starts at `init_mean + small jitter`. Length
-#'   must match the number of unconstrained parameters. If `NULL` (default),
+#' @param init_mean Optional initial values in unconstrained parameter space.
+#'   Each chain starts at `init_mean + small jitter`. Can be a single scalar
+#'   (automatically expanded to match the number of unconstrained parameters)
+#'   or a numeric vector whose length must match exactly. If `NULL` (default),
 #'   chains are initialized with `Uniform(-2, 2)`.
 #' @param save_warmup If `TRUE`, warmup draws and diagnostics are attached as
 #'   attributes. Retrieve them with [nutpie_warmup_draws()].
@@ -100,6 +101,17 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     warmup <- matrix_to_draws_array(raw$warmup_draws, num_warmup, num_chains)
     attr(draws, "warmup_draws") <- warmup
     attr(draws, "warmup_diagnostics") <- raw$warmup_diagnostics
+  }
+
+  n_expand_errors <- raw$expand_errors %||% 0L
+  if (n_expand_errors > 0L) {
+    warning(
+      n_expand_errors, " draw(s) had generated quantities that could not be ",
+      "computed (filled with NaN). This typically happens when the sampler ",
+      "explores extreme unconstrained values where parameter constraints ",
+      "(e.g. bounds) are violated during transformation.",
+      call. = FALSE
+    )
   }
 
   draws
