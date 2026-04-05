@@ -32,6 +32,15 @@
 #'   list columns to diagnostics.
 #' @param store_mass_matrix If `TRUE`, store the inverse mass matrix diagonal
 #'   at each draw. Adds a list column to diagnostics.
+#' @param pars An optional character vector of block-level parameter names
+#'   (e.g. `"beta"`, `"sigma"`). When supplied, only these parameters (or
+#'   all parameters *except* these, depending on `include`) are returned in the
+#'   output draws. By default (`NULL`), all parameters are returned. Parameter
+#'   names should be the Stan block names, not indexed names — e.g. `"beta"`
+#'   will match `beta`, `beta[1]`, `beta[2]`, etc.
+#' @param include Logical (default `TRUE`). If `TRUE`, `pars` specifies the
+#'   parameters to *keep* (whitelist). If `FALSE`, `pars` specifies parameters
+#'   to *exclude* (blacklist). Ignored when `pars` is `NULL`.
 #' @param low_rank_modified_mass_matrix If `TRUE`, use low-rank modified mass
 #'   matrix adaptation. This can improve sampling efficiency for models with
 #'   correlated parameters by capturing posterior correlations in the mass
@@ -53,6 +62,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           max_treedepth = 10L, target_accept = 0.8,
                           refresh = 100L, init_mean = NULL,
                           save_warmup = FALSE, cores = NULL,
+                          pars = NULL, include = TRUE,
                           store_divergences = FALSE,
                           store_mass_matrix = FALSE,
                           low_rank_modified_mass_matrix = FALSE,
@@ -92,6 +102,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     as.double(mass_matrix_eigval_cutoff)
   )
   draws <- matrix_to_draws_array(raw$draws, num_draws, num_chains)
+  draws <- filter_pars(draws, pars, include)
   attr(draws, "diagnostics") <- raw$diagnostics
   attr(draws, "num_chains") <- num_chains
   attr(draws, "num_warmup") <- num_warmup
@@ -99,6 +110,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
 
   if (isTRUE(save_warmup) && !is.null(raw$warmup_draws)) {
     warmup <- matrix_to_draws_array(raw$warmup_draws, num_warmup, num_chains)
+    warmup <- filter_pars(warmup, pars, include)
     attr(draws, "warmup_draws") <- warmup
     attr(draws, "warmup_diagnostics") <- raw$warmup_diagnostics
   }
