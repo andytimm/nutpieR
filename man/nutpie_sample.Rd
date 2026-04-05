@@ -17,6 +17,8 @@ nutpie_sample(
   init_mean = NULL,
   save_warmup = FALSE,
   cores = NULL,
+  pars = NULL,
+  include = TRUE,
   store_divergences = FALSE,
   store_mass_matrix = FALSE,
   low_rank_modified_mass_matrix = FALSE,
@@ -52,9 +54,10 @@ steps per draw is at most \code{2^max_treedepth}.}
 \item{refresh}{How often to print progress updates, in draws per chain.
 Set to \code{0} to suppress progress output. Default is \code{100}.}
 
-\item{init_mean}{Optional numeric vector of initial values in unconstrained
-parameter space. Each chain starts at \verb{init_mean + small jitter}. Length
-must match the number of unconstrained parameters. If \code{NULL} (default),
+\item{init_mean}{Optional initial values in unconstrained parameter space.
+Each chain starts at \verb{init_mean + small jitter}. Can be a single scalar
+(automatically expanded to match the number of unconstrained parameters)
+or a numeric vector whose length must match exactly. If \code{NULL} (default),
 chains are initialized with \code{Uniform(-2, 2)}.}
 
 \item{save_warmup}{If \code{TRUE}, warmup draws and diagnostics are attached as
@@ -62,6 +65,17 @@ attributes. Retrieve them with \code{\link[=nutpie_warmup_draws]{nutpie_warmup_d
 
 \item{cores}{Number of CPU cores to use for parallel sampling. Defaults to
 \code{min(num_chains, parallel::detectCores())}.}
+
+\item{pars}{An optional character vector of block-level parameter names
+(e.g. \code{"beta"}, \code{"sigma"}). When supplied, only these parameters (or
+all parameters \emph{except} these, depending on \code{include}) are returned in the
+output draws. By default (\code{NULL}), all parameters are returned. Parameter
+names should be the Stan block names, not indexed names — e.g. \code{"beta"}
+will match \code{beta}, \code{beta[1]}, \code{beta[2]}, etc.}
+
+\item{include}{Logical (default \code{TRUE}). If \code{TRUE}, \code{pars} specifies the
+parameters to \emph{keep} (whitelist). If \code{FALSE}, \code{pars} specifies parameters
+to \emph{exclude} (blacklist). Ignored when \code{pars} is \code{NULL}.}
 
 \item{store_divergences}{If \code{TRUE}, store detailed information about each
 divergent transition (start/end positions, momentum, gradient). Adds
@@ -87,6 +101,8 @@ Eigenvalues outside \verb{(1/cutoff, cutoff)} are ignored. Only used when
 A \code{posterior::draws_array} with dimensions
 \verb{(num_draws, num_chains, n_params)}. Sampler diagnostics are attached
 as an attribute and can be retrieved with \code{\link[=nutpie_diagnostics]{nutpie_diagnostics()}}.
+The attributes \code{"num_warmup"} and \code{"num_draws"} record the sampling
+configuration (accessible via \code{attr(draws, "num_warmup")} etc.).
 }
 \description{
 Runs the nuts-rs NUTS sampler on a compiled Stan model.

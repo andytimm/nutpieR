@@ -1,3 +1,9 @@
+# nutpieR 1.1.0
+
+* New `pars` and `include` arguments in `nutpie_sample()` allow selecting which
+  parameters to keep or exclude from the output draws, matching the rstan
+  convention. Useful for dropping nuisance parameters to save memory (#5).
+
 # nutpieR 1.0.1
 
 * `init_mean` now accepts a scalar value that is automatically expanded to the
