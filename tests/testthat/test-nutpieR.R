@@ -354,3 +354,85 @@ test_that("wrong-length init_mean vector errors", {
     )
   )
 })
+
+# --- Issue #5: pars and include ---
+
+test_that("pars whitelist keeps only selected parameters", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  draws <- nutpie_sample(test_models$normal,
+    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+    pars = "mu"
+  )
+
+  vars <- posterior::variables(draws)
+  expect_equal(vars, "mu")
+})
+
+test_that("pars blacklist excludes selected parameters", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  draws <- nutpie_sample(test_models$normal,
+    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+    pars = "mu", include = FALSE
+  )
+
+  vars <- posterior::variables(draws)
+  expect_false("mu" %in% vars)
+  expect_true("sigma" %in% vars)
+})
+
+test_that("pars = NULL returns all parameters (default)", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  draws <- nutpie_sample(test_models$normal,
+    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0
+  )
+
+  vars <- posterior::variables(draws)
+  expect_true("mu" %in% vars)
+  expect_true("sigma" %in% vars)
+})
+
+test_that("pars errors on unknown parameter names", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  expect_error(
+    nutpie_sample(test_models$normal,
+      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+      num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+      pars = "nonexistent"
+    ),
+    "Unknown parameter"
+  )
+})
+
+test_that("pars exclusion of all parameters errors", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  expect_error(
+    nutpie_sample(test_models$normal,
+      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+      num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+      pars = c("mu", "sigma"), include = FALSE
+    ),
+    "remove all variables"
+  )
+})
+
+test_that("pars filters warmup draws too", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  draws <- nutpie_sample(test_models$normal,
+    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    num_draws = 50, num_warmup = 50, num_chains = 1, seed = 42,
+    refresh = 0, save_warmup = TRUE, pars = "sigma"
+  )
+
+  expect_equal(posterior::variables(draws), "sigma")
+  warmup <- nutpie_warmup_draws(draws)
+  expect_equal(posterior::variables(warmup), "sigma")
+})
