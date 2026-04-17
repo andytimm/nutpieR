@@ -27,7 +27,6 @@ sample_normal <- function(num_draws, num_chains, seed) .Call(wrap__sample_normal
 #' @keywords internal
 compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__compile_stan_model, stan_file, stanc_args, compile_args)
 
-#' Sample from a Stan model using nuts-rs NUTS sampler.
 #' @param lib_path Path to the compiled Stan shared library.
 #' @param data_json JSON string with model data (empty string for no data).
 #' @param num_draws Number of draws per chain after warmup.
@@ -37,18 +36,41 @@ compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__
 #' @param max_treedepth Maximum tree depth for NUTS.
 #' @param target_accept Target acceptance probability for step size adaptation.
 #' @param refresh Print progress every `refresh` draws per chain (0 = no progress).
-#' @param init_mean Optional numeric vector of initial values in unconstrained space.
+#' @param init_mean Optional numeric vector of initial values in unconstrained space (legacy, jittered).
+#' @param init_positions Optional list of numeric vectors (one per chain, or length 1 = broadcast).
+#' @param jitter If TRUE, apply ±0.5 uniform jitter per coordinate.
 #' @param save_warmup Whether to return warmup draws.
 #' @param num_cores Number of CPU cores to use for parallel sampling.
 #' @param store_divergences Whether to store detailed divergence information.
 #' @param store_mass_matrix Whether to store the mass matrix at each draw.
 #' @param low_rank Whether to use low-rank modified mass matrix adaptation.
-#' @param mass_matrix_gamma Regularisation parameter for low-rank mass matrix.
-#' @param eigval_cutoff Eigenvalue cutoff for low-rank mass matrix.
+#' @param mass_matrix_gamma Regularisation parameter for low-rank mass matrix (default 1e-5).
+#' @param eigval_cutoff Eigenvalue cutoff for low-rank mass matrix (default 2.0).
 #' @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 #'   and optionally warmup_draws and warmup_diagnostics.
 #' @keywords internal
-sample_stan <- function(lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_mean, save_warmup, num_cores, store_divergences, store_mass_matrix, low_rank, mass_matrix_gamma, eigval_cutoff) .Call(wrap__sample_stan, lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_mean, save_warmup, num_cores, store_divergences, store_mass_matrix, low_rank, mass_matrix_gamma, eigval_cutoff)
+sample_stan <- function(lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_mean, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, low_rank, mass_matrix_gamma, eigval_cutoff) .Call(wrap__sample_stan, lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_mean, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, low_rank, mass_matrix_gamma, eigval_cutoff)
+
+#' Return the constrained parameter names (with transformed parameters and
+#' generated quantities included) for a compiled Stan model. Indices use the
+#' BridgeStan dot convention (e.g. `"beta.1.2"`).
+#' @keywords internal
+get_param_names <- function(lib_path, data_json) .Call(wrap__get_param_names, lib_path, data_json)
+
+#' Return the unconstrained parameter names for a compiled Stan model.
+#' Indices use the BridgeStan dot convention (e.g. `"beta.1.2"`).
+#' @keywords internal
+get_param_unc_names <- function(lib_path, data_json) .Call(wrap__get_param_unc_names, lib_path, data_json)
+
+#' Map a constrained point (JSON, CmdStan format) to the unconstrained space.
+#' All parameters must be present in the JSON.
+#' @keywords internal
+param_unconstrain_json_rs <- function(lib_path, data_json, init_json) .Call(wrap__param_unconstrain_json_rs, lib_path, data_json, init_json)
+
+#' Map an unconstrained position to the constrained scale (including
+#' transformed parameters and generated quantities).
+#' @keywords internal
+param_constrain_rs <- function(lib_path, data_json, theta_unc, seed) .Call(wrap__param_constrain_rs, lib_path, data_json, theta_unc, seed)
 
 
 # nolint end

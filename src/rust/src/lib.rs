@@ -9,6 +9,7 @@ use nuts_rs::{
 };
 use rand::RngExt;
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -321,7 +322,9 @@ fn run_sampler<S: Settings>(
 /// @param max_treedepth Maximum tree depth for NUTS.
 /// @param target_accept Target acceptance probability for step size adaptation.
 /// @param refresh Print progress every `refresh` draws per chain (0 = no progress).
-/// @param init_mean Optional numeric vector of initial values in unconstrained space.
+/// @param init_mean Optional numeric vector of initial values in unconstrained space (legacy, jittered).
+/// @param init_positions Optional list of numeric vectors (one per chain, or length 1 = broadcast).
+/// @param jitter If TRUE, apply ±0.5 uniform jitter per coordinate.
 /// @param save_warmup Whether to return warmup draws.
 /// @param num_cores Number of CPU cores to use for parallel sampling.
 /// @param store_divergences Whether to store detailed divergence information.
@@ -344,6 +347,8 @@ fn sample_stan(
     target_accept: f64,
     refresh: i32,
     init_mean: Robj,
+    init_positions: Robj,
+    jitter: bool,
     save_warmup: bool,
     num_cores: i32,
     store_divergences: bool,
@@ -352,7 +357,7 @@ fn sample_stan(
     mass_matrix_gamma: f64,
     eigval_cutoff: f64,
 ) -> Result<List> {
-    // Parse init_mean from R (NULL or numeric vector)
+    // Parse init_mean (NULL or numeric vector) — legacy path (jittered).
     let init_mean_raw: Option<Vec<f64>> = if init_mean.is_null() {
         None
     } else {
@@ -363,7 +368,33 @@ fn sample_stan(
         )
     };
 
-    // Create model first (without init_mean) to learn ndim, then set init_mean
+    // Parse init_positions (NULL or list of numeric vectors) — per-chain path.
+    let init_positions_raw: Option<Vec<Vec<f64>>> = if init_positions.is_null() {
+        None
+    } else {
+        let lst = init_positions
+            .as_list()
+            .ok_or_else(|| Error::Other("init_positions must be a list of numeric vectors".into()))?;
+        let mut out = Vec::with_capacity(lst.len());
+        for (i, (_, el)) in lst.iter().enumerate() {
+            let v = el.as_real_vector().ok_or_else(|| {
+                Error::Other(format!(
+                    "init_positions[[{}]] must be a numeric vector",
+                    i + 1
+                ))
+            })?;
+            out.push(v);
+        }
+        Some(out)
+    };
+
+    if init_mean_raw.is_some() && init_positions_raw.is_some() {
+        return Err(Error::Other(
+            "init_mean and init_positions are mutually exclusive".into(),
+        ));
+    }
+
+    // Create model first to learn ndim, then apply init configuration.
     let stan_model = model::StanModel::new(
         std::path::Path::new(lib_path),
         data_json,
@@ -372,12 +403,18 @@ fn sample_stan(
     )
     .map_err(r_err)?;
 
-    // Auto-expand scalar init_mean to the correct length
-    let init_mean_vec: Option<Vec<f64>> = match init_mean_raw {
-        Some(v) if v.len() == 1 => Some(vec![v[0]; stan_model.param_unc_num()]),
-        other => other,
+    let stan_model = if let Some(positions) = init_positions_raw {
+        stan_model
+            .with_init_positions(Some(positions), jitter)
+            .map_err(r_err)?
+    } else {
+        // Auto-expand scalar init_mean to the correct length.
+        let init_mean_vec: Option<Vec<f64>> = match init_mean_raw {
+            Some(v) if v.len() == 1 => Some(vec![v[0]; stan_model.param_unc_num()]),
+            other => other,
+        };
+        stan_model.with_init_mean(init_mean_vec).map_err(r_err)?
     };
-    let stan_model = stan_model.with_init_mean(init_mean_vec).map_err(r_err)?;
 
     let ndim = stan_model.num_constrained();
     let param_names: Vec<String> = stan_model.constrained_param_names().to_vec();
@@ -676,9 +713,92 @@ fn extract_large_list_f64(
     }
 }
 
+/// Return the constrained parameter names (with transformed parameters and
+/// generated quantities included) for a compiled Stan model. Indices use the
+/// BridgeStan dot convention (e.g. `"beta.1.2"`).
+/// @keywords internal
+#[extendr]
+fn get_param_names(lib_path: &str, data_json: &str) -> Result<Vec<String>> {
+    let model = model::open_bs_model(std::path::Path::new(lib_path), data_json, 0).map_err(r_err)?;
+    Ok(model
+        .param_names(true, true)
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect())
+}
+
+/// Return the unconstrained parameter names for a compiled Stan model.
+/// Indices use the BridgeStan dot convention (e.g. `"beta.1.2"`).
+/// @keywords internal
+#[extendr]
+fn get_param_unc_names(lib_path: &str, data_json: &str) -> Result<Vec<String>> {
+    let mut model =
+        model::open_bs_model(std::path::Path::new(lib_path), data_json, 0).map_err(r_err)?;
+    Ok(model
+        .param_unc_names()
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect())
+}
+
+/// Map a constrained point (JSON, CmdStan format) to the unconstrained space.
+/// All parameters must be present in the JSON.
+/// @keywords internal
+#[extendr]
+fn param_unconstrain_json_rs(
+    lib_path: &str,
+    data_json: &str,
+    init_json: &str,
+) -> Result<Vec<f64>> {
+    let model = model::open_bs_model(std::path::Path::new(lib_path), data_json, 0).map_err(r_err)?;
+    let ndim = model.param_unc_num();
+    let mut out = vec![0.0f64; ndim];
+    let cjson = CString::new(init_json)
+        .map_err(|e| Error::Other(format!("init JSON contained interior NUL: {e}")))?;
+    model
+        .param_unconstrain_json(&cjson, &mut out)
+        .map_err(r_err)?;
+    Ok(out)
+}
+
+/// Map an unconstrained position to the constrained scale (including
+/// transformed parameters and generated quantities).
+/// @keywords internal
+#[extendr]
+fn param_constrain_rs(
+    lib_path: &str,
+    data_json: &str,
+    theta_unc: Vec<f64>,
+    seed: i32,
+) -> Result<Vec<f64>> {
+    let model = model::open_bs_model(std::path::Path::new(lib_path), data_json, seed as u32)
+        .map_err(r_err)?;
+    let ndim_unc = model.param_unc_num();
+    if theta_unc.len() != ndim_unc {
+        return Err(Error::Other(format!(
+            "theta_unc length {} does not match model dimension {}",
+            theta_unc.len(),
+            ndim_unc
+        )));
+    }
+    let n_out = model.param_num(true, true);
+    let mut out = vec![0.0f64; n_out];
+    let mut rng = model.new_rng(seed as u32).map_err(r_err)?;
+    model
+        .param_constrain(&theta_unc, true, true, &mut out, Some(&mut rng))
+        .map_err(r_err)?;
+    Ok(out)
+}
+
 extendr_module! {
     mod nutpieR;
     fn sample_normal;
     fn compile_stan_model;
     fn sample_stan;
+    fn get_param_names;
+    fn get_param_unc_names;
+    fn param_unconstrain_json_rs;
+    fn param_constrain_rs;
 }

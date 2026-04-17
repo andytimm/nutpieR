@@ -1,5 +1,6 @@
 use nuts_rs::{CpuLogpFunc, CpuMath, CpuMathError, HasDims, Model};
 use rand::RngExt;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
@@ -42,6 +43,23 @@ fn add_tbb_to_path() {
     }
 }
 
+/// Open a `bridgestan::Model` with the TBB PATH fixup applied.
+/// Returns the model wrapped so the caller owns the StanLibrary Arc.
+pub fn open_bs_model(
+    lib_path: &Path,
+    data_json: &str,
+    seed: u32,
+) -> anyhow::Result<bridgestan::Model<Arc<bridgestan::StanLibrary>>> {
+    add_tbb_to_path();
+    let lib = Arc::new(bridgestan::open_library(lib_path)?);
+    let data = if data_json.is_empty() {
+        None
+    } else {
+        Some(CString::new(data_json)?)
+    };
+    Ok(bridgestan::Model::new(lib, data.as_deref(), seed)?)
+}
+
 // --- Error type ---
 
 #[derive(Debug, thiserror::Error)]
@@ -60,12 +78,30 @@ impl nuts_rs::LogpError for StanLogpError {
 
 // --- StanModel: factory for per-chain instances ---
 
+// Per-chain id, set by Model::math() on the worker thread that owns the chain.
+// nuts-rs's Sampler::start spawns one scoped task per chain; that task calls
+// math() once, then init_position() (up to 500 times) on the same thread. We
+// use math() as the chain-id assignment point. Rayon workers are reused across
+// chains, so the value is overwritten by each new chain's first math() call —
+// there is never a window where init_position runs without a current chain id
+// set by the same task's earlier math() call.
+thread_local! {
+    static MY_CHAIN_ID: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
 pub struct StanModel {
     inner: Arc<bridgestan::Model<Arc<bridgestan::StanLibrary>>>,
     ndim: usize,
     num_constrained: usize,
     constrained_param_names: Vec<String>,
-    init_mean: Option<Vec<f64>>,
+    /// One position per chain. `len() == 1` means broadcast to all chains.
+    /// Each vector has length `ndim` (unconstrained space).
+    init_positions: Option<Vec<Vec<f64>>>,
+    /// If true, apply ±0.5 uniform jitter (legacy `init_mean` behaviour).
+    /// If false, chains start exactly at the provided position.
+    jitter: bool,
+    /// Assigns a unique chain id (0..num_chains) on each `math()` call.
+    chain_counter: AtomicUsize,
     /// Count of draws where param_constrain failed (GQ filled with NaN).
     expand_errors: Arc<AtomicUsize>,
 }
@@ -77,14 +113,7 @@ impl StanModel {
         seed: u32,
         init_mean: Option<Vec<f64>>,
     ) -> anyhow::Result<Self> {
-        add_tbb_to_path();
-        let lib = Arc::new(bridgestan::open_library(lib_path)?);
-        let data = if data_json.is_empty() {
-            None
-        } else {
-            Some(CString::new(data_json)?)
-        };
-        let model = bridgestan::Model::new(Arc::clone(&lib), data.as_deref(), seed)?;
+        let model = open_bs_model(lib_path, data_json, seed)?;
         let ndim = model.param_unc_num();
 
         // Validate init_mean length
@@ -105,12 +134,15 @@ impl StanModel {
             .map(|s| s.to_string())
             .collect();
         let inner = Arc::new(model);
+        let init_positions = init_mean.map(|v| vec![v]);
         Ok(StanModel {
             inner,
             ndim,
             num_constrained,
             constrained_param_names,
-            init_mean,
+            init_positions,
+            jitter: true,
+            chain_counter: AtomicUsize::new(0),
             expand_errors: Arc::new(AtomicUsize::new(0)),
         })
     }
@@ -128,7 +160,8 @@ impl StanModel {
         self.ndim
     }
 
-    /// Set init_mean after construction (enables scalar expansion in caller).
+    /// Set a single `init_mean` (broadcast to all chains with ±0.5 jitter).
+    /// Legacy API; prefer `with_init_positions`.
     pub fn with_init_mean(mut self, init_mean: Option<Vec<f64>>) -> anyhow::Result<Self> {
         if let Some(ref im) = init_mean {
             anyhow::ensure!(
@@ -138,7 +171,37 @@ impl StanModel {
                 self.ndim
             );
         }
-        self.init_mean = init_mean;
+        self.init_positions = init_mean.map(|v| vec![v]);
+        self.jitter = true;
+        Ok(self)
+    }
+
+    /// Set per-chain init positions (unconstrained space).
+    ///
+    /// `positions` may have length 1 (broadcast) or `num_chains`. Each inner
+    /// vector must have length `param_unc_num()`. If `jitter = true`,
+    /// ±0.5 uniform jitter is added per-coordinate (matches legacy
+    /// `init_mean` behaviour). If `jitter = false`, the position is used
+    /// exactly.
+    pub fn with_init_positions(
+        mut self,
+        positions: Option<Vec<Vec<f64>>>,
+        jitter: bool,
+    ) -> anyhow::Result<Self> {
+        if let Some(ref ps) = positions {
+            anyhow::ensure!(!ps.is_empty(), "init positions list must be non-empty");
+            for (i, p) in ps.iter().enumerate() {
+                anyhow::ensure!(
+                    p.len() == self.ndim,
+                    "init position #{} has length {}, expected {}",
+                    i,
+                    p.len(),
+                    self.ndim
+                );
+            }
+        }
+        self.init_positions = positions;
+        self.jitter = jitter;
         Ok(self)
     }
 
@@ -155,6 +218,10 @@ impl Model for StanModel {
         &self,
         rng: &mut R,
     ) -> anyhow::Result<Self::Math<'_>> {
+        // Claim a chain id for this worker thread. See MY_CHAIN_ID doc comment.
+        let chain_id = self.chain_counter.fetch_add(1, Ordering::SeqCst);
+        MY_CHAIN_ID.with(|c| c.set(Some(chain_id)));
+
         let bs_rng = self.inner.new_rng(rng.next_u32())?;
         Ok(CpuMath::new(StanDensity {
             model: self,
@@ -169,10 +236,17 @@ impl Model for StanModel {
         rng: &mut R,
         position: &mut [f64],
     ) -> anyhow::Result<()> {
-        match &self.init_mean {
-            Some(im) => {
-                for (p, &m) in position.iter_mut().zip(im.iter()) {
-                    *p = m + rng.random_range(-0.5..0.5);
+        match &self.init_positions {
+            Some(positions) => {
+                let chain_id = MY_CHAIN_ID.with(|c| c.get()).unwrap_or(0);
+                let idx = chain_id % positions.len();
+                let src = &positions[idx];
+                if self.jitter {
+                    for (p, &m) in position.iter_mut().zip(src.iter()) {
+                        *p = m + rng.random_range(-0.5..0.5);
+                    }
+                } else {
+                    position.copy_from_slice(src);
                 }
             }
             None => {

@@ -1,3 +1,18 @@
+# nutpieR 1.2.0
+
+* New `init` argument in `nutpie_sample()` accepts initial values on the
+  constrained (user-facing) scale, either as a named list (broadcast to all
+  chains), a list of `num_chains` named lists (per-chain starts), or a path to
+  a CmdStan-style JSON file. Missing parameters are filled with random draws
+  per chain (#8).
+* New `init_unconstrained` argument takes a named numeric vector (or list of
+  vectors) on the unconstrained scale and uses the values exactly — no jitter.
+  Names are validated against the model's unconstrained parameter names.
+* New introspection helpers: `nutpie_param_names()` returns the parameter
+  names (constrained or unconstrained), and `nutpie_unconstrain()` maps a
+  constrained named list to the unconstrained vector used internally.
+* `init_mean` is preserved for backwards compatibility.
+
 # nutpieR 1.1.0
 
 * New `pars` and `include` arguments in `nutpie_sample()` allow selecting which
