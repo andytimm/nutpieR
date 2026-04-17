@@ -107,25 +107,9 @@ pub struct StanModel {
 }
 
 impl StanModel {
-    pub fn new(
-        lib_path: &Path,
-        data_json: &str,
-        seed: u32,
-        init_mean: Option<Vec<f64>>,
-    ) -> anyhow::Result<Self> {
+    pub fn new(lib_path: &Path, data_json: &str, seed: u32) -> anyhow::Result<Self> {
         let model = open_bs_model(lib_path, data_json, seed)?;
         let ndim = model.param_unc_num();
-
-        // Validate init_mean length
-        if let Some(ref im) = init_mean {
-            anyhow::ensure!(
-                im.len() == ndim,
-                "init_mean length ({}) does not match model dimension ({})",
-                im.len(),
-                ndim
-            );
-        }
-
         let num_constrained = model.param_num(true, true);
         let constrained_param_names: Vec<String> = model
             .param_names(true, true)
@@ -133,15 +117,13 @@ impl StanModel {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
             .collect();
-        let inner = Arc::new(model);
-        let init_positions = init_mean.map(|v| vec![v]);
         Ok(StanModel {
-            inner,
+            inner: Arc::new(model),
             ndim,
             num_constrained,
             constrained_param_names,
-            init_positions,
-            jitter: true,
+            init_positions: None,
+            jitter: false,
             chain_counter: AtomicUsize::new(0),
             expand_errors: Arc::new(AtomicUsize::new(0)),
         })

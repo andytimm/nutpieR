@@ -14,8 +14,12 @@
 #' @return A character vector of parameter names.
 #' @export
 nutpie_param_names <- function(model, data = NULL, unconstrained = TRUE) {
-  lib_path <- resolve_model(model)
-  data_json <- resolve_data(data)
+  param_names_bracket(resolve_model(model), resolve_data(data),
+                      unconstrained = unconstrained)
+}
+
+#' @noRd
+param_names_bracket <- function(lib_path, data_json, unconstrained) {
   raw <- if (isTRUE(unconstrained)) {
     get_param_unc_names(lib_path, data_json)
   } else {
@@ -51,6 +55,6 @@ nutpie_unconstrain <- function(model, params, data = NULL) {
   data_json <- resolve_data(data)
   init_json <- jsonlite::toJSON(params, auto_unbox = TRUE, digits = NA)
   unc <- param_unconstrain_json_rs(lib_path, data_json, init_json)
-  unc_names <- dot_to_bracket(get_param_unc_names(lib_path, data_json))
-  stats::setNames(unc, unc_names)
+  stats::setNames(unc, param_names_bracket(lib_path, data_json,
+                                           unconstrained = TRUE))
 }

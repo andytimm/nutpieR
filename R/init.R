@@ -29,7 +29,6 @@ resolve_init <- function(init, init_unconstrained, init_mean, lib_path, data_jso
     return(list(positions = positions, jitter = FALSE))
   }
 
-  # init_mean (or nothing) — legacy path, handled in Rust via init_mean arg.
   list(positions = NULL, jitter = TRUE)
 }
 
@@ -41,13 +40,7 @@ resolve_init <- function(init, init_unconstrained, init_mean, lib_path, data_jso
 #' @noRd
 expand_constrained_init <- function(params_list, lib_path, data_json) {
   unc_names_raw <- get_param_unc_names(lib_path, data_json)
-  ndim <- length(unc_names_raw)
-
-  # Get the user's parameter names (the param-block names only).
-  # param_names(include_tp=FALSE, include_gq=FALSE) isn't exposed separately;
-  # instead we use the unconstrained names (same as constrained block-level
-  # names, up to reshape) to infer the valid top-level param names.
-  valid_block_names <- unique(sub("[.\\[].*$", "", unc_names_raw))
+  valid_block_names <- unique(sub("\\..*$", "", unc_names_raw))
 
   bad <- setdiff(names(params_list), valid_block_names)
   if (length(bad) > 0L) {
@@ -56,29 +49,21 @@ expand_constrained_init <- function(params_list, lib_path, data_json) {
          call. = FALSE)
   }
 
-  # Build a full unconstrained vector from a random draw, constrain it to get
-  # well-formed shapes for every declared parameter, then overlay user values.
-  rand_unc <- stats::runif(ndim, min = -2, max = 2)
-  flat_con <- param_constrain_rs(
-    lib_path, data_json, rand_unc,
-    as.integer(sample.int(.Machine$integer.max, 1L))
-  )
-  con_names_raw <- get_param_names(lib_path, data_json)
-  if (length(flat_con) != length(con_names_raw)) {
-    stop("Internal: param_constrain returned ", length(flat_con),
-         " values but param_names has ", length(con_names_raw), " entries.",
-         call. = FALSE)
-  }
-
-  structured <- reconstruct_stan_json(flat_con, con_names_raw)
-
-  # Keep only block-level params (drop transformed parameters & generated
-  # quantities — they aren't inputs to param_unconstrain_json).
-  structured <- structured[intersect(names(structured), valid_block_names)]
-
-  # Overlay user-provided values.
-  for (nm in names(params_list)) {
-    structured[[nm]] <- params_list[[nm]]
+  missing_params <- setdiff(valid_block_names, names(params_list))
+  structured <- if (length(missing_params) == 0L) {
+    params_list
+  } else {
+    # Fill missing params by constraining a random unconstrained draw, so we
+    # get well-formed shapes (arrays / matrices) for every declared parameter.
+    rand_unc <- stats::runif(length(unc_names_raw), min = -2, max = 2)
+    flat_con <- param_constrain_rs(
+      lib_path, data_json, rand_unc,
+      as.integer(sample.int(.Machine$integer.max, 1L))
+    )
+    con_names_raw <- get_param_names(lib_path, data_json)
+    defaults <- reconstruct_stan_json(flat_con, con_names_raw)
+    defaults <- defaults[intersect(names(defaults), valid_block_names)]
+    modifyList(defaults, params_list)
   }
 
   init_json <- jsonlite::toJSON(structured, auto_unbox = TRUE, digits = NA,
@@ -209,7 +194,7 @@ is_single_named_param_list <- function(x) {
 #' @noRd
 init_unc_to_positions <- function(init_unconstrained, lib_path, data_json,
                                     num_chains) {
-  unc_names <- dot_to_bracket(get_param_unc_names(lib_path, data_json))
+  unc_names <- param_names_bracket(lib_path, data_json, unconstrained = TRUE)
   ndim <- length(unc_names)
 
   if (is.numeric(init_unconstrained)) {

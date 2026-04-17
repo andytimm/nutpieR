@@ -394,21 +394,15 @@ fn sample_stan(
         ));
     }
 
-    // Create model first to learn ndim, then apply init configuration.
-    let stan_model = model::StanModel::new(
-        std::path::Path::new(lib_path),
-        data_json,
-        seed as u32,
-        None,
-    )
-    .map_err(r_err)?;
+    let stan_model =
+        model::StanModel::new(std::path::Path::new(lib_path), data_json, seed as u32)
+            .map_err(r_err)?;
 
     let stan_model = if let Some(positions) = init_positions_raw {
         stan_model
             .with_init_positions(Some(positions), jitter)
             .map_err(r_err)?
     } else {
-        // Auto-expand scalar init_mean to the correct length.
         let init_mean_vec: Option<Vec<f64>> = match init_mean_raw {
             Some(v) if v.len() == 1 => Some(vec![v[0]; stan_model.param_unc_num()]),
             other => other,
