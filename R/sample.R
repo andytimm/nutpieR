@@ -104,8 +104,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                                 handle, num_chains)
 
   raw <- sample_stan(
-    lib_path,
-    data_json,
+    handle,
     num_draws,
     num_warmup,
     num_chains,
@@ -113,7 +112,6 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     as.integer(max_treedepth),
     as.double(target_accept),
     as.integer(refresh),
-    init_mean,
     init_resolved$positions,
     isTRUE(init_resolved$jitter),
     isTRUE(save_warmup),

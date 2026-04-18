@@ -158,26 +158,17 @@ pub struct StanModel {
 }
 
 impl StanModel {
-    pub fn new(lib_path: &Path, data_json: &str, seed: u32) -> anyhow::Result<Self> {
-        let model = open_bs_model(lib_path, data_json, seed)?;
-        let ndim = model.param_unc_num();
-        let num_constrained = model.param_num(true, true);
-        let constrained_param_names: Vec<String> = model
-            .param_names(true, true)
-            .split(',')
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect();
-        Ok(StanModel {
-            inner: Arc::new(model),
-            ndim,
-            num_constrained,
-            constrained_param_names,
+    pub fn new(handle: &BSHandle) -> Self {
+        StanModel {
+            inner: Arc::clone(&handle.model),
+            ndim: handle.ndim_unc,
+            num_constrained: handle.ndim_full,
+            constrained_param_names: handle.full_names.clone(),
             init_positions: None,
             jitter: false,
             chain_counter: AtomicUsize::new(0),
             expand_errors: Arc::new(AtomicUsize::new(0)),
-        })
+        }
     }
 
     pub fn num_constrained(&self) -> usize {
@@ -186,27 +177,6 @@ impl StanModel {
 
     pub fn constrained_param_names(&self) -> &[String] {
         &self.constrained_param_names
-    }
-
-    /// Number of unconstrained parameters (for init_mean sizing).
-    pub fn param_unc_num(&self) -> usize {
-        self.ndim
-    }
-
-    /// Set a single `init_mean` (broadcast to all chains with ±0.5 jitter).
-    /// Legacy API; prefer `with_init_positions`.
-    pub fn with_init_mean(mut self, init_mean: Option<Vec<f64>>) -> anyhow::Result<Self> {
-        if let Some(ref im) = init_mean {
-            anyhow::ensure!(
-                im.len() == self.ndim,
-                "init_mean length ({}) does not match model dimension ({})",
-                im.len(),
-                self.ndim
-            );
-        }
-        self.init_positions = init_mean.map(|v| vec![v]);
-        self.jitter = true;
-        Ok(self)
     }
 
     /// Set per-chain init positions (unconstrained space).

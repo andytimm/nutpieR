@@ -28,6 +28,23 @@ resolve_init <- function(init, init_unconstrained, init_mean, handle,
     return(list(positions = positions, jitter = FALSE))
   }
 
+  if (!is.null(init_mean)) {
+    if (!is.numeric(init_mean)) {
+      stop("`init_mean` must be a numeric vector.", call. = FALSE)
+    }
+    ndim <- bs_ndim_unc(handle)
+    vec <- if (length(init_mean) == 1L) {
+      rep(as.numeric(init_mean), ndim)
+    } else {
+      as.numeric(init_mean)
+    }
+    if (length(vec) != ndim) {
+      stop("`init_mean` length (", length(vec),
+           ") does not match model dimension (", ndim, ").", call. = FALSE)
+    }
+    return(list(positions = list(vec), jitter = TRUE))
+  }
+
   list(positions = NULL, jitter = TRUE)
 }
 

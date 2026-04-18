@@ -12,6 +12,11 @@
   names (constrained or unconstrained), and `nutpie_unconstrain()` maps a
   constrained named list to the unconstrained vector used internally.
 * `init_mean` is preserved for backwards compatibility.
+* Internal refactor: a single BridgeStan model is opened per `nutpie_sample()`
+  call (via an `ExternalPtr<BSHandle>`) and reused across chain setup and the
+  sampler, replacing the previous 5–17 redundant `dlopen` + JSON-parse cycles.
+  The constrained → unconstrained mapping now calls BridgeStan's flat
+  `param_unconstrain` directly, with no JSON round-trip.
 
 # nutpieR 1.1.0
 

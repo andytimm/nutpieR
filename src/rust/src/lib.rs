@@ -312,8 +312,7 @@ fn run_sampler<S: Settings>(
     Ok(results)
 }
 
-/// @param lib_path Path to the compiled Stan shared library.
-/// @param data_json JSON string with model data (empty string for no data).
+/// @param handle An `ExternalPtr<BSHandle>` from `bs_open()`.
 /// @param num_draws Number of draws per chain after warmup.
 /// @param num_warmup Number of warmup (tuning) draws per chain.
 /// @param num_chains Number of parallel chains.
@@ -321,7 +320,6 @@ fn run_sampler<S: Settings>(
 /// @param max_treedepth Maximum tree depth for NUTS.
 /// @param target_accept Target acceptance probability for step size adaptation.
 /// @param refresh Print progress every `refresh` draws per chain (0 = no progress).
-/// @param init_mean Optional numeric vector of initial values in unconstrained space (legacy, jittered).
 /// @param init_positions Optional list of numeric vectors (one per chain, or length 1 = broadcast).
 /// @param jitter If TRUE, apply ±0.5 uniform jitter per coordinate.
 /// @param save_warmup Whether to return warmup draws.
@@ -336,8 +334,7 @@ fn run_sampler<S: Settings>(
 /// @keywords internal
 #[extendr]
 fn sample_stan(
-    lib_path: &str,
-    data_json: &str,
+    handle: ExternalPtr<model::BSHandle>,
     num_draws: i32,
     num_warmup: i32,
     num_chains: i32,
@@ -345,7 +342,6 @@ fn sample_stan(
     max_treedepth: i32,
     target_accept: f64,
     refresh: i32,
-    init_mean: Robj,
     init_positions: Robj,
     jitter: bool,
     save_warmup: bool,
@@ -356,17 +352,6 @@ fn sample_stan(
     mass_matrix_gamma: f64,
     eigval_cutoff: f64,
 ) -> Result<List> {
-    // Parse init_mean (NULL or numeric vector) — legacy path (jittered).
-    let init_mean_raw: Option<Vec<f64>> = if init_mean.is_null() {
-        None
-    } else {
-        Some(
-            init_mean
-                .as_real_vector()
-                .ok_or_else(|| Error::Other("init_mean must be a numeric vector".into()))?,
-        )
-    };
-
     // Parse init_positions (NULL or list of numeric vectors) — per-chain path.
     let init_positions_raw: Option<Vec<Vec<f64>>> = if init_positions.is_null() {
         None
@@ -387,27 +372,9 @@ fn sample_stan(
         Some(out)
     };
 
-    if init_mean_raw.is_some() && init_positions_raw.is_some() {
-        return Err(Error::Other(
-            "init_mean and init_positions are mutually exclusive".into(),
-        ));
-    }
-
-    let stan_model =
-        model::StanModel::new(std::path::Path::new(lib_path), data_json, seed as u32)
-            .map_err(r_err)?;
-
-    let stan_model = if let Some(positions) = init_positions_raw {
-        stan_model
-            .with_init_positions(Some(positions), jitter)
-            .map_err(r_err)?
-    } else {
-        let init_mean_vec: Option<Vec<f64>> = match init_mean_raw {
-            Some(v) if v.len() == 1 => Some(vec![v[0]; stan_model.param_unc_num()]),
-            other => other,
-        };
-        stan_model.with_init_mean(init_mean_vec).map_err(r_err)?
-    };
+    let stan_model = model::StanModel::new(&handle)
+        .with_init_positions(init_positions_raw, jitter)
+        .map_err(r_err)?;
 
     let ndim = stan_model.num_constrained();
     let param_names: Vec<String> = stan_model.constrained_param_names().to_vec();
@@ -804,65 +771,6 @@ fn bs_param_constrain(
     Ok(out)
 }
 
-/// Return the constrained parameter names (with transformed parameters and
-/// generated quantities included) for a compiled Stan model. Indices use the
-/// BridgeStan dot convention (e.g. `"beta.1.2"`).
-/// @keywords internal
-#[extendr]
-fn get_param_names(lib_path: &str, data_json: &str) -> Result<Vec<String>> {
-    let model = model::open_bs_model(std::path::Path::new(lib_path), data_json, 0).map_err(r_err)?;
-    Ok(model
-        .param_names(true, true)
-        .split(',')
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect())
-}
-
-/// Return the unconstrained parameter names for a compiled Stan model.
-/// Indices use the BridgeStan dot convention (e.g. `"beta.1.2"`).
-/// @keywords internal
-#[extendr]
-fn get_param_unc_names(lib_path: &str, data_json: &str) -> Result<Vec<String>> {
-    let mut model =
-        model::open_bs_model(std::path::Path::new(lib_path), data_json, 0).map_err(r_err)?;
-    Ok(model
-        .param_unc_names()
-        .split(',')
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .collect())
-}
-
-/// Map an unconstrained position to the constrained scale (including
-/// transformed parameters and generated quantities).
-/// @keywords internal
-#[extendr]
-fn param_constrain_rs(
-    lib_path: &str,
-    data_json: &str,
-    theta_unc: Vec<f64>,
-    seed: i32,
-) -> Result<Vec<f64>> {
-    let model = model::open_bs_model(std::path::Path::new(lib_path), data_json, seed as u32)
-        .map_err(r_err)?;
-    let ndim_unc = model.param_unc_num();
-    if theta_unc.len() != ndim_unc {
-        return Err(Error::Other(format!(
-            "theta_unc length {} does not match model dimension {}",
-            theta_unc.len(),
-            ndim_unc
-        )));
-    }
-    let n_out = model.param_num(true, true);
-    let mut out = vec![0.0f64; n_out];
-    let mut rng = model.new_rng(seed as u32).map_err(r_err)?;
-    model
-        .param_constrain(&theta_unc, true, true, &mut out, Some(&mut rng))
-        .map_err(r_err)?;
-    Ok(out)
-}
-
 extendr_module! {
     mod nutpieR;
     fn sample_normal;
@@ -876,7 +784,4 @@ extendr_module! {
     fn bs_ndim_block;
     fn bs_param_unconstrain;
     fn bs_param_constrain;
-    fn get_param_names;
-    fn get_param_unc_names;
-    fn param_constrain_rs;
 }
