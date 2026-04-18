@@ -33,98 +33,84 @@ resolve_init <- function(init, init_unconstrained, init_mean, handle,
 
 #' Expand a (possibly partial) constrained named list into a full unconstrained
 #' vector. Missing parameters are filled by constraining a uniform(-2, 2) draw
-#' in unconstrained space, then overlaying the user's values in the constrained
-#' JSON representation, and finally mapping the combined dict back to
-#' unconstrained space.
+#' in unconstrained space to produce well-shaped defaults for each declared
+#' block-level parameter.
 #' @noRd
 expand_constrained_init <- function(params_list, handle) {
-  unc_names_raw <- bs_unc_names(handle)
-  valid_block_names <- unique(sub("\\..*$", "", unc_names_raw))
+  block_names <- bs_block_names(handle)
+  valid_bases <- unique(sub("\\..*$", "", block_names))
 
-  bad <- setdiff(names(params_list), valid_block_names)
+  bad <- setdiff(names(params_list), valid_bases)
   if (length(bad) > 0L) {
     stop("Unknown parameter(s) in init: ", paste(bad, collapse = ", "),
-         "\nAvailable: ", paste(valid_block_names, collapse = ", "),
+         "\nAvailable: ", paste(valid_bases, collapse = ", "),
          call. = FALSE)
   }
 
-  missing_params <- setdiff(valid_block_names, names(params_list))
-  structured <- if (length(missing_params) == 0L) {
-    params_list
+  missing_params <- setdiff(valid_bases, names(params_list))
+  defaults <- if (length(missing_params) == 0L) {
+    NULL
   } else {
-    # Fill missing params by constraining a random unconstrained draw, so we
-    # get well-formed shapes (arrays / matrices) for every declared parameter.
-    rand_unc <- stats::runif(length(unc_names_raw), min = -2, max = 2)
-    flat_con <- bs_param_constrain(
+    rand_unc <- stats::runif(bs_ndim_unc(handle), min = -2, max = 2)
+    full_con <- bs_param_constrain(
       handle, rand_unc,
       as.integer(sample.int(.Machine$integer.max, 1L))
     )
-    con_names_raw <- bs_full_names(handle)
-    defaults <- reconstruct_stan_json(flat_con, con_names_raw)
-    defaults <- defaults[intersect(names(defaults), valid_block_names)]
-    modifyList(defaults, params_list)
+    full_con[seq_along(block_names)]
   }
 
-  init_json <- jsonlite::toJSON(structured, auto_unbox = TRUE, digits = NA,
-                                matrix = "columnmajor")
-  bs_param_unconstrain_json(handle, init_json)
+  theta_flat <- flat_overlay(params_list, block_names, defaults)
+  bs_param_unconstrain(handle, theta_flat)
 }
 
-#' Reconstruct Stan-style nested list from a flat vector + dot-indexed names.
-#' Given `flat_values = c(1, 2, 3, 4)` and
-#' `indexed_names = c("M.1.1", "M.2.1", "M.1.2", "M.2.2")` returns
-#' `list(M = matrix(c(1,2,3,4), 2, 2))` (column-major).
-#' Scalars and 1D arrays are handled too.
+#' Overlay a user-provided named list onto the flat block-level parameter
+#' vector that BridgeStan's `param_unconstrain` expects.
+#'
+#' `block_names` is the dot-indexed output of `bs_block_names(handle)`, in
+#' BridgeStan's column-major / last-index-major order. Each entry of
+#' `user_list` is flattened in R's native (column-major) order — which matches
+#' BridgeStan's order for any rank — and placed at the corresponding indices.
+#' When `defaults` is NULL, every base name in `block_names` must appear in
+#' `user_list`; otherwise missing entries come from `defaults`.
 #' @noRd
-reconstruct_stan_json <- function(flat_values, indexed_names) {
-  if (length(flat_values) != length(indexed_names)) {
-    stop("flat_values and indexed_names must have the same length.", call. = FALSE)
+flat_overlay <- function(user_list, block_names, defaults = NULL) {
+  if (length(block_names) == 0L) return(numeric(0))
+
+  bases <- sub("\\..*$", "", block_names)
+  unique_bases <- unique(bases)
+
+  user_names <- names(user_list)
+  bad <- setdiff(user_names, unique_bases)
+  if (length(bad) > 0L) {
+    stop("Unknown parameter(s): ", paste(bad, collapse = ", "),
+         "\nAvailable: ", paste(unique_bases, collapse = ", "),
+         call. = FALSE)
   }
-  if (length(flat_values) == 0L) return(list())
 
-  # Parse each name into base and integer index vector.
-  parsed <- lapply(indexed_names, function(nm) {
-    parts <- strsplit(nm, ".", fixed = TRUE)[[1L]]
-    base <- parts[1L]
-    idx <- if (length(parts) > 1L) as.integer(parts[-1L]) else integer(0)
-    list(base = base, idx = idx)
-  })
-  bases <- vapply(parsed, `[[`, character(1), "base")
-
-  out <- list()
-  for (b in unique(bases)) {
-    mask <- bases == b
-    entries <- parsed[mask]
-    vals <- flat_values[mask]
-
-    rank <- length(entries[[1L]]$idx)
-    if (rank == 0L) {
-      # Scalar; there should be only one entry.
-      out[[b]] <- vals[[1L]]
-      next
+  if (is.null(defaults)) {
+    missing_nms <- setdiff(unique_bases, user_names)
+    if (length(missing_nms) > 0L) {
+      stop("Missing required parameter(s): ",
+           paste(missing_nms, collapse = ", "), call. = FALSE)
     }
-
-    # Check consistent rank.
-    ranks <- vapply(entries, function(e) length(e$idx), integer(1))
-    if (!all(ranks == rank)) {
-      stop("Inconsistent index rank for parameter '", b, "'.", call. = FALSE)
+    out <- numeric(length(block_names))
+  } else {
+    if (length(defaults) != length(block_names)) {
+      stop("defaults length (", length(defaults),
+           ") does not match block_names length (",
+           length(block_names), ").", call. = FALSE)
     }
+    out <- as.numeric(defaults)
+  }
 
-    # Determine dims.
-    idx_matrix <- do.call(rbind, lapply(entries, `[[`, "idx"))
-    dims <- apply(idx_matrix, 2, max)
-
-    if (prod(dims) != length(vals)) {
-      stop("Expected ", prod(dims), " values for '", b, "' (dims = ",
-           paste(dims, collapse = "x"), ") but got ", length(vals), ".",
-           call. = FALSE)
+  for (base in user_names) {
+    idx <- which(bases == base)
+    flat <- as.numeric(user_list[[base]])
+    if (length(flat) != length(idx)) {
+      stop("Parameter '", base, "' has ", length(flat),
+           " values but expected ", length(idx), ".", call. = FALSE)
     }
-
-    # BridgeStan emits column-major (last-index-major) order: for a matrix
-    # M[i,j], index i varies fastest. That is exactly R's array storage order
-    # when dimensions are listed in declaration order, so we can just assign.
-    arr <- array(vals, dim = dims)
-    out[[b]] <- arr
+    out[idx] <- flat
   }
   out
 }

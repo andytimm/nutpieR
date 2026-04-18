@@ -43,7 +43,7 @@ nutpie_unconstrain <- function(model, params, data = NULL) {
     stop("`params` must be a fully named list.", call. = FALSE)
   }
   handle <- bs_open(resolve_model(model), resolve_data(data), 0L)
-  init_json <- jsonlite::toJSON(params, auto_unbox = TRUE, digits = NA)
-  unc <- bs_param_unconstrain_json(handle, init_json)
+  theta_flat <- flat_overlay(params, bs_block_names(handle))
+  unc <- bs_param_unconstrain(handle, theta_flat)
   stats::setNames(unc, dot_to_bracket(bs_unc_names(handle)))
 }

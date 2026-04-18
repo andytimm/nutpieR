@@ -85,11 +85,6 @@ bs_ndim_block <- function(handle) .Call(wrap__bs_ndim_block, handle)
 #' @keywords internal
 bs_param_unconstrain <- function(handle, theta) .Call(wrap__bs_param_unconstrain, handle, theta)
 
-#' Map a constrained point (JSON, CmdStan format) to the unconstrained space,
-#' using an already-opened handle. All parameters must be present in the JSON.
-#' @keywords internal
-bs_param_unconstrain_json <- function(handle, init_json) .Call(wrap__bs_param_unconstrain_json, handle, init_json)
-
 #' Map an unconstrained position to the full constrained scale (including
 #' transformed parameters and generated quantities) using an already-opened
 #' handle.
@@ -106,11 +101,6 @@ get_param_names <- function(lib_path, data_json) .Call(wrap__get_param_names, li
 #' Indices use the BridgeStan dot convention (e.g. `"beta.1.2"`).
 #' @keywords internal
 get_param_unc_names <- function(lib_path, data_json) .Call(wrap__get_param_unc_names, lib_path, data_json)
-
-#' Map a constrained point (JSON, CmdStan format) to the unconstrained space.
-#' All parameters must be present in the JSON.
-#' @keywords internal
-param_unconstrain_json_rs <- function(lib_path, data_json, init_json) .Call(wrap__param_unconstrain_json_rs, lib_path, data_json, init_json)
 
 #' Map an unconstrained position to the constrained scale (including
 #' transformed parameters and generated quantities).

@@ -9,7 +9,6 @@ use nuts_rs::{
 };
 use rand::RngExt;
 use std::collections::HashMap;
-use std::ffi::CString;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -779,24 +778,6 @@ fn bs_param_unconstrain(
     Ok(out)
 }
 
-/// Map a constrained point (JSON, CmdStan format) to the unconstrained space,
-/// using an already-opened handle. All parameters must be present in the JSON.
-/// @keywords internal
-#[extendr]
-fn bs_param_unconstrain_json(
-    handle: ExternalPtr<model::BSHandle>,
-    init_json: &str,
-) -> Result<Vec<f64>> {
-    let mut out = vec![0.0f64; handle.ndim_unc];
-    let cjson = CString::new(init_json)
-        .map_err(|e| Error::Other(format!("init JSON contained interior NUL: {e}")))?;
-    handle
-        .model
-        .param_unconstrain_json(&cjson, &mut out)
-        .map_err(r_err)?;
-    Ok(out)
-}
-
 /// Map an unconstrained position to the full constrained scale (including
 /// transformed parameters and generated quantities) using an already-opened
 /// handle.
@@ -853,26 +834,6 @@ fn get_param_unc_names(lib_path: &str, data_json: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-/// Map a constrained point (JSON, CmdStan format) to the unconstrained space.
-/// All parameters must be present in the JSON.
-/// @keywords internal
-#[extendr]
-fn param_unconstrain_json_rs(
-    lib_path: &str,
-    data_json: &str,
-    init_json: &str,
-) -> Result<Vec<f64>> {
-    let model = model::open_bs_model(std::path::Path::new(lib_path), data_json, 0).map_err(r_err)?;
-    let ndim = model.param_unc_num();
-    let mut out = vec![0.0f64; ndim];
-    let cjson = CString::new(init_json)
-        .map_err(|e| Error::Other(format!("init JSON contained interior NUL: {e}")))?;
-    model
-        .param_unconstrain_json(&cjson, &mut out)
-        .map_err(r_err)?;
-    Ok(out)
-}
-
 /// Map an unconstrained position to the constrained scale (including
 /// transformed parameters and generated quantities).
 /// @keywords internal
@@ -914,10 +875,8 @@ extendr_module! {
     fn bs_ndim_unc;
     fn bs_ndim_block;
     fn bs_param_unconstrain;
-    fn bs_param_unconstrain_json;
     fn bs_param_constrain;
     fn get_param_names;
     fn get_param_unc_names;
-    fn param_unconstrain_json_rs;
     fn param_constrain_rs;
 }
