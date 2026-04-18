@@ -51,6 +51,51 @@ compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__
 #' @keywords internal
 sample_stan <- function(lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_mean, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, low_rank, mass_matrix_gamma, eigval_cutoff) .Call(wrap__sample_stan, lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_mean, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, low_rank, mass_matrix_gamma, eigval_cutoff)
 
+#' Open a BridgeStan model and return an `ExternalPtr<BSHandle>` that caches
+#' parameter-name metadata. The handle may be used by any of the `bs_*`
+#' accessor functions without re-opening the shared library.
+#' @keywords internal
+bs_open <- function(lib_path, data_json, seed) .Call(wrap__bs_open, lib_path, data_json, seed)
+
+#' Block-level parameter names (no transformed parameters / generated
+#' quantities), dot-indexed. Length equals `bs_ndim_block()`.
+#' @keywords internal
+bs_block_names <- function(handle) .Call(wrap__bs_block_names, handle)
+
+#' Full constrained parameter names (block + transformed parameters +
+#' generated quantities), dot-indexed.
+#' @keywords internal
+bs_full_names <- function(handle) .Call(wrap__bs_full_names, handle)
+
+#' Unconstrained parameter names, dot-indexed. Length equals `bs_ndim_unc()`.
+#' @keywords internal
+bs_unc_names <- function(handle) .Call(wrap__bs_unc_names, handle)
+
+#' Number of unconstrained parameters.
+#' @keywords internal
+bs_ndim_unc <- function(handle) .Call(wrap__bs_ndim_unc, handle)
+
+#' Number of block-level constrained parameters (no TP, no GQ).
+#' @keywords internal
+bs_ndim_block <- function(handle) .Call(wrap__bs_ndim_block, handle)
+
+#' Map a flat block-level constrained vector (length `bs_ndim_block()`,
+#' BridgeStan column-major / last-index-major order) to the unconstrained
+#' space. No JSON parsing.
+#' @keywords internal
+bs_param_unconstrain <- function(handle, theta) .Call(wrap__bs_param_unconstrain, handle, theta)
+
+#' Map a constrained point (JSON, CmdStan format) to the unconstrained space,
+#' using an already-opened handle. All parameters must be present in the JSON.
+#' @keywords internal
+bs_param_unconstrain_json <- function(handle, init_json) .Call(wrap__bs_param_unconstrain_json, handle, init_json)
+
+#' Map an unconstrained position to the full constrained scale (including
+#' transformed parameters and generated quantities) using an already-opened
+#' handle.
+#' @keywords internal
+bs_param_constrain <- function(handle, theta_unc, seed) .Call(wrap__bs_param_constrain, handle, theta_unc, seed)
+
 #' Return the constrained parameter names (with transformed parameters and
 #' generated quantities included) for a compiled Stan model. Indices use the
 #' BridgeStan dot convention (e.g. `"beta.1.2"`).

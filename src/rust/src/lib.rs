@@ -707,6 +707,122 @@ fn extract_large_list_f64(
     }
 }
 
+/// Open a BridgeStan model and return an `ExternalPtr<BSHandle>` that caches
+/// parameter-name metadata. The handle may be used by any of the `bs_*`
+/// accessor functions without re-opening the shared library.
+/// @keywords internal
+#[extendr]
+fn bs_open(lib_path: &str, data_json: &str, seed: i32) -> Result<ExternalPtr<model::BSHandle>> {
+    let handle = model::BSHandle::open(std::path::Path::new(lib_path), data_json, seed as u32)
+        .map_err(r_err)?;
+    Ok(ExternalPtr::new(handle))
+}
+
+/// Block-level parameter names (no transformed parameters / generated
+/// quantities), dot-indexed. Length equals `bs_ndim_block()`.
+/// @keywords internal
+#[extendr]
+fn bs_block_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
+    handle.block_names.clone()
+}
+
+/// Full constrained parameter names (block + transformed parameters +
+/// generated quantities), dot-indexed.
+/// @keywords internal
+#[extendr]
+fn bs_full_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
+    handle.full_names.clone()
+}
+
+/// Unconstrained parameter names, dot-indexed. Length equals `bs_ndim_unc()`.
+/// @keywords internal
+#[extendr]
+fn bs_unc_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
+    handle.unc_names.clone()
+}
+
+/// Number of unconstrained parameters.
+/// @keywords internal
+#[extendr]
+fn bs_ndim_unc(handle: ExternalPtr<model::BSHandle>) -> i32 {
+    handle.ndim_unc as i32
+}
+
+/// Number of block-level constrained parameters (no TP, no GQ).
+/// @keywords internal
+#[extendr]
+fn bs_ndim_block(handle: ExternalPtr<model::BSHandle>) -> i32 {
+    handle.ndim_block as i32
+}
+
+/// Map a flat block-level constrained vector (length `bs_ndim_block()`,
+/// BridgeStan column-major / last-index-major order) to the unconstrained
+/// space. No JSON parsing.
+/// @keywords internal
+#[extendr]
+fn bs_param_unconstrain(
+    handle: ExternalPtr<model::BSHandle>,
+    theta: Vec<f64>,
+) -> Result<Vec<f64>> {
+    if theta.len() != handle.ndim_block {
+        return Err(Error::Other(format!(
+            "theta length {} does not match block-level parameter count {}",
+            theta.len(),
+            handle.ndim_block
+        )));
+    }
+    let mut out = vec![0.0f64; handle.ndim_unc];
+    handle
+        .model
+        .param_unconstrain(&theta, &mut out)
+        .map_err(r_err)?;
+    Ok(out)
+}
+
+/// Map a constrained point (JSON, CmdStan format) to the unconstrained space,
+/// using an already-opened handle. All parameters must be present in the JSON.
+/// @keywords internal
+#[extendr]
+fn bs_param_unconstrain_json(
+    handle: ExternalPtr<model::BSHandle>,
+    init_json: &str,
+) -> Result<Vec<f64>> {
+    let mut out = vec![0.0f64; handle.ndim_unc];
+    let cjson = CString::new(init_json)
+        .map_err(|e| Error::Other(format!("init JSON contained interior NUL: {e}")))?;
+    handle
+        .model
+        .param_unconstrain_json(&cjson, &mut out)
+        .map_err(r_err)?;
+    Ok(out)
+}
+
+/// Map an unconstrained position to the full constrained scale (including
+/// transformed parameters and generated quantities) using an already-opened
+/// handle.
+/// @keywords internal
+#[extendr]
+fn bs_param_constrain(
+    handle: ExternalPtr<model::BSHandle>,
+    theta_unc: Vec<f64>,
+    seed: i32,
+) -> Result<Vec<f64>> {
+    if theta_unc.len() != handle.ndim_unc {
+        return Err(Error::Other(format!(
+            "theta_unc length {} does not match unconstrained parameter count {}",
+            theta_unc.len(),
+            handle.ndim_unc
+        )));
+    }
+    let mut out = vec![0.0f64; handle.ndim_full];
+    let mut rng = handle.model.new_rng(seed as u32).map_err(r_err)?;
+    handle
+        .model
+        .param_constrain(&theta_unc, true, true, &mut out, Some(&mut rng))
+        .map_err(r_err)?;
+    Ok(out)
+}
+
 /// Return the constrained parameter names (with transformed parameters and
 /// generated quantities included) for a compiled Stan model. Indices use the
 /// BridgeStan dot convention (e.g. `"beta.1.2"`).
@@ -791,6 +907,15 @@ extendr_module! {
     fn sample_normal;
     fn compile_stan_model;
     fn sample_stan;
+    fn bs_open;
+    fn bs_block_names;
+    fn bs_full_names;
+    fn bs_unc_names;
+    fn bs_ndim_unc;
+    fn bs_ndim_block;
+    fn bs_param_unconstrain;
+    fn bs_param_unconstrain_json;
+    fn bs_param_constrain;
     fn get_param_names;
     fn get_param_unc_names;
     fn param_unconstrain_json_rs;

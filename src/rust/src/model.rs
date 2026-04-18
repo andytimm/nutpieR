@@ -60,6 +60,57 @@ pub fn open_bs_model(
     Ok(bridgestan::Model::new(lib, data.as_deref(), seed)?)
 }
 
+/// Opened BridgeStan model + cached parameter-name metadata.
+///
+/// Exposed to R as `ExternalPtr<BSHandle>`. The inner model is wrapped in
+/// `Arc` so the sampler can hold a clone of the same Model without another
+/// dlopen.
+pub struct BSHandle {
+    pub model: Arc<bridgestan::Model<Arc<bridgestan::StanLibrary>>>,
+    pub block_names: Vec<String>,
+    pub full_names: Vec<String>,
+    pub unc_names: Vec<String>,
+    pub ndim_unc: usize,
+    pub ndim_block: usize,
+    pub ndim_full: usize,
+}
+
+impl BSHandle {
+    pub fn open(lib_path: &Path, data_json: &str, seed: u32) -> anyhow::Result<Self> {
+        let mut model = open_bs_model(lib_path, data_json, seed)?;
+        let block_names: Vec<String> = model
+            .param_names(false, false)
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        let full_names: Vec<String> = model
+            .param_names(true, true)
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        let unc_names: Vec<String> = model
+            .param_unc_names()
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+            .collect();
+        let ndim_unc = model.param_unc_num();
+        let ndim_block = model.param_num(false, false);
+        let ndim_full = model.param_num(true, true);
+        Ok(BSHandle {
+            model: Arc::new(model),
+            block_names,
+            full_names,
+            unc_names,
+            ndim_unc,
+            ndim_block,
+            ndim_full,
+        })
+    }
+}
+
 // --- Error type ---
 
 #[derive(Debug, thiserror::Error)]

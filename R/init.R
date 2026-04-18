@@ -3,12 +3,12 @@
 #' Returns `list(positions = NULL | list of numeric vectors, jitter = logical)`.
 #' - `positions = NULL` means "use sampler default" (Uniform(-2, 2) per chain).
 #' - Otherwise, `positions` has length 1 (broadcast) or `num_chains`, and each
-#'   inner vector is an unconstrained parameter vector (length `param_unc_num`).
+#'   inner vector is an unconstrained parameter vector (length `ndim_unc`).
 #' Mutual exclusion between `init`, `init_unconstrained`, `init_mean` is
 #' enforced here. `init_mean` is returned as a *jittered* init_positions of
 #' length 1 (legacy behaviour).
 #' @noRd
-resolve_init <- function(init, init_unconstrained, init_mean, lib_path, data_json,
+resolve_init <- function(init, init_unconstrained, init_mean, handle,
                           num_chains) {
   supplied <- c(!is.null(init), !is.null(init_unconstrained), !is.null(init_mean))
   if (sum(supplied) > 1L) {
@@ -19,13 +19,12 @@ resolve_init <- function(init, init_unconstrained, init_mean, lib_path, data_jso
   }
 
   if (!is.null(init)) {
-    positions <- init_list_to_positions(init, lib_path, data_json, num_chains)
+    positions <- init_list_to_positions(init, handle, num_chains)
     return(list(positions = positions, jitter = FALSE))
   }
 
   if (!is.null(init_unconstrained)) {
-    positions <- init_unc_to_positions(init_unconstrained, lib_path, data_json,
-                                        num_chains)
+    positions <- init_unc_to_positions(init_unconstrained, handle, num_chains)
     return(list(positions = positions, jitter = FALSE))
   }
 
@@ -38,8 +37,8 @@ resolve_init <- function(init, init_unconstrained, init_mean, lib_path, data_jso
 #' JSON representation, and finally mapping the combined dict back to
 #' unconstrained space.
 #' @noRd
-expand_constrained_init <- function(params_list, lib_path, data_json) {
-  unc_names_raw <- get_param_unc_names(lib_path, data_json)
+expand_constrained_init <- function(params_list, handle) {
+  unc_names_raw <- bs_unc_names(handle)
   valid_block_names <- unique(sub("\\..*$", "", unc_names_raw))
 
   bad <- setdiff(names(params_list), valid_block_names)
@@ -56,11 +55,11 @@ expand_constrained_init <- function(params_list, lib_path, data_json) {
     # Fill missing params by constraining a random unconstrained draw, so we
     # get well-formed shapes (arrays / matrices) for every declared parameter.
     rand_unc <- stats::runif(length(unc_names_raw), min = -2, max = 2)
-    flat_con <- param_constrain_rs(
-      lib_path, data_json, rand_unc,
+    flat_con <- bs_param_constrain(
+      handle, rand_unc,
       as.integer(sample.int(.Machine$integer.max, 1L))
     )
-    con_names_raw <- get_param_names(lib_path, data_json)
+    con_names_raw <- bs_full_names(handle)
     defaults <- reconstruct_stan_json(flat_con, con_names_raw)
     defaults <- defaults[intersect(names(defaults), valid_block_names)]
     modifyList(defaults, params_list)
@@ -68,7 +67,7 @@ expand_constrained_init <- function(params_list, lib_path, data_json) {
 
   init_json <- jsonlite::toJSON(structured, auto_unbox = TRUE, digits = NA,
                                 matrix = "columnmajor")
-  param_unconstrain_json_rs(lib_path, data_json, init_json)
+  bs_param_unconstrain_json(handle, init_json)
 }
 
 #' Reconstruct Stan-style nested list from a flat vector + dot-indexed names.
@@ -133,16 +132,16 @@ reconstruct_stan_json <- function(flat_values, indexed_names) {
 #' Convert an `init` argument (single list | list-of-lists | path | list of
 #' paths) to a list of unconstrained position vectors.
 #' @noRd
-init_list_to_positions <- function(init, lib_path, data_json, num_chains) {
+init_list_to_positions <- function(init, handle, num_chains) {
   # Character path(s): read JSON and recurse.
   if (is.character(init)) {
     if (length(init) == 1L) {
       parsed <- jsonlite::fromJSON(init, simplifyVector = TRUE)
-      return(init_list_to_positions(parsed, lib_path, data_json, num_chains))
+      return(init_list_to_positions(parsed, handle, num_chains))
     }
     if (length(init) == num_chains) {
       parsed <- lapply(init, jsonlite::fromJSON, simplifyVector = TRUE)
-      return(init_list_to_positions(parsed, lib_path, data_json, num_chains))
+      return(init_list_to_positions(parsed, handle, num_chains))
     }
     stop("When `init` is a character vector, its length must be 1 or num_chains.",
          call. = FALSE)
@@ -155,7 +154,7 @@ init_list_to_positions <- function(init, lib_path, data_json, num_chains) {
 
   # Detect list-of-lists vs single named list.
   if (is_single_named_param_list(init)) {
-    pos <- expand_constrained_init(init, lib_path, data_json)
+    pos <- expand_constrained_init(init, handle)
     return(list(pos))  # broadcast
   }
 
@@ -170,7 +169,7 @@ init_list_to_positions <- function(init, lib_path, data_json, num_chains) {
       stop("Each per-chain `init` element must be a named list of parameter values.",
            call. = FALSE)
     }
-    expand_constrained_init(p, lib_path, data_json)
+    expand_constrained_init(p, handle)
   })
 }
 
@@ -192,9 +191,8 @@ is_single_named_param_list <- function(x) {
 #' Convert `init_unconstrained` argument (named vector or list of them) to a
 #' list of unconstrained positions (reordered to BridgeStan's internal order).
 #' @noRd
-init_unc_to_positions <- function(init_unconstrained, lib_path, data_json,
-                                    num_chains) {
-  unc_names <- param_names_bracket(lib_path, data_json, unconstrained = TRUE)
+init_unc_to_positions <- function(init_unconstrained, handle, num_chains) {
+  unc_names <- dot_to_bracket(bs_unc_names(handle))
   ndim <- length(unc_names)
 
   if (is.numeric(init_unconstrained)) {

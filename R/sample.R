@@ -99,8 +99,9 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   }
   cores <- as.integer(cores)
 
+  handle <- bs_open(lib_path, data_json, as.integer(seed))
   init_resolved <- resolve_init(init, init_unconstrained, init_mean,
-                                lib_path, data_json, num_chains)
+                                handle, num_chains)
 
   raw <- sample_stan(
     lib_path,

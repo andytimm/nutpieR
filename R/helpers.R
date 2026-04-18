@@ -14,17 +14,8 @@
 #' @return A character vector of parameter names.
 #' @export
 nutpie_param_names <- function(model, data = NULL, unconstrained = TRUE) {
-  param_names_bracket(resolve_model(model), resolve_data(data),
-                      unconstrained = unconstrained)
-}
-
-#' @noRd
-param_names_bracket <- function(lib_path, data_json, unconstrained) {
-  raw <- if (isTRUE(unconstrained)) {
-    get_param_unc_names(lib_path, data_json)
-  } else {
-    get_param_names(lib_path, data_json)
-  }
+  handle <- bs_open(resolve_model(model), resolve_data(data), 0L)
+  raw <- if (isTRUE(unconstrained)) bs_unc_names(handle) else bs_full_names(handle)
   dot_to_bracket(raw)
 }
 
@@ -51,10 +42,8 @@ nutpie_unconstrain <- function(model, params, data = NULL) {
   if (!is.list(params) || is.null(names(params)) || any(names(params) == "")) {
     stop("`params` must be a fully named list.", call. = FALSE)
   }
-  lib_path <- resolve_model(model)
-  data_json <- resolve_data(data)
+  handle <- bs_open(resolve_model(model), resolve_data(data), 0L)
   init_json <- jsonlite::toJSON(params, auto_unbox = TRUE, digits = NA)
-  unc <- param_unconstrain_json_rs(lib_path, data_json, init_json)
-  stats::setNames(unc, param_names_bracket(lib_path, data_json,
-                                           unconstrained = TRUE))
+  unc <- bs_param_unconstrain_json(handle, init_json)
+  stats::setNames(unc, dot_to_bracket(bs_unc_names(handle)))
 }
