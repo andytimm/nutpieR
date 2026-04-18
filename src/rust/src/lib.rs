@@ -352,7 +352,6 @@ fn sample_stan(
     mass_matrix_gamma: f64,
     eigval_cutoff: f64,
 ) -> Result<List> {
-    // Parse init_positions (NULL or list of numeric vectors) — per-chain path.
     let init_positions_raw: Option<Vec<Vec<f64>>> = if init_positions.is_null() {
         None
     } else {
@@ -383,8 +382,6 @@ fn sample_stan(
     let num_tune = num_warmup as usize;
     let n_draws_per_chain = num_draws as usize;
 
-    // Branch on mass matrix type — both implement Settings but are different types.
-    // Common fields are set via the configure_settings! macro to avoid duplication.
     macro_rules! configure_settings {
         ($settings:expr) => {{
             $settings.num_tune = num_warmup as u64;
@@ -410,10 +407,8 @@ fn sample_stan(
         run_sampler(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
     };
 
-    // Build post-warmup draws matrix (column-major for R)
     let draws_robj = build_draws_matrix(&results, ndim, num_tune, n_draws_per_chain, &param_names)?;
 
-    // Extract post-warmup diagnostics
     let diagnostics = extract_diagnostics(
         &results,
         num_tune,
@@ -422,7 +417,6 @@ fn sample_stan(
         store_mass_matrix,
     );
 
-    // Optionally extract warmup draws and diagnostics
     let warmup_draws_robj: Robj = if save_warmup {
         build_draws_matrix(&results, ndim, 0, num_tune, &param_names)?
     } else {
@@ -520,7 +514,6 @@ fn extract_diagnostics(
     let mut step_size_bar = vec![0.0f64; total];
     let mut mean_tree_accept = vec![0.0f64; total];
 
-    // Pre-allocate optional vectors with R NULLs (non-divergent draws stay NULL)
     fn null_robj_vec(n: usize, include: bool) -> Vec<Robj> {
         if include { (0..n).map(|_| ().into_robj()).collect() } else { vec![] }
     }

@@ -51,21 +51,13 @@ resolve_init <- function(init, init_unconstrained, init_mean, handle,
 #' Expand a (possibly partial) constrained named list into a full unconstrained
 #' vector. Missing parameters are filled by constraining a uniform(-2, 2) draw
 #' in unconstrained space to produce well-shaped defaults for each declared
-#' block-level parameter.
+#' block-level parameter. `block_names` / `valid_bases` may be supplied by
+#' callers that hoist them out of a per-chain loop.
 #' @noRd
-expand_constrained_init <- function(params_list, handle) {
-  block_names <- bs_block_names(handle)
-  valid_bases <- unique(sub("\\..*$", "", block_names))
-
-  bad <- setdiff(names(params_list), valid_bases)
-  if (length(bad) > 0L) {
-    stop("Unknown parameter(s) in init: ", paste(bad, collapse = ", "),
-         "\nAvailable: ", paste(valid_bases, collapse = ", "),
-         call. = FALSE)
-  }
-
-  missing_params <- setdiff(valid_bases, names(params_list))
-  defaults <- if (length(missing_params) == 0L) {
+expand_constrained_init <- function(params_list, handle,
+                                    block_names = bs_block_names(handle),
+                                    valid_bases = unique(sub("\\..*$", "", block_names))) {
+  defaults <- if (all(valid_bases %in% names(params_list))) {
     NULL
   } else {
     rand_unc <- stats::runif(bs_ndim_unc(handle), min = -2, max = 2)
@@ -120,8 +112,9 @@ flat_overlay <- function(user_list, block_names, defaults = NULL) {
     out <- as.numeric(defaults)
   }
 
+  idx_by_base <- split(seq_along(bases), bases)
   for (base in user_names) {
-    idx <- which(bases == base)
+    idx <- idx_by_base[[base]]
     flat <- as.numeric(user_list[[base]])
     if (length(flat) != length(idx)) {
       stop("Parameter '", base, "' has ", length(flat),
@@ -136,7 +129,6 @@ flat_overlay <- function(user_list, block_names, defaults = NULL) {
 #' paths) to a list of unconstrained position vectors.
 #' @noRd
 init_list_to_positions <- function(init, handle, num_chains) {
-  # Character path(s): read JSON and recurse.
   if (is.character(init)) {
     if (length(init) == 1L) {
       parsed <- jsonlite::fromJSON(init, simplifyVector = TRUE)
@@ -155,13 +147,14 @@ init_list_to_positions <- function(init, handle, num_chains) {
          call. = FALSE)
   }
 
-  # Detect list-of-lists vs single named list.
+  block_names <- bs_block_names(handle)
+  valid_bases <- unique(sub("\\..*$", "", block_names))
+
   if (is_single_named_param_list(init)) {
-    pos <- expand_constrained_init(init, handle)
-    return(list(pos))  # broadcast
+    pos <- expand_constrained_init(init, handle, block_names, valid_bases)
+    return(list(pos))
   }
 
-  # List of per-chain inits.
   if (length(init) != num_chains) {
     stop("`init` must have length ", num_chains, " (num_chains), got ",
          length(init), ".", call. = FALSE)
@@ -172,7 +165,7 @@ init_list_to_positions <- function(init, handle, num_chains) {
       stop("Each per-chain `init` element must be a named list of parameter values.",
            call. = FALSE)
     }
-    expand_constrained_init(p, handle)
+    expand_constrained_init(p, handle, block_names, valid_bases)
   })
 }
 

@@ -43,21 +43,8 @@ fn add_tbb_to_path() {
     }
 }
 
-/// Open a `bridgestan::Model` with the TBB PATH fixup applied.
-/// Returns the model wrapped so the caller owns the StanLibrary Arc.
-pub fn open_bs_model(
-    lib_path: &Path,
-    data_json: &str,
-    seed: u32,
-) -> anyhow::Result<bridgestan::Model<Arc<bridgestan::StanLibrary>>> {
-    add_tbb_to_path();
-    let lib = Arc::new(bridgestan::open_library(lib_path)?);
-    let data = if data_json.is_empty() {
-        None
-    } else {
-        Some(CString::new(data_json)?)
-    };
-    Ok(bridgestan::Model::new(lib, data.as_deref(), seed)?)
+fn split_csv_names(s: &str) -> Vec<String> {
+    s.split(',').filter(|s| !s.is_empty()).map(String::from).collect()
 }
 
 /// Opened BridgeStan model + cached parameter-name metadata.
@@ -77,25 +64,17 @@ pub struct BSHandle {
 
 impl BSHandle {
     pub fn open(lib_path: &Path, data_json: &str, seed: u32) -> anyhow::Result<Self> {
-        let mut model = open_bs_model(lib_path, data_json, seed)?;
-        let block_names: Vec<String> = model
-            .param_names(false, false)
-            .split(',')
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-            .collect();
-        let full_names: Vec<String> = model
-            .param_names(true, true)
-            .split(',')
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-            .collect();
-        let unc_names: Vec<String> = model
-            .param_unc_names()
-            .split(',')
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-            .collect();
+        add_tbb_to_path();
+        let lib = Arc::new(bridgestan::open_library(lib_path)?);
+        let data = if data_json.is_empty() {
+            None
+        } else {
+            Some(CString::new(data_json)?)
+        };
+        let mut model = bridgestan::Model::new(lib, data.as_deref(), seed)?;
+        let block_names = split_csv_names(&model.param_names(false, false));
+        let full_names = split_csv_names(&model.param_names(true, true));
+        let unc_names = split_csv_names(&model.param_unc_names());
         let ndim_unc = model.param_unc_num();
         let ndim_block = model.param_num(false, false);
         let ndim_full = model.param_num(true, true);
