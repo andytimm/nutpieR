@@ -1,3 +1,29 @@
+# nutpieR 1.3.0
+
+* `nutpie_sample()`'s `init` argument is now a single entry point that
+  dispatches on the input shape:
+  - `NULL` (default): per-chain Uniform(-2, 2) draw on the unconstrained
+    scale (nuts-rs default).
+  - Scalar numeric `x`: per-chain Uniform(-x, x) on the unconstrained scale;
+    `init = 0` starts every chain at the origin.
+  - Named list: broadcast constrained values (partial inits allowed; missing
+    parameters are filled randomly, seeded from `seed`).
+  - List of `num_chains` named lists: per-chain constrained inits (each may
+    be partial).
+  - Function `function(chain_id) ...`: called once per chain, must return a
+    (possibly partial) named list of constrained values.
+  - Character path(s): one or `num_chains` JSON file paths.
+* `init_unconstrained` is removed. Users who need to set unconstrained-scale
+  starting points should convert to the constrained scale first (e.g. via
+  `nutpie_unconstrain()`'s inverse) and pass those through `init`.
+* `init_mean` is soft-deprecated: still works, but emits a warning and
+  will be removed in a future version.
+* `nutpie_param_names()` gains a `which` argument with values `"block"`
+  (default), `"unconstrained"`, and `"full"`. The previous `unconstrained`
+  logical argument is soft-deprecated.
+* `nutpie_unconstrain()` is reframed as an introspection / debugging helper
+  (docstring only — behaviour unchanged).
+
 # nutpieR 1.2.0
 
 * New `init` argument in `nutpie_sample()` accepts initial values on the

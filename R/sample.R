@@ -18,25 +18,33 @@
 #' @param target_accept Target acceptance probability for step size adaptation.
 #' @param refresh How often to print progress updates, in draws per chain.
 #'   Set to `0` to suppress progress output. Default is `100`.
-#' @param init Initial values on the **constrained** (user-facing) parameter
-#'   scale. Preferred initialisation path — names match the Stan program's
-#'   `parameters` block. Can be:
-#'   - A named list, e.g. `list(mu = 0, sigma = 1)`. Broadcast to all chains.
-#'     Missing parameters are filled with random draws (per chain).
-#'   - A list of `num_chains` named lists (different starts per chain).
-#'   - A path to a CmdStan-style JSON file, or a character vector of
-#'     `num_chains` such paths.
-#'   Mutually exclusive with `init_unconstrained` and `init_mean`. No jitter is
-#'   applied.
-#' @param init_unconstrained Initial values on the **unconstrained** scale as
-#'   a named numeric vector, or a list of `num_chains` such vectors. Names must
-#'   match [nutpie_param_names()] (with `unconstrained = TRUE`). All parameters
-#'   must be supplied — no partial inits. Mutually exclusive with `init` and
-#'   `init_mean`. No jitter is applied.
-#' @param init_mean Legacy initialisation argument. Scalar or numeric vector
-#'   (unconstrained space, positional). Each chain starts at
-#'   `init_mean + Uniform(-0.5, 0.5)` jitter. Prefer `init` or
-#'   `init_unconstrained` for new code.
+#' @param init Initial values for each chain. Single entry point that
+#'   dispatches on the input shape:
+#'   \describe{
+#'     \item{`NULL` (default)}{Each chain starts from a Uniform(-2, 2) draw on
+#'       the unconstrained scale (nuts-rs default).}
+#'     \item{Scalar numeric `x`}{Each chain starts from a Uniform(-x, x) draw
+#'       on the unconstrained scale. `x = 0` starts every chain at the origin.
+#'       Must be non-negative.}
+#'     \item{Named list, e.g. `list(mu = 0, sigma = 1)`}{Broadcast constrained
+#'       values to all chains. Partial inits are allowed — missing parameters
+#'       are filled with random draws (per chain, seeded from `seed`).}
+#'     \item{List of `num_chains` named lists}{Per-chain constrained inits
+#'       (different starting point per chain). Each element may be partial.}
+#'     \item{Function `function(chain_id) ...`}{Called once per chain with
+#'       `chain_id` in `1:num_chains`; must return a (possibly partial)
+#'       named list of constrained parameter values.}
+#'     \item{Character path(s)}{A JSON file path, or a character vector of
+#'       `num_chains` JSON file paths (CmdStan-style). Parsed values are
+#'       treated as constrained named lists.}
+#'   }
+#'   No jitter is applied; starting points are used exactly (after any
+#'   random fill for partial constrained inits). To work on the unconstrained
+#'   scale, see [nutpie_unconstrain()] to convert constrained values first.
+#' @param init_mean Deprecated. Scalar or numeric vector on the unconstrained
+#'   scale, with ±0.5 uniform jitter per chain. Use
+#'   `init = function(chain_id) ...`, `init = <scalar>` for Uniform(-x, x), or
+#'   `init = <named list>` instead. Will be removed in a future version.
 #' @param save_warmup If `TRUE`, warmup draws and diagnostics are attached as
 #'   attributes. Retrieve them with [nutpie_warmup_draws()].
 #' @param cores Number of CPU cores to use for parallel sampling. Defaults to
@@ -76,7 +84,6 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           max_treedepth = 10L, target_accept = 0.8,
                           refresh = 100L,
                           init = NULL,
-                          init_unconstrained = NULL,
                           init_mean = NULL,
                           save_warmup = FALSE, cores = NULL,
                           pars = NULL, include = TRUE,
@@ -100,8 +107,8 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   cores <- as.integer(cores)
 
   handle <- bs_open(lib_path, data_json, as.integer(seed))
-  init_resolved <- resolve_init(init, init_unconstrained, init_mean,
-                                handle, num_chains)
+  init_resolved <- resolve_init(init, init_mean, handle, num_chains,
+                                seed = seed)
 
   raw <- sample_stan(
     handle,

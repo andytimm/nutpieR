@@ -74,30 +74,36 @@ test_that("init and init_mean are mutually exclusive", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
   expect_error(
-    nutpie_sample(
+    suppressWarnings(nutpie_sample(
       test_models$normal,
       data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
       num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
       init = list(mu = 0, sigma = 1),
       init_mean = 0
-    ),
-    "At most one"
+    )),
+    "Supply either"
   )
 })
 
-test_that("init and init_unconstrained are mutually exclusive", {
+test_that("partial init is reproducible from sampler seed", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
-  expect_error(
-    nutpie_sample(
-      test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-      num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
-      init = list(mu = 0, sigma = 1),
-      init_unconstrained = c(mu = 0, sigma = 0)
-    ),
-    "At most one"
+  data_list <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
+
+  # Advance the global RNG between calls so that any reliance on it would
+  # produce different random fills.
+  draws1 <- nutpie_sample(
+    test_models$normal, data = data_list,
+    num_draws = 50, num_chains = 2, seed = 123, refresh = 0,
+    init = list(sigma = 1)
   )
+  invisible(stats::runif(10))
+  draws2 <- nutpie_sample(
+    test_models$normal, data = data_list,
+    num_draws = 50, num_chains = 2, seed = 123, refresh = 0,
+    init = list(sigma = 1)
+  )
+  expect_equal(as.array(draws1), as.array(draws2))
 })
 
 test_that("init with wrong per-chain list length errors", {
@@ -114,5 +120,100 @@ test_that("init with wrong per-chain list length errors", {
         list(mu = 1, sigma = 2)
       )
     )
+  )
+})
+
+test_that("init = 0 starts every chain at the origin and samples", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  draws <- nutpie_sample(
+    test_models$normal,
+    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    num_draws = 50, num_chains = 2, seed = 42, refresh = 0,
+    init = 0
+  )
+  expect_s3_class(draws, "draws_array")
+  expect_equal(posterior::nchains(draws), 2)
+})
+
+test_that("init = <positive scalar> samples successfully", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  draws <- nutpie_sample(
+    test_models$normal,
+    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    num_draws = 50, num_chains = 2, seed = 42, refresh = 0,
+    init = 2
+  )
+  expect_s3_class(draws, "draws_array")
+})
+
+test_that("init = <negative scalar> errors", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  expect_error(
+    nutpie_sample(
+      test_models$normal,
+      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+      num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
+      init = -1
+    ),
+    "non-negative"
+  )
+})
+
+test_that("init = function(chain_id) samples and yields distinct starts", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  draws <- nutpie_sample(
+    test_models$normal,
+    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    num_draws = 50, num_chains = 3, seed = 42, refresh = 0,
+    init = function(chain_id) list(mu = chain_id - 2, sigma = 1)
+  )
+  expect_s3_class(draws, "draws_array")
+  expect_equal(posterior::nchains(draws), 3)
+
+  # Internal check: the dispatcher produces 3 distinct position vectors.
+  handle <- nutpieR:::bs_open(
+    test_models$normal$lib_path,
+    nutpieR:::resolve_data(list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))),
+    0L
+  )
+  resolved <- nutpieR:::resolve_init(
+    init = function(chain_id) list(mu = chain_id - 2, sigma = 1),
+    init_mean = NULL, handle = handle, num_chains = 3, seed = 42
+  )
+  positions <- resolved$positions
+  expect_length(positions, 3)
+  mu_starts <- vapply(positions, `[`, numeric(1), 1L)
+  expect_equal(sort(mu_starts), c(-1, 0, 1))
+})
+
+test_that("init function with zero args errors with clear message", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  expect_error(
+    nutpie_sample(
+      test_models$normal,
+      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+      num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
+      init = function() list(mu = 0, sigma = 1)
+    ),
+    "at least one argument"
+  )
+})
+
+test_that("init function returning non-list errors", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  expect_error(
+    nutpie_sample(
+      test_models$normal,
+      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+      num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
+      init = function(chain_id) "not a list"
+    ),
+    "named list"
   )
 })

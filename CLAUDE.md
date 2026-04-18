@@ -13,7 +13,8 @@ The package is **functional** — compile Stan models, sample with parallel chai
 ### What works
 - `nutpie_compile_model(stan_file)` or `nutpie_compile_model(code = "...")` — compiles Stan models via BridgeStan
 - `nutpie_sample(model, data, ...)` — parallel NUTS sampling with progress bars
-- Full sampling parameters: `num_draws`, `num_warmup`, `num_chains`, `cores`, `seed`, `max_treedepth`, `target_accept`, `init_mean`, `refresh`, `verbose`
+- Full sampling parameters: `num_draws`, `num_warmup`, `num_chains`, `cores`, `seed`, `max_treedepth`, `target_accept`, `refresh`, `verbose`
+- Single shape-dispatched `init` entry point: `NULL` | scalar (Uniform(-x, x)) | named list (constrained, partial OK) | list of `num_chains` lists | `function(chain_id)` | JSON path(s). `init_mean` is soft-deprecated.
 - Returns `posterior::draws_array` — works with all posterior/bayesplot tooling
 - Diagnostics: `nutpie_diagnostics()` returns divergences, treedepth, energy, step size, etc.
 - Warmup access: `nutpie_warmup_draws()` and `nutpie_warmup_diagnostics()` when `save_warmup = TRUE`

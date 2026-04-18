@@ -1,34 +1,45 @@
-#' Resolve the three init-related arguments into sampler-ready positions.
+#' Evaluate `expr` under a locally-set RNG seed, restoring the caller's global
+#' RNG state on exit. Lets functions that need randomness be driven by an
+#' explicit seed without leaking any RNG advancement back to the caller.
+#' @noRd
+with_local_seed <- function(seed, expr) {
+  old_exists <- exists(".Random.seed", envir = globalenv(), inherits = FALSE)
+  if (old_exists) {
+    old <- get(".Random.seed", envir = globalenv(), inherits = FALSE)
+  }
+  on.exit({
+    if (old_exists) {
+      assign(".Random.seed", old, envir = globalenv())
+    } else if (exists(".Random.seed", envir = globalenv(), inherits = FALSE)) {
+      rm(".Random.seed", envir = globalenv())
+    }
+  }, add = TRUE)
+  set.seed(seed)
+  expr
+}
+
+#' Resolve the `init` argument into sampler-ready positions.
 #'
 #' Returns `list(positions = NULL | list of numeric vectors, jitter = logical)`.
 #' - `positions = NULL` means "use sampler default" (Uniform(-2, 2) per chain).
 #' - Otherwise, `positions` has length 1 (broadcast) or `num_chains`, and each
 #'   inner vector is an unconstrained parameter vector (length `ndim_unc`).
-#' Mutual exclusion between `init`, `init_unconstrained`, `init_mean` is
-#' enforced here. `init_mean` is returned as a *jittered* init_positions of
-#' length 1 (legacy behaviour).
+#' `init_mean` is kept as a soft-deprecated alias — when supplied it emits a
+#' warning and is routed through the numeric-vector-on-unconstrained-space
+#' path with jitter. `seed` drives reproducibility of any random fill used by
+#' partial constrained inits and numeric-scalar Uniform(-x, x) draws.
 #' @noRd
-resolve_init <- function(init, init_unconstrained, init_mean, handle,
-                          num_chains) {
-  supplied <- c(!is.null(init), !is.null(init_unconstrained), !is.null(init_mean))
-  if (sum(supplied) > 1L) {
-    stop(
-      "At most one of `init`, `init_unconstrained`, `init_mean` may be supplied.",
+resolve_init <- function(init, init_mean, handle, num_chains, seed) {
+  if (!is.null(init_mean)) {
+    if (!is.null(init)) {
+      stop("Supply either `init` or `init_mean`, not both.", call. = FALSE)
+    }
+    warning(
+      "`init_mean` is deprecated; use `init = function(chain_id) ...`, ",
+      "`init = <scalar>` for Uniform(-x, x), or `init = <named list>`. ",
+      "`init_mean` will be removed in a future version.",
       call. = FALSE
     )
-  }
-
-  if (!is.null(init)) {
-    positions <- init_list_to_positions(init, handle, num_chains)
-    return(list(positions = positions, jitter = FALSE))
-  }
-
-  if (!is.null(init_unconstrained)) {
-    positions <- init_unc_to_positions(init_unconstrained, handle, num_chains)
-    return(list(positions = positions, jitter = FALSE))
-  }
-
-  if (!is.null(init_mean)) {
     if (!is.numeric(init_mean)) {
       stop("`init_mean` must be a numeric vector.", call. = FALSE)
     }
@@ -45,27 +56,118 @@ resolve_init <- function(init, init_unconstrained, init_mean, handle,
     return(list(positions = list(vec), jitter = TRUE))
   }
 
-  list(positions = NULL, jitter = TRUE)
+  if (is.null(init)) {
+    return(list(positions = NULL, jitter = TRUE))
+  }
+
+  if (is.function(init)) {
+    positions <- resolve_function_init(init, handle, num_chains, seed)
+    return(list(positions = positions, jitter = FALSE))
+  }
+
+  if (is.numeric(init) && !is.list(init) && length(init) == 1L) {
+    positions <- resolve_numeric_init(init, handle, num_chains, seed)
+    return(list(positions = positions, jitter = FALSE))
+  }
+
+  if (is.character(init)) {
+    if (length(init) == 1L) {
+      parsed <- jsonlite::fromJSON(init, simplifyVector = TRUE)
+      return(resolve_init(parsed, NULL, handle, num_chains, seed))
+    }
+    if (length(init) == num_chains) {
+      parsed <- lapply(init, jsonlite::fromJSON, simplifyVector = TRUE)
+      return(resolve_init(parsed, NULL, handle, num_chains, seed))
+    }
+    stop("When `init` is a character vector, its length must be 1 or num_chains.",
+         call. = FALSE)
+  }
+
+  if (is.list(init)) {
+    positions <- init_list_to_positions(init, handle, num_chains, seed)
+    return(list(positions = positions, jitter = FALSE))
+  }
+
+  stop("`init` must be NULL, a scalar numeric, a function, a named list, a ",
+       "list of named lists, or a JSON path.", call. = FALSE)
+}
+
+#' Resolve a scalar-numeric `init`: Uniform(-x, x) per chain on the
+#' unconstrained scale. `x == 0` means every chain starts at the origin (no
+#' jitter). For `x > 0`, per-chain seeds are derived deterministically from
+#' `seed` so the same `seed` gives the same starts.
+#' @noRd
+resolve_numeric_init <- function(x, handle, num_chains, seed) {
+  x <- as.numeric(x)
+  if (!is.finite(x) || x < 0) {
+    stop("`init` scalar must be a non-negative finite number (got ", x, ").",
+         call. = FALSE)
+  }
+  ndim <- bs_ndim_unc(handle)
+  if (x == 0) {
+    return(list(rep(0, ndim)))
+  }
+  with_local_seed(seed, {
+    lapply(seq_len(num_chains), function(i) {
+      stats::runif(ndim, min = -x, max = x)
+    })
+  })
+}
+
+#' Resolve a function-form `init`: call `f(chain_id)` for `chain_id` in
+#' `1:num_chains` and treat each result as a (possibly partial) constrained
+#' named list. Each per-chain list is expanded via `expand_constrained_init`
+#' with its own deterministic seed.
+#' @noRd
+resolve_function_init <- function(f, handle, num_chains, seed) {
+  if (length(formals(f)) < 1L) {
+    stop("`init` function must accept at least one argument (chain_id).",
+         call. = FALSE)
+  }
+  block_names <- bs_block_names(handle)
+  valid_bases <- unique(sub("\\..*$", "", block_names))
+  chain_seeds <- with_local_seed(seed, {
+    sample.int(.Machine$integer.max, num_chains)
+  })
+  lapply(seq_len(num_chains), function(i) {
+    val <- f(i)
+    if (!is.list(val) || is.null(names(val)) || any(names(val) == "")) {
+      stop("`init` function must return a named list of parameter values ",
+           "(got result for chain_id = ", i, " that is not a named list).",
+           call. = FALSE)
+    }
+    if (!all(vapply(val, is.numeric, logical(1)))) {
+      stop("`init` function returned non-numeric values for chain_id = ", i,
+           ".", call. = FALSE)
+    }
+    expand_constrained_init(val, handle, block_names, valid_bases,
+                            seed = chain_seeds[i])
+  })
 }
 
 #' Expand a (possibly partial) constrained named list into a full unconstrained
 #' vector. Missing parameters are filled by constraining a uniform(-2, 2) draw
 #' in unconstrained space to produce well-shaped defaults for each declared
 #' block-level parameter. `block_names` / `valid_bases` may be supplied by
-#' callers that hoist them out of a per-chain loop.
+#' callers that hoist them out of a per-chain loop. When `seed` is non-NULL the
+#' random fill is driven by that seed (global RNG state is preserved).
 #' @noRd
 expand_constrained_init <- function(params_list, handle,
                                     block_names = bs_block_names(handle),
-                                    valid_bases = unique(sub("\\..*$", "", block_names))) {
+                                    valid_bases = unique(sub("\\..*$", "", block_names)),
+                                    seed = NULL) {
   defaults <- if (all(valid_bases %in% names(params_list))) {
     NULL
   } else {
-    rand_unc <- stats::runif(bs_ndim_unc(handle), min = -2, max = 2)
-    full_con <- bs_param_constrain(
-      handle, rand_unc,
-      as.integer(sample.int(.Machine$integer.max, 1L))
-    )
-    full_con[seq_along(block_names)]
+    fill <- function() {
+      rand_unc <- stats::runif(bs_ndim_unc(handle), min = -2, max = 2)
+      full_con <- bs_param_constrain(
+        handle, rand_unc,
+        as.integer(sample.int(.Machine$integer.max, 1L))
+      )
+      full_con[seq_along(block_names)]
+    }
+    if (is.null(seed)) fill() else with_local_seed(seed, fill())
   }
 
   theta_flat <- flat_overlay(params_list, block_names, defaults)
@@ -125,23 +227,11 @@ flat_overlay <- function(user_list, block_names, defaults = NULL) {
   out
 }
 
-#' Convert an `init` argument (single list | list-of-lists | path | list of
-#' paths) to a list of unconstrained position vectors.
+#' Convert a list-form `init` (single list | list-of-lists) to a list of
+#' unconstrained position vectors. `seed` drives reproducibility of any
+#' per-chain random fill for partial inits.
 #' @noRd
-init_list_to_positions <- function(init, handle, num_chains) {
-  if (is.character(init)) {
-    if (length(init) == 1L) {
-      parsed <- jsonlite::fromJSON(init, simplifyVector = TRUE)
-      return(init_list_to_positions(parsed, handle, num_chains))
-    }
-    if (length(init) == num_chains) {
-      parsed <- lapply(init, jsonlite::fromJSON, simplifyVector = TRUE)
-      return(init_list_to_positions(parsed, handle, num_chains))
-    }
-    stop("When `init` is a character vector, its length must be 1 or num_chains.",
-         call. = FALSE)
-  }
-
+init_list_to_positions <- function(init, handle, num_chains, seed) {
   if (!is.list(init)) {
     stop("`init` must be a named list, a list of named lists, or a JSON path.",
          call. = FALSE)
@@ -151,7 +241,8 @@ init_list_to_positions <- function(init, handle, num_chains) {
   valid_bases <- unique(sub("\\..*$", "", block_names))
 
   if (is_single_named_param_list(init)) {
-    pos <- expand_constrained_init(init, handle, block_names, valid_bases)
+    pos <- expand_constrained_init(init, handle, block_names, valid_bases,
+                                   seed = seed)
     return(list(pos))
   }
 
@@ -159,14 +250,17 @@ init_list_to_positions <- function(init, handle, num_chains) {
     stop("`init` must have length ", num_chains, " (num_chains), got ",
          length(init), ".", call. = FALSE)
   }
-  lapply(init, function(p) {
+  chain_seeds <- with_local_seed(seed, {
+    sample.int(.Machine$integer.max, num_chains)
+  })
+  Map(function(p, s) {
     if (is.character(p)) p <- jsonlite::fromJSON(p, simplifyVector = TRUE)
     if (!is.list(p) || !is_single_named_param_list(p)) {
       stop("Each per-chain `init` element must be a named list of parameter values.",
            call. = FALSE)
     }
-    expand_constrained_init(p, handle, block_names, valid_bases)
-  })
+    expand_constrained_init(p, handle, block_names, valid_bases, seed = s)
+  }, init, chain_seeds)
 }
 
 #' Heuristic: a list is a "single param list" if it is named and no element is
@@ -177,64 +271,8 @@ is_single_named_param_list <- function(x) {
   if (!is.list(x)) return(FALSE)
   nms <- names(x)
   if (is.null(nms) || any(nms == "")) return(FALSE)
-  # If any element is itself a named list, assume it's a per-chain wrapper.
   any_nested_named_list <- any(vapply(x, function(el) {
     is.list(el) && !is.null(names(el)) && all(names(el) != "")
   }, logical(1)))
   !any_nested_named_list
-}
-
-#' Convert `init_unconstrained` argument (named vector or list of them) to a
-#' list of unconstrained positions (reordered to BridgeStan's internal order).
-#' @noRd
-init_unc_to_positions <- function(init_unconstrained, handle, num_chains) {
-  unc_names <- dot_to_bracket(bs_unc_names(handle))
-  ndim <- length(unc_names)
-
-  if (is.numeric(init_unconstrained)) {
-    return(list(reorder_unc_vec(init_unconstrained, unc_names, ndim)))
-  }
-  if (is.list(init_unconstrained)) {
-    if (length(init_unconstrained) != num_chains) {
-      stop("`init_unconstrained` list must have length num_chains (", num_chains,
-           ").", call. = FALSE)
-    }
-    return(lapply(init_unconstrained, function(v) {
-      if (!is.numeric(v)) {
-        stop("Each element of `init_unconstrained` must be a numeric vector.",
-             call. = FALSE)
-      }
-      reorder_unc_vec(v, unc_names, ndim)
-    }))
-  }
-  stop("`init_unconstrained` must be a named numeric vector, or a list of such.",
-       call. = FALSE)
-}
-
-#' Validate and reorder a named unconstrained vector to BridgeStan's order.
-#' @noRd
-reorder_unc_vec <- function(v, unc_names, ndim) {
-  if (is.null(names(v)) || any(names(v) == "")) {
-    stop("`init_unconstrained` must be a named numeric vector (one entry per ",
-         "unconstrained parameter). Use nutpie_param_names(model, ",
-         "unconstrained = TRUE) to see the expected names.",
-         call. = FALSE)
-  }
-  if (length(v) != ndim) {
-    stop("`init_unconstrained` has length ", length(v), " but model has ",
-         ndim, " unconstrained parameters.", call. = FALSE)
-  }
-  missing <- setdiff(unc_names, names(v))
-  extra <- setdiff(names(v), unc_names)
-  if (length(missing) > 0L || length(extra) > 0L) {
-    msg <- "Names of `init_unconstrained` do not match model parameters."
-    if (length(missing) > 0L) {
-      msg <- paste0(msg, "\n  Missing: ", paste(missing, collapse = ", "))
-    }
-    if (length(extra) > 0L) {
-      msg <- paste0(msg, "\n  Unknown: ", paste(extra, collapse = ", "))
-    }
-    stop(msg, call. = FALSE)
-  }
-  as.numeric(v[unc_names])
 }

@@ -127,7 +127,7 @@ pub struct StanModel {
     /// One position per chain. `len() == 1` means broadcast to all chains.
     /// Each vector has length `ndim` (unconstrained space).
     init_positions: Option<Vec<Vec<f64>>>,
-    /// If true, apply ±0.5 uniform jitter (legacy `init_mean` behaviour).
+    /// If true, apply ±0.5 uniform jitter around the provided position.
     /// If false, chains start exactly at the provided position.
     jitter: bool,
     /// Assigns a unique chain id (0..num_chains) on each `math()` call.
@@ -162,9 +162,8 @@ impl StanModel {
     ///
     /// `positions` may have length 1 (broadcast) or `num_chains`. Each inner
     /// vector must have length `param_unc_num()`. If `jitter = true`,
-    /// ±0.5 uniform jitter is added per-coordinate (matches legacy
-    /// `init_mean` behaviour). If `jitter = false`, the position is used
-    /// exactly.
+    /// ±0.5 uniform jitter is added per-coordinate. If `jitter = false`,
+    /// the position is used exactly.
     pub fn with_init_positions(
         mut self,
         positions: Option<Vec<Vec<f64>>>,

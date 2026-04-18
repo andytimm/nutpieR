@@ -15,7 +15,6 @@ nutpie_sample(
   target_accept = 0.8,
   refresh = 100L,
   init = NULL,
-  init_unconstrained = NULL,
   init_mean = NULL,
   save_warmup = FALSE,
   cores = NULL,
@@ -56,29 +55,34 @@ steps per draw is at most \code{2^max_treedepth}.}
 \item{refresh}{How often to print progress updates, in draws per chain.
 Set to \code{0} to suppress progress output. Default is \code{100}.}
 
-\item{init}{Initial values on the \strong{constrained} (user-facing) parameter
-scale. Preferred initialisation path — names match the Stan program's
-\code{parameters} block. Can be:
-\itemize{
-\item A named list, e.g. \code{list(mu = 0, sigma = 1)}. Broadcast to all chains.
-Missing parameters are filled with random draws (per chain).
-\item A list of \code{num_chains} named lists (different starts per chain).
-\item A path to a CmdStan-style JSON file, or a character vector of
-\code{num_chains} such paths.
-Mutually exclusive with \code{init_unconstrained} and \code{init_mean}. No jitter is
-applied.
-}}
+\item{init}{Initial values for each chain. Single entry point that
+dispatches on the input shape:
+\describe{
+\item{\code{NULL} (default)}{Each chain starts from a Uniform(-2, 2) draw on
+the unconstrained scale (nuts-rs default).}
+\item{Scalar numeric \code{x}}{Each chain starts from a Uniform(-x, x) draw
+on the unconstrained scale. \code{x = 0} starts every chain at the origin.
+Must be non-negative.}
+\item{Named list, e.g. \code{list(mu = 0, sigma = 1)}}{Broadcast constrained
+values to all chains. Partial inits are allowed — missing parameters
+are filled with random draws (per chain, seeded from \code{seed}).}
+\item{List of \code{num_chains} named lists}{Per-chain constrained inits
+(different starting point per chain). Each element may be partial.}
+\item{Function \code{function(chain_id) ...}}{Called once per chain with
+\code{chain_id} in \code{1:num_chains}; must return a (possibly partial)
+named list of constrained parameter values.}
+\item{Character path(s)}{A JSON file path, or a character vector of
+\code{num_chains} JSON file paths (CmdStan-style). Parsed values are
+treated as constrained named lists.}
+}
+No jitter is applied; starting points are used exactly (after any
+random fill for partial constrained inits). To work on the unconstrained
+scale, see \code{\link[=nutpie_unconstrain]{nutpie_unconstrain()}} to convert constrained values first.}
 
-\item{init_unconstrained}{Initial values on the \strong{unconstrained} scale as
-a named numeric vector, or a list of \code{num_chains} such vectors. Names must
-match \code{\link[=nutpie_param_names]{nutpie_param_names()}} (with \code{unconstrained = TRUE}). All parameters
-must be supplied — no partial inits. Mutually exclusive with \code{init} and
-\code{init_mean}. No jitter is applied.}
-
-\item{init_mean}{Legacy initialisation argument. Scalar or numeric vector
-(unconstrained space, positional). Each chain starts at
-\code{init_mean + Uniform(-0.5, 0.5)} jitter. Prefer \code{init} or
-\code{init_unconstrained} for new code.}
+\item{init_mean}{Deprecated. Scalar or numeric vector on the unconstrained
+scale, with ±0.5 uniform jitter per chain. Use
+\code{init = function(chain_id) ...}, \code{init = <scalar>} for Uniform(-x, x), or
+\code{init = <named list>} instead. Will be removed in a future version.}
 
 \item{save_warmup}{If \code{TRUE}, warmup draws and diagnostics are attached as
 attributes. Retrieve them with \code{\link[=nutpie_warmup_draws]{nutpie_warmup_draws()}}.}

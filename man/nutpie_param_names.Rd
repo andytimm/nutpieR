@@ -4,7 +4,12 @@
 \alias{nutpie_param_names}
 \title{Parameter names of a compiled Stan model}
 \usage{
-nutpie_param_names(model, data = NULL, unconstrained = TRUE)
+nutpie_param_names(
+  model,
+  data = NULL,
+  which = c("block", "unconstrained", "full"),
+  unconstrained = NULL
+)
 }
 \arguments{
 \item{model}{A \code{"nutpie_model"} object from \code{\link[=nutpie_compile_model]{nutpie_compile_model()}}.}
@@ -12,10 +17,18 @@ nutpie_param_names(model, data = NULL, unconstrained = TRUE)
 \item{data}{Model data (same format as \code{\link[=nutpie_sample]{nutpie_sample()}}'s \code{data} argument).
 Required if the model has a \code{data} block.}
 
-\item{unconstrained}{If \code{TRUE} (default), return unconstrained parameter
-names (the space used by \code{init_unconstrained}). If \code{FALSE}, return the
-full constrained names including transformed parameters and generated
-quantities (the space users usually think in).}
+\item{which}{One of \code{"block"}, \code{"unconstrained"}, \code{"full"}:
+\describe{
+\item{\code{"block"} (default)}{Block-level parameter names — the names you
+pass as keys to \code{\link[=nutpie_sample]{nutpie_sample()}}'s \code{init} argument.}
+\item{\code{"unconstrained"}}{Unconstrained internal parameter names.}
+\item{\code{"full"}}{Block parameters plus transformed parameters and
+generated quantities (the full output draws space).}
+}}
+
+\item{unconstrained}{Deprecated. If non-\code{NULL}, overrides \code{which}:
+\code{TRUE} maps to \code{"unconstrained"}, \code{FALSE} maps to \code{"full"}. Emits a
+deprecation warning and will be removed in a future version.}
 }
 \value{
 A character vector of parameter names.

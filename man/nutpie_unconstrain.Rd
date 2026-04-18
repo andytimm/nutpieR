@@ -21,12 +21,16 @@ A named numeric vector whose names are the unconstrained parameter
 names (in BridgeStan's internal order).
 }
 \description{
-Takes a named list of parameter values in the constrained (user-facing)
-space, and returns the corresponding unconstrained vector that BridgeStan
-uses internally. Useful for building \code{init_unconstrained} from familiar
-parameter values.
+Introspection / debugging helper. Takes a named list of parameter values in
+the constrained (user-facing) space and returns the corresponding
+unconstrained vector that BridgeStan uses internally. Useful when
+inspecting how Stan's unconstraining transform maps your values, or when
+sanity-checking a model's parameter order.
 }
 \details{
-All parameters declared in the \code{parameters} block must be supplied. For
-partial inits, use \code{\link[=nutpie_sample]{nutpie_sample()}}'s \code{init} argument instead.
+For setting sampler starting points, pass constrained values directly to
+\code{\link[=nutpie_sample]{nutpie_sample()}}'s \code{init} argument (e.g. \code{init = list(mu = 0, sigma = 1)})
+— this function is not part of the normal init workflow.
+
+All parameters declared in the \code{parameters} block must be supplied.
 }
