@@ -1,13 +1,25 @@
 #' Extract sampler diagnostics from nutpie draws
 #'
+#' Diagnostics are extracted directly from the nuts-rs sample-stats schema, so
+#' the exact set of fields depends on the installed nuts-rs version and the
+#' sampling options used. Count fields (`depth`, `n_steps`, `chain`, `draw`,
+#' `index_in_trajectory`) are returned as R `integer` when every value fits
+#' in `i32`, else as `numeric`; floating-point fields (`logp`, `energy`,
+#' `step_size`, etc.) are always `numeric`. `NA`s use the matching sentinel
+#' (`NA_integer_` / `NA_real_`).
+#'
 #' @param draws A `posterior::draws_array` returned by [nutpie_sample()].
 #' @return A `nutpie_diagnostics` object (a named list with a print method).
-#'   Fields include `diverging`, `depth`, `energy`, `energy_error`, `logp`,
-#'   `n_steps`, `step_size_bar`, and `mean_tree_accept`. When
-#'   `store_divergences = TRUE` was used, additional list columns
-#'   `divergence_start`, `divergence_end`, `divergence_momentum`, and
-#'   `divergence_start_gradient` are included. When `store_mass_matrix = TRUE`
-#'   was used, a `mass_matrix_inv` list column is included.
+#'   Commonly available scalar fields: `diverging`, `tuning`, `maxdepth_reached`
+#'   (logical); `depth`, `n_steps`, `chain`, `draw`, `index_in_trajectory`
+#'   (integer when fits in `i32`, else numeric); `logp`, `energy`,
+#'   `energy_error`, `step_size`, `step_size_bar`, `mean_tree_accept`,
+#'   `mean_tree_accept_sym` (numeric).
+#'   List-valued fields (one entry per draw, `NULL` when not recorded):
+#'   `unconstrained_draw`, `gradient`. With `store_mass_matrix = TRUE`:
+#'   `mass_matrix_inv`. With `store_divergences = TRUE`: `divergence_start`,
+#'   `divergence_end`, `divergence_momentum`, `divergence_start_gradient`
+#'   (only present when at least one draw diverged).
 #' @export
 nutpie_diagnostics <- function(draws) {
   diag <- attr(draws, "diagnostics")
@@ -21,33 +33,46 @@ nutpie_diagnostics <- function(draws) {
 
 #' @export
 print.nutpie_diagnostics <- function(x, ...) {
-  n <- length(x$diverging)
+  n <- length(x$diverging %||% x[[1]])
   num_chains <- attr(x, "num_chains") %||% 1L
   n_per_chain <- n %/% num_chains
-
-  n_div <- sum(x$diverging)
-  max_depth <- max(x$depth)
-  mean_accept <- mean(x$mean_tree_accept)
-  step_sizes <- x$step_size_bar[seq(n_per_chain, n, by = n_per_chain)]
 
   cat("Sampler diagnostics\n")
   cat(sprintf("  Draws:         %d (%d per chain, %d chains)\n",
               n, n_per_chain, num_chains))
-  cat(sprintf("  Divergences:   %d", n_div))
-  if (n_div > 0) cat(sprintf(" (%.1f%%)", 100 * n_div / n))
-  cat("\n")
-  cat(sprintf("  Max treedepth: %d\n", max_depth))
-  cat(sprintf("  Mean accept:   %.3f\n", mean_accept))
-  cat(sprintf("  Step size:     %s\n",
-              paste(sprintf("%.4f", step_sizes), collapse = ", ")))
 
-  if (n_div > 0) {
+  if (!is.null(x$diverging)) {
+    n_div <- sum(x$diverging, na.rm = TRUE)
+    cat(sprintf("  Divergences:   %d", n_div))
+    if (n_div > 0) cat(sprintf(" (%.1f%%)", 100 * n_div / n))
+    cat("\n")
+  }
+  if (!is.null(x$maxdepth_reached)) {
+    n_md <- sum(x$maxdepth_reached, na.rm = TRUE)
+    cat(sprintf("  Max-treedepth hits: %d", n_md))
+    if (n_md > 0) cat(sprintf(" (%.1f%%)", 100 * n_md / n))
+    cat("\n")
+  } else if (!is.null(x$depth)) {
+    cat(sprintf("  Max treedepth: %d\n", max(x$depth, na.rm = TRUE)))
+  }
+  if (!is.null(x$mean_tree_accept)) {
+    cat(sprintf("  Mean accept:   %.3f\n", mean(x$mean_tree_accept, na.rm = TRUE)))
+  }
+  if (!is.null(x$step_size_bar)) {
+    step_sizes <- x$step_size_bar[seq(n_per_chain, n, by = n_per_chain)]
+    cat(sprintf("  Step size:     %s\n",
+                paste(sprintf("%.4f", step_sizes), collapse = ", ")))
+  }
+
+  if (!is.null(x$diverging) && sum(x$diverging, na.rm = TRUE) > 0) {
     cat("\n")
     cat("  Warning: divergent transitions detected. Consider increasing\n")
     cat("  target_accept or reparameterizing the model.\n")
   }
 
-  cat("\nUse `str(nutpie_diagnostics(draws))` for raw diagnostic vectors.\n")
+  cat(sprintf("\nAvailable fields: %s\n",
+              paste(names(x), collapse = ", ")))
+  cat("Use `str(nutpie_diagnostics(draws))` for raw diagnostic vectors.\n")
   invisible(x)
 }
 
