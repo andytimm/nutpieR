@@ -1,6 +1,10 @@
 #![allow(non_snake_case)]
 
-use arrow::array::Array;
+use arrow::array::{
+    Array, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array, LargeListArray,
+    UInt32Array, UInt64Array,
+};
+use arrow::datatypes::DataType;
 use extendr_api::prelude::*;
 use nuts_rs::{
     ArrowConfig, ArrowTrace, ChainProgress, CpuLogpFunc, CpuMath, DiagGradNutsSettings, HasDims,
@@ -409,13 +413,8 @@ fn sample_stan(
 
     let draws_robj = build_draws_matrix(&results, ndim, num_tune, n_draws_per_chain, &param_names)?;
 
-    let diagnostics = extract_diagnostics(
-        &results,
-        num_tune,
-        n_draws_per_chain,
-        store_divergences,
-        store_mass_matrix,
-    );
+    // Extract post-warmup diagnostics (schema-driven)
+    let diagnostics = extract_diagnostics(&results, num_tune, n_draws_per_chain)?;
 
     let warmup_draws_robj: Robj = if save_warmup {
         build_draws_matrix(&results, ndim, 0, num_tune, &param_names)?
@@ -423,7 +422,7 @@ fn sample_stan(
         ().into_robj()
     };
     let warmup_diagnostics_robj: Robj = if save_warmup {
-        extract_diagnostics(&results, 0, num_tune, store_divergences, store_mass_matrix).into_robj()
+        extract_diagnostics(&results, 0, num_tune)?.into_robj()
     } else {
         ().into_robj()
     };
@@ -493,177 +492,153 @@ fn build_draws_matrix(
     Ok(robj)
 }
 
+/// Convert an Arrow column window (across all chains) into an R object.
+///
+/// All numeric Arrow types (Float64/32, Int64/32, UInt64/32) become R `double`.
+/// Integer Arrow types are *not* cast to R integer — i32 can silently truncate
+/// values like a Float64 logp that gets misrouted, which is exactly the kind of
+/// bug schema-driven extraction is meant to prevent.
+///
+/// Returns `None` for unsupported Arrow types so the caller can warn-and-skip.
+fn column_to_robj(
+    cols: &[&dyn Array],
+    dtype: &DataType,
+    skip: usize,
+    n_draws: usize,
+) -> Option<Robj> {
+    let total = cols.len() * n_draws;
+
+    macro_rules! scalar_to_doubles {
+        ($arr_ty:ty) => {{
+            let mut out: Vec<f64> = Vec::with_capacity(total);
+            for c in cols {
+                let arr = c.as_any().downcast_ref::<$arr_ty>()?;
+                for i in 0..n_draws {
+                    let row = skip + i;
+                    out.push(if arr.is_null(row) {
+                        f64::NAN
+                    } else {
+                        arr.value(row) as f64
+                    });
+                }
+            }
+            Some(out.into_robj())
+        }};
+    }
+
+    match dtype {
+        DataType::Boolean => {
+            let mut out: Vec<bool> = Vec::with_capacity(total);
+            for c in cols {
+                let arr = c.as_any().downcast_ref::<BooleanArray>()?;
+                for i in 0..n_draws {
+                    let row = skip + i;
+                    out.push(!arr.is_null(row) && arr.value(row));
+                }
+            }
+            Some(out.into_robj())
+        }
+        DataType::Float64 => scalar_to_doubles!(Float64Array),
+        DataType::Float32 => scalar_to_doubles!(Float32Array),
+        DataType::Int64 => scalar_to_doubles!(Int64Array),
+        DataType::UInt64 => scalar_to_doubles!(UInt64Array),
+        DataType::Int32 => scalar_to_doubles!(Int32Array),
+        DataType::UInt32 => scalar_to_doubles!(UInt32Array),
+        DataType::LargeList(inner) if matches!(inner.data_type(), DataType::Float64) => {
+            let mut out: Vec<Robj> = Vec::with_capacity(total);
+            for c in cols {
+                let list_arr = c.as_any().downcast_ref::<LargeListArray>()?;
+                for i in 0..n_draws {
+                    let row = skip + i;
+                    if list_arr.is_null(row) {
+                        out.push(().into_robj());
+                        continue;
+                    }
+                    let inner_arr = list_arr.value(row);
+                    let values = inner_arr.as_any().downcast_ref::<Float64Array>()?;
+                    if values.is_empty() {
+                        out.push(().into_robj());
+                    } else {
+                        let v: Vec<f64> = (0..values.len()).map(|j| values.value(j)).collect();
+                        out.push(v.into_robj());
+                    }
+                }
+            }
+            Some(List::from_values(out).into_robj())
+        }
+        _ => None,
+    }
+}
+
 /// Extract diagnostic statistics from sample_stats RecordBatches.
-/// Returns a named R list with one vector per diagnostic field.
+///
+/// Schema-driven: iterates `sample_stats.schema().fields()` and dispatches each
+/// column through `column_to_robj`. Columns that are entirely null in the
+/// requested window are dropped (covers e.g. `mass_matrix_inv` when
+/// `store_mass_matrix = false`). Unsupported Arrow types are skipped with a
+/// warning rather than failing the whole call.
 fn extract_diagnostics(
     results: &[ArrowTrace],
     skip: usize,
     n_draws: usize,
-    include_divergence_detail: bool,
-    include_mass_matrix: bool,
-) -> List {
-    let n_chains = results.len();
-    let total = n_draws * n_chains;
-
-    let mut diverging = vec![false; total];
-    let mut depth = vec![0i32; total];
-    let mut energy = vec![0.0f64; total];
-    let mut energy_error = vec![0.0f64; total];
-    let mut logp = vec![0.0f64; total];
-    let mut n_steps = vec![0i32; total];
-    let mut step_size_bar = vec![0.0f64; total];
-    let mut mean_tree_accept = vec![0.0f64; total];
-
-    fn null_robj_vec(n: usize, include: bool) -> Vec<Robj> {
-        if include { (0..n).map(|_| ().into_robj()).collect() } else { vec![] }
+) -> Result<List> {
+    if results.is_empty() {
+        return Ok(List::from_values(Vec::<Robj>::new()));
     }
 
-    let mut div_start = null_robj_vec(total, include_divergence_detail);
-    let mut div_end = null_robj_vec(total, include_divergence_detail);
-    let mut div_momentum = null_robj_vec(total, include_divergence_detail);
-    let mut div_start_grad = null_robj_vec(total, include_divergence_detail);
-    let mut mass_matrix = null_robj_vec(total, include_mass_matrix);
+    let schema = results[0].sample_stats.schema();
+    let mut names: Vec<String> = Vec::new();
+    let mut values: Vec<Robj> = Vec::new();
 
-    for (chain_idx, trace) in results.iter().enumerate() {
-        let stats = &trace.sample_stats;
-        let offset = chain_idx * n_draws;
+    for field in schema.fields() {
+        let name = field.name();
 
-        extract_bool(stats, "diverging", &mut diverging, offset, skip, n_draws);
-        extract_u64_as_i32(stats, "depth", &mut depth, offset, skip, n_draws);
-        extract_f64(stats, "energy", &mut energy, offset, skip, n_draws);
-        extract_f64(stats, "energy_error", &mut energy_error, offset, skip, n_draws);
-        extract_f64(stats, "logp", &mut logp, offset, skip, n_draws);
-        extract_u64_as_i32(stats, "n_steps", &mut n_steps, offset, skip, n_draws);
-        extract_f64(stats, "step_size_bar", &mut step_size_bar, offset, skip, n_draws);
-        extract_f64(stats, "mean_tree_accept", &mut mean_tree_accept, offset, skip, n_draws);
-
-        if include_divergence_detail {
-            extract_large_list_f64(stats, "divergence_start", &mut div_start, offset, skip, n_draws);
-            extract_large_list_f64(stats, "divergence_end", &mut div_end, offset, skip, n_draws);
-            extract_large_list_f64(stats, "divergence_momentum", &mut div_momentum, offset, skip, n_draws);
-            extract_large_list_f64(stats, "divergence_start_gradient", &mut div_start_grad, offset, skip, n_draws);
-        }
-
-        if include_mass_matrix {
-            extract_large_list_f64(stats, "mass_matrix_inv", &mut mass_matrix, offset, skip, n_draws);
-        }
-    }
-
-    fn optional_list(values: Vec<Robj>, include: bool) -> Robj {
-        if include { List::from_values(values).into_robj() } else { ().into_robj() }
-    }
-
-    let div_start_robj = optional_list(div_start, include_divergence_detail);
-    let div_end_robj = optional_list(div_end, include_divergence_detail);
-    let div_momentum_robj = optional_list(div_momentum, include_divergence_detail);
-    let div_start_grad_robj = optional_list(div_start_grad, include_divergence_detail);
-    let mass_matrix_robj = optional_list(mass_matrix, include_mass_matrix);
-
-    list!(
-        diverging = diverging,
-        depth = depth,
-        energy = energy,
-        energy_error = energy_error,
-        logp = logp,
-        n_steps = n_steps,
-        step_size_bar = step_size_bar,
-        mean_tree_accept = mean_tree_accept,
-        divergence_start = div_start_robj,
-        divergence_end = div_end_robj,
-        divergence_momentum = div_momentum_robj,
-        divergence_start_gradient = div_start_grad_robj,
-        mass_matrix_inv = mass_matrix_robj
-    )
-}
-
-fn extract_bool(
-    batch: &arrow::record_batch::RecordBatch,
-    name: &str,
-    out: &mut [bool],
-    offset: usize,
-    skip: usize,
-    n: usize,
-) {
-    if let Some(col) = batch.column_by_name(name) {
-        if let Some(arr) = col.as_any().downcast_ref::<arrow::array::BooleanArray>() {
-            for i in 0..n {
-                out[offset + i] = arr.value(skip + i);
-            }
-        }
-    }
-}
-
-fn extract_u64_as_i32(
-    batch: &arrow::record_batch::RecordBatch,
-    name: &str,
-    out: &mut [i32],
-    offset: usize,
-    skip: usize,
-    n: usize,
-) {
-    if let Some(col) = batch.column_by_name(name) {
-        if let Some(arr) = col.as_any().downcast_ref::<arrow::array::UInt64Array>() {
-            for i in 0..n {
-                out[offset + i] = arr.value(skip + i) as i32;
-            }
-        }
-    }
-}
-
-fn extract_f64(
-    batch: &arrow::record_batch::RecordBatch,
-    name: &str,
-    out: &mut [f64],
-    offset: usize,
-    skip: usize,
-    n: usize,
-) {
-    if let Some(col) = batch.column_by_name(name) {
-        if let Some(arr) = col.as_any().downcast_ref::<arrow::array::Float64Array>() {
-            for i in 0..n {
-                out[offset + i] = arr.value(skip + i);
-            }
-        }
-    }
-}
-
-/// Extract a LargeList(Float64) column into a Vec<Robj>.
-/// Each element is either NULL (for null/empty list entries) or a numeric vector.
-fn extract_large_list_f64(
-    batch: &arrow::record_batch::RecordBatch,
-    name: &str,
-    out: &mut [Robj],
-    offset: usize,
-    skip: usize,
-    n: usize,
-) {
-    if let Some(col) = batch.column_by_name(name) {
-        if let Some(list_arr) = col
-            .as_any()
-            .downcast_ref::<arrow::array::LargeListArray>()
-        {
-            for i in 0..n {
-                let row = skip + i;
-                if list_arr.is_null(row) {
-                    out[offset + i] = ().into_robj();
-                } else {
-                    let inner = list_arr.value(row);
-                    if let Some(values) = inner
-                        .as_any()
-                        .downcast_ref::<arrow::array::Float64Array>()
-                    {
-                        if values.is_empty() {
-                            out[offset + i] = ().into_robj();
-                        } else {
-                            let vec: Vec<f64> =
-                                (0..values.len()).map(|j| values.value(j)).collect();
-                            out[offset + i] = vec.into_robj();
-                        }
-                    }
+        let mut cols: Vec<&dyn Array> = Vec::with_capacity(results.len());
+        let mut all_present = true;
+        for trace in results {
+            match trace.sample_stats.column_by_name(name) {
+                Some(c) => cols.push(c.as_ref()),
+                None => {
+                    all_present = false;
+                    break;
                 }
             }
         }
+        if !all_present {
+            continue;
+        }
+
+        // Drop columns that are entirely null in the requested window
+        // (e.g. mass_matrix_inv / divergence_* when their flags are off).
+        let any_non_null = cols.iter().any(|c| {
+            (skip..skip + n_draws).any(|row| row < c.len() && !c.is_null(row))
+        });
+        if !any_non_null {
+            continue;
+        }
+
+        match column_to_robj(&cols, field.data_type(), skip, n_draws) {
+            Some(robj) => {
+                names.push(name.clone());
+                values.push(robj);
+            }
+            None => {
+                rprintln!(
+                    "nutpieR: skipping diagnostic '{}' — unsupported Arrow type {:?}",
+                    name,
+                    field.data_type()
+                );
+            }
+        }
     }
+
+    let lst = List::from_values(values);
+    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let mut robj = lst.into_robj();
+    robj.set_attrib("names", name_refs)
+        .map_err(|e| Error::Other(format!("failed to set diagnostics names: {e}")))?;
+    let lst: List = robj.try_into().map_err(r_err)?;
+    Ok(lst)
 }
 
 /// Open a BridgeStan model and return an `ExternalPtr<BSHandle>` that caches

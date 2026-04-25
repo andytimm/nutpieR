@@ -11,13 +11,20 @@ nutpie_diagnostics(draws)
 }
 \value{
 A \code{nutpie_diagnostics} object (a named list with a print method).
-Fields include \code{diverging}, \code{depth}, \code{energy}, \code{energy_error}, \code{logp},
-\code{n_steps}, \code{step_size_bar}, and \code{mean_tree_accept}. When
-\code{store_divergences = TRUE} was used, additional list columns
-\code{divergence_start}, \code{divergence_end}, \code{divergence_momentum}, and
-\code{divergence_start_gradient} are included. When \code{store_mass_matrix = TRUE}
-was used, a \code{mass_matrix_inv} list column is included.
+Commonly available scalar fields: \code{diverging}, \code{tuning}, \code{maxdepth_reached}
+(logical); \code{depth}, \code{n_steps}, \code{chain}, \code{draw}, \code{index_in_trajectory},
+\code{logp}, \code{energy}, \code{energy_error}, \code{step_size}, \code{step_size_bar},
+\code{mean_tree_accept}, \code{mean_tree_accept_sym} (numeric).
+List-valued fields (one entry per draw, \code{NULL} when not recorded):
+\code{unconstrained_draw}, \code{gradient}. With \code{store_mass_matrix = TRUE}:
+\code{mass_matrix_inv}. With \code{store_divergences = TRUE}: \code{divergence_start},
+\code{divergence_end}, \code{divergence_momentum}, \code{divergence_start_gradient}
+(only present when at least one draw diverged).
 }
 \description{
-Extract sampler diagnostics from nutpie draws
+Diagnostics are extracted directly from the nuts-rs sample-stats schema, so
+the exact set of fields depends on the installed nuts-rs version and the
+sampling options used. All numeric fields are returned as R \code{double}, even
+when the underlying Arrow column is integer-typed (depth, n_steps, chain,
+draw, etc.) — this avoids silent truncation.
 }
