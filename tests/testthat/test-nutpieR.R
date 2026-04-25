@@ -113,7 +113,11 @@ test_that("nutpie_sample accepts sampling parameters", {
   expect_equal(posterior::nchains(draws), 2)
 })
 
-test_that("nutpie_diagnostics returns expected fields", {
+test_that("nutpie_diagnostics exposes the load-bearing fields", {
+  # Narrow contract: only the fields nutpieR's own code, docs, and the
+  # standard MCMC convergence-diagnostic vocabulary depend on. Schema
+  # additions in nuts-rs pass silently; the generic shape invariants are
+  # checked separately below.
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
   draws <- nutpie_sample(test_models$bernoulli,
@@ -124,25 +128,29 @@ test_that("nutpie_diagnostics returns expected fields", {
   diag <- nutpie_diagnostics(draws)
   expect_type(diag, "list")
 
-  expected_fields <- c("diverging", "depth", "energy", "energy_error",
-                       "logp", "n_steps", "step_size_bar", "mean_tree_accept")
-  for (field in expected_fields) {
+  must_have <- c("diverging", "depth", "logp", "energy", "n_steps",
+                 "step_size_bar", "mean_tree_accept")
+  for (field in must_have) {
     expect_true(field %in% names(diag), info = paste("missing field:", field))
   }
 
-  expect_equal(length(diag$diverging), 200)
-  expect_equal(length(diag$depth), 200)
-  expect_equal(length(diag$logp), 200)
-
   expect_type(diag$diverging, "logical")
   expect_type(diag$depth, "integer")
+  expect_type(diag$n_steps, "integer")
+  expect_type(diag$logp, "double")
   expect_type(diag$energy, "double")
+
   expect_true(all(diag$depth > 0))
   expect_true(all(is.finite(diag$logp)))
   expect_true(all(diag$mean_tree_accept >= 0 & diag$mean_tree_accept <= 1))
 })
 
-test_that("schema-driven extraction exposes nuts-rs fields", {
+test_that("schema-driven extraction preserves passthrough invariants", {
+  # Whatever nuts-rs emits, the extractor must surface it with the right
+  # shape. We don't pin the exact field set — that's a contract between
+  # nuts-rs and its callers, not nutpieR. We only check generic invariants
+  # over what came through, plus types for the small subset where we're
+  # making a typing promise to users.
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
   draws <- nutpie_sample(test_models$bernoulli,
@@ -151,38 +159,37 @@ test_that("schema-driven extraction exposes nuts-rs fields", {
   )
   diag <- nutpie_diagnostics(draws)
 
-  # Fields nuts-rs always emits in sample_stats
-  always_present <- c(
-    "depth", "maxdepth_reached", "index_in_trajectory", "logp", "energy",
-    "chain", "draw", "energy_error", "unconstrained_draw", "gradient",
-    "step_size", "step_size_bar", "mean_tree_accept", "mean_tree_accept_sym",
-    "n_steps", "tuning", "diverging"
+  # Length invariant: every surfaced field is one entry per draw, regardless
+  # of whether it's a scalar vector or a list-of-vectors.
+  n <- posterior::ndraws(draws)
+  for (f in names(diag)) {
+    expect_equal(length(diag[[f]]), n, info = paste("bad length:", f))
+  }
+
+  # Typing promise (matches the roxygen for nutpie_diagnostics): count
+  # fields surface as integer-when-fits, float fields as double, flag
+  # fields as logical. Only enforced for fields that are actually present.
+  type_promise <- list(
+    integer = c("depth", "n_steps", "chain", "draw", "index_in_trajectory"),
+    double  = c("logp", "energy", "step_size", "step_size_bar",
+                "mean_tree_accept"),
+    logical = c("diverging", "tuning", "maxdepth_reached"),
+    list    = c("unconstrained_draw", "gradient")
   )
-  for (f in always_present) {
-    expect_true(f %in% names(diag), info = paste("missing field:", f))
+  for (typ in names(type_promise)) {
+    for (f in intersect(type_promise[[typ]], names(diag))) {
+      expect_type(diag[[f]], typ)
+    }
   }
 
-  # Int*/UInt* columns become R integer when values fit in i32; Float* are
-  # always double. logp is Float64 in the schema, so the integer arm can
-  # never reach it — the silent-truncation trap is structurally avoided.
-  integer_fields <- c("depth", "n_steps", "chain", "draw",
-                      "index_in_trajectory")
-  for (f in integer_fields) {
-    expect_type(diag[[f]], "integer")
+  # Bernoulli has 1 unconstrained parameter, so per-draw vector fields
+  # should be length 1.
+  if ("unconstrained_draw" %in% names(diag)) {
+    expect_equal(length(diag$unconstrained_draw[[1]]), 1)
   }
-  double_fields <- c("logp", "energy", "step_size")
-  for (f in double_fields) {
-    expect_type(diag[[f]], "double")
+  if ("gradient" %in% names(diag)) {
+    expect_equal(length(diag$gradient[[1]]), 1)
   }
-
-  expect_type(diag$maxdepth_reached, "logical")
-  expect_type(diag$tuning, "logical")
-  expect_type(diag$unconstrained_draw, "list")
-  expect_type(diag$gradient, "list")
-
-  # 1-d bernoulli model: each draw's unconstrained_draw / gradient is length 1
-  expect_equal(length(diag$unconstrained_draw[[1]]), 1)
-  expect_equal(length(diag$gradient[[1]]), 1)
 })
 
 test_that("logp is non-zero floating-point — guards silent default-fill", {

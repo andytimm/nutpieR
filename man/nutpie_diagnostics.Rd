@@ -12,9 +12,10 @@ nutpie_diagnostics(draws)
 \value{
 A \code{nutpie_diagnostics} object (a named list with a print method).
 Commonly available scalar fields: \code{diverging}, \code{tuning}, \code{maxdepth_reached}
-(logical); \code{depth}, \code{n_steps}, \code{chain}, \code{draw}, \code{index_in_trajectory},
-\code{logp}, \code{energy}, \code{energy_error}, \code{step_size}, \code{step_size_bar},
-\code{mean_tree_accept}, \code{mean_tree_accept_sym} (numeric).
+(logical); \code{depth}, \code{n_steps}, \code{chain}, \code{draw}, \code{index_in_trajectory}
+(integer when fits in \code{i32}, else numeric); \code{logp}, \code{energy},
+\code{energy_error}, \code{step_size}, \code{step_size_bar}, \code{mean_tree_accept},
+\code{mean_tree_accept_sym} (numeric).
 List-valued fields (one entry per draw, \code{NULL} when not recorded):
 \code{unconstrained_draw}, \code{gradient}. With \code{store_mass_matrix = TRUE}:
 \code{mass_matrix_inv}. With \code{store_divergences = TRUE}: \code{divergence_start},

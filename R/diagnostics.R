@@ -11,9 +11,10 @@
 #' @param draws A `posterior::draws_array` returned by [nutpie_sample()].
 #' @return A `nutpie_diagnostics` object (a named list with a print method).
 #'   Commonly available scalar fields: `diverging`, `tuning`, `maxdepth_reached`
-#'   (logical); `depth`, `n_steps`, `chain`, `draw`, `index_in_trajectory`,
-#'   `logp`, `energy`, `energy_error`, `step_size`, `step_size_bar`,
-#'   `mean_tree_accept`, `mean_tree_accept_sym` (numeric).
+#'   (logical); `depth`, `n_steps`, `chain`, `draw`, `index_in_trajectory`
+#'   (integer when fits in `i32`, else numeric); `logp`, `energy`,
+#'   `energy_error`, `step_size`, `step_size_bar`, `mean_tree_accept`,
+#'   `mean_tree_accept_sym` (numeric).
 #'   List-valued fields (one entry per draw, `NULL` when not recorded):
 #'   `unconstrained_draw`, `gradient`. With `store_mass_matrix = TRUE`:
 #'   `mass_matrix_inv`. With `store_divergences = TRUE`: `divergence_start`,
@@ -41,21 +42,21 @@ print.nutpie_diagnostics <- function(x, ...) {
               n, n_per_chain, num_chains))
 
   if (!is.null(x$diverging)) {
-    n_div <- sum(x$diverging)
+    n_div <- sum(x$diverging, na.rm = TRUE)
     cat(sprintf("  Divergences:   %d", n_div))
     if (n_div > 0) cat(sprintf(" (%.1f%%)", 100 * n_div / n))
     cat("\n")
   }
   if (!is.null(x$maxdepth_reached)) {
-    n_md <- sum(x$maxdepth_reached)
+    n_md <- sum(x$maxdepth_reached, na.rm = TRUE)
     cat(sprintf("  Max-treedepth hits: %d", n_md))
     if (n_md > 0) cat(sprintf(" (%.1f%%)", 100 * n_md / n))
     cat("\n")
   } else if (!is.null(x$depth)) {
-    cat(sprintf("  Max treedepth: %d\n", max(x$depth)))
+    cat(sprintf("  Max treedepth: %d\n", max(x$depth, na.rm = TRUE)))
   }
   if (!is.null(x$mean_tree_accept)) {
-    cat(sprintf("  Mean accept:   %.3f\n", mean(x$mean_tree_accept)))
+    cat(sprintf("  Mean accept:   %.3f\n", mean(x$mean_tree_accept, na.rm = TRUE)))
   }
   if (!is.null(x$step_size_bar)) {
     step_sizes <- x$step_size_bar[seq(n_per_chain, n, by = n_per_chain)]
@@ -63,7 +64,7 @@ print.nutpie_diagnostics <- function(x, ...) {
                 paste(sprintf("%.4f", step_sizes), collapse = ", ")))
   }
 
-  if (!is.null(x$diverging) && sum(x$diverging) > 0) {
+  if (!is.null(x$diverging) && sum(x$diverging, na.rm = TRUE) > 0) {
     cat("\n")
     cat("  Warning: divergent transitions detected. Consider increasing\n")
     cat("  target_accept or reparameterizing the model.\n")
