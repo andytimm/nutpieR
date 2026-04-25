@@ -532,26 +532,18 @@ fn column_to_robj(
 
     macro_rules! build_int_or_double {
         ($arr_ty:ty, $fits:expr) => {{
-            let mut fits_i32 = true;
-            'fit: for c in cols {
-                let arr = c.as_any().downcast_ref::<$arr_ty>()?;
-                for k in 0..n_draws {
-                    let row = skip + k;
-                    if arr.is_null(row) {
-                        continue;
-                    }
-                    if !$fits(arr.value(row)) {
-                        fits_i32 = false;
-                        break 'fit;
-                    }
-                }
-            }
+            let arrs: Vec<&$arr_ty> = cols
+                .iter()
+                .map(|c| c.as_any().downcast_ref::<$arr_ty>())
+                .collect::<Option<Vec<_>>>()?;
+            let fits_i32 = arrs.iter().all(|arr| {
+                (skip..skip + n_draws).all(|row| arr.is_null(row) || $fits(arr.value(row)))
+            });
             if fits_i32 {
                 let mut out = Integers::new(total);
                 let dest: &mut [Rint] = &mut out;
                 let mut i = 0;
-                for c in cols {
-                    let arr = c.as_any().downcast_ref::<$arr_ty>()?;
+                for arr in &arrs {
                     for k in 0..n_draws {
                         let row = skip + k;
                         dest[i] = if arr.is_null(row) {
@@ -613,7 +605,8 @@ fn column_to_robj(
                     if slice.is_empty() {
                         out.push(().into_robj());
                     } else {
-                        out.push(slice.to_vec().into_robj());
+                        let robj: Robj = Doubles::from_values(slice.iter().copied()).into();
+                        out.push(robj);
                     }
                 }
             }

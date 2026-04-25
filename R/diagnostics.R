@@ -2,13 +2,11 @@
 #'
 #' Diagnostics are extracted directly from the nuts-rs sample-stats schema, so
 #' the exact set of fields depends on the installed nuts-rs version and the
-#' sampling options used. Integer-typed Arrow columns (e.g. `depth`,
-#' `n_steps`, `chain`, `draw`, `index_in_trajectory`) are returned as R
-#' `integer` when every value fits in `i32` (with `NA_integer_` for nulls) —
-#' the typical case for a NUTS run. If a value would overflow, the column
-#' falls back to `numeric` (`NA_real_` for nulls). Floating-point columns
-#' (`logp`, `energy`, `step_size`, etc.) are always `numeric`, so a Float64
-#' field can never be silently truncated by the integer dispatch.
+#' sampling options used. Count fields (`depth`, `n_steps`, `chain`, `draw`,
+#' `index_in_trajectory`) are returned as R `integer` when every value fits
+#' in `i32`, else as `numeric`; floating-point fields (`logp`, `energy`,
+#' `step_size`, etc.) are always `numeric`. `NA`s use the matching sentinel
+#' (`NA_integer_` / `NA_real_`).
 #'
 #' @param draws A `posterior::draws_array` returned by [nutpie_sample()].
 #' @return A `nutpie_diagnostics` object (a named list with a print method).

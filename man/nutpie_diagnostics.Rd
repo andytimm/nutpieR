@@ -24,11 +24,9 @@ List-valued fields (one entry per draw, \code{NULL} when not recorded):
 \description{
 Diagnostics are extracted directly from the nuts-rs sample-stats schema, so
 the exact set of fields depends on the installed nuts-rs version and the
-sampling options used. Integer-typed Arrow columns (e.g. \code{depth},
-\code{n_steps}, \code{chain}, \code{draw}, \code{index_in_trajectory}) are returned as R
-\code{integer} when every value fits in \code{i32} (with \code{NA_integer_} for nulls) —
-the typical case for a NUTS run. If a value would overflow, the column
-falls back to \code{numeric} (\code{NA_real_} for nulls). Floating-point columns
-(\code{logp}, \code{energy}, \code{step_size}, etc.) are always \code{numeric}, so a Float64
-field can never be silently truncated by the integer dispatch.
+sampling options used. Count fields (\code{depth}, \code{n_steps}, \code{chain}, \code{draw},
+\code{index_in_trajectory}) are returned as R \code{integer} when every value fits
+in \code{i32}, else as \code{numeric}; floating-point fields (\code{logp}, \code{energy},
+\code{step_size}, etc.) are always \code{numeric}. \code{NA}s use the matching sentinel
+(\code{NA_integer_} / \code{NA_real_}).
 }
