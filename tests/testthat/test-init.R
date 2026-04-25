@@ -85,6 +85,35 @@ test_that("init and init_mean are mutually exclusive", {
   )
 })
 
+test_that("partial init resolves even when generated quantities can't be evaluated", {
+  # Regression: partial-init random fills used to call full param_constrain
+  # (TP + GQ), so a model with bounded GQ that fails at random unconstrained
+  # values would fail at init. The block-only constrain path avoids GQ.
+  bad_gq_model <- tryCatch(
+    nutpie_compile_model(code = "
+      parameters {
+        real mu;
+        real<lower=0> sigma;
+      }
+      model { }
+      generated quantities {
+        int<lower=0,upper=0> bad = 1;
+      }
+    "),
+    error = function(e) NULL
+  )
+  skip_if(is.null(bad_gq_model), "Bad-GQ model failed to compile")
+
+  handle <- nutpieR:::bs_open(bad_gq_model$lib_path, "", 0L)
+  expect_no_error(
+    resolved <- nutpieR:::resolve_init(
+      init = list(sigma = 1), init_mean = NULL,
+      handle = handle, num_chains = 2, seed = 42
+    )
+  )
+  expect_length(resolved$positions, 2L)
+})
+
 test_that("partial named-list init fills missing params per chain", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
