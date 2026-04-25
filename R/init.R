@@ -161,11 +161,7 @@ expand_constrained_init <- function(params_list, handle,
   } else {
     fill <- function() {
       rand_unc <- stats::runif(bs_ndim_unc(handle), min = -2, max = 2)
-      full_con <- bs_param_constrain(
-        handle, rand_unc,
-        as.integer(sample.int(.Machine$integer.max, 1L))
-      )
-      full_con[seq_along(block_names)]
+      bs_param_constrain_block(handle, rand_unc)
     }
     if (is.null(seed)) fill() else with_local_seed(seed, fill())
   }
@@ -241,9 +237,20 @@ init_list_to_positions <- function(init, handle, num_chains, seed) {
   valid_bases <- unique(sub("\\..*$", "", block_names))
 
   if (is_single_named_param_list(init)) {
-    pos <- expand_constrained_init(init, handle, block_names, valid_bases,
-                                   seed = seed)
-    return(list(pos))
+    if (all(valid_bases %in% names(init))) {
+      # Fully specified — broadcast a single position to every chain.
+      pos <- expand_constrained_init(init, handle, block_names, valid_bases,
+                                     seed = seed)
+      return(list(pos))
+    }
+    # Partial — fill missing parameters independently per chain so chains
+    # don't all start at the same random point.
+    chain_seeds <- with_local_seed(seed, {
+      sample.int(.Machine$integer.max, num_chains)
+    })
+    return(lapply(chain_seeds, function(s) {
+      expand_constrained_init(init, handle, block_names, valid_bases, seed = s)
+    }))
   }
 
   if (length(init) != num_chains) {

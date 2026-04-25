@@ -63,11 +63,13 @@ the unconstrained scale (nuts-rs default).}
 \item{Scalar numeric \code{x}}{Each chain starts from a Uniform(-x, x) draw
 on the unconstrained scale. \code{x = 0} starts every chain at the origin.
 Must be non-negative.}
-\item{Named list, e.g. \code{list(mu = 0, sigma = 1)}}{Broadcast constrained
-values to all chains. Partial inits are allowed — missing parameters
-are filled with random draws (per chain, seeded from \code{seed}).}
-\item{List of \code{num_chains} named lists}{Per-chain constrained inits
-(different starting point per chain). Each element may be partial.}
+\item{Named list, e.g. \code{list(mu = 0, sigma = 1)}}{Constrained values
+used to start each chain. If fully specified, every chain starts at
+the same point. If partial (some parameters missing), each chain
+gets its own random fill for the missing parameters (per-chain seeds
+derived from \code{seed}).}
+\item{List of \code{num_chains} named lists}{One constrained start per
+chain. Each element may be partial.}
 \item{Function \code{function(chain_id) ...}}{Called once per chain with
 \code{chain_id} in \code{1:num_chains}; must return a (possibly partial)
 named list of constrained parameter values.}
@@ -77,7 +79,16 @@ treated as constrained named lists.}
 }
 No jitter is applied; starting points are used exactly (after any
 random fill for partial constrained inits). To work on the unconstrained
-scale, see \code{\link[=nutpie_unconstrain]{nutpie_unconstrain()}} to convert constrained values first.}
+scale, see \code{\link[=nutpie_unconstrain]{nutpie_unconstrain()}} to convert constrained values first.
+
+\strong{Chain assignment is unspecified.} When supplying per-chain starts
+(list-of-lists or \code{function(chain_id)}), the N positions are guaranteed
+to be distributed one-per-chain, but the mapping from list index /
+\code{chain_id} to the output chain dimension is not currently guaranteed.
+Use this to provide N dispersed starts; do not rely on "chain 1 starts
+at element 1" for downstream identifiability. (Threading the true
+chain id requires an upstream change in nuts-rs; tracked for a future
+release.)}
 
 \item{init_mean}{Deprecated. Scalar or numeric vector on the unconstrained
 scale, with ±0.5 uniform jitter per chain. Use

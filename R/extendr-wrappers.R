@@ -89,5 +89,12 @@ bs_param_unconstrain <- function(handle, theta) .Call(wrap__bs_param_unconstrain
 #' @keywords internal
 bs_param_constrain <- function(handle, theta_unc, seed) .Call(wrap__bs_param_constrain, handle, theta_unc, seed)
 
+#' Map an unconstrained position to the block-level constrained scale only
+#' (no transformed parameters, no generated quantities). No RNG is used and
+#' no GQ code runs, so this cannot fail on GQ constraint violations — the
+#' right primitive for resolving partial-init random fills.
+#' @keywords internal
+bs_param_constrain_block <- function(handle, theta_unc) .Call(wrap__bs_param_constrain_block, handle, theta_unc)
+
 
 # nolint end

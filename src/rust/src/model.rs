@@ -108,13 +108,22 @@ impl nuts_rs::LogpError for StanLogpError {
 
 // --- StanModel: factory for per-chain instances ---
 
-// Per-chain id, set by Model::math() on the worker thread that owns the chain.
-// nuts-rs's Sampler::start spawns one scoped task per chain; that task calls
-// math() once, then init_position() (up to 500 times) on the same thread. We
-// use math() as the chain-id assignment point. Rayon workers are reused across
-// chains, so the value is overwritten by each new chain's first math() call —
-// there is never a window where init_position runs without a current chain id
-// set by the same task's earlier math() call.
+// Per-chain "init slot index" set by Model::math() on the worker thread that
+// owns the chain. nuts-rs spawns one scoped task per chain; that task calls
+// math() once and then init_position() (up to 500 times) on the same thread,
+// so the thread-local is stable across the retry loop. Rayon workers are
+// reused across chains, and each new chain's first math() call overwrites
+// the value before init_position runs.
+//
+// IMPORTANT: this index is *not* the nuts-rs chain_id used to label output
+// chains. nuts-rs also calls Model::math() once on the controller thread
+// (sampler.rs `Sampler::new`) to build the trace template before spawning
+// chains, which consumes one counter value, and rayon's spawn_fifo does not
+// guarantee the order in which spawned tasks reach math(). The R-side public
+// API therefore documents per-chain init assignment as "unspecified order":
+// callers get N distinct starts distributed across chains, but should not
+// rely on slot N landing on output chain N. Threading actual chain_id through
+// would require a change to the upstream nuts-rs Model trait.
 thread_local! {
     static MY_CHAIN_ID: Cell<Option<usize>> = const { Cell::new(None) };
 }

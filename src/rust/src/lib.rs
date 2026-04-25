@@ -764,6 +764,32 @@ fn bs_param_constrain(
     Ok(out)
 }
 
+/// Map an unconstrained position to the block-level constrained scale only
+/// (no transformed parameters, no generated quantities). No RNG is used and
+/// no GQ code runs, so this cannot fail on GQ constraint violations — the
+/// right primitive for resolving partial-init random fills.
+/// @keywords internal
+#[extendr]
+fn bs_param_constrain_block(
+    handle: ExternalPtr<model::BSHandle>,
+    theta_unc: Vec<f64>,
+) -> Result<Vec<f64>> {
+    if theta_unc.len() != handle.ndim_unc {
+        return Err(Error::Other(format!(
+            "theta_unc length {} does not match unconstrained parameter count {}",
+            theta_unc.len(),
+            handle.ndim_unc
+        )));
+    }
+    let mut out = vec![0.0f64; handle.ndim_block];
+    let no_rng: Option<&mut bridgestan::Rng<Arc<bridgestan::StanLibrary>>> = None;
+    handle
+        .model
+        .param_constrain(&theta_unc, false, false, &mut out, no_rng)
+        .map_err(r_err)?;
+    Ok(out)
+}
+
 extendr_module! {
     mod nutpieR;
     fn sample_normal;
@@ -777,4 +803,5 @@ extendr_module! {
     fn bs_ndim_block;
     fn bs_param_unconstrain;
     fn bs_param_constrain;
+    fn bs_param_constrain_block;
 }

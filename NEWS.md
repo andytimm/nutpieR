@@ -1,5 +1,19 @@
 # nutpieR 1.3.0
 
+* `nutpie_sample()`'s `init` as a *partial* named list now fills the missing
+  parameters independently per chain (using per-chain seeds derived from
+  `seed`), instead of broadcasting a single random fill to every chain. Fully
+  specified named lists still broadcast one position to all chains.
+* Per-chain init resolution no longer evaluates transformed parameters or
+  generated quantities when filling missing parameters, so partial inits
+  cannot fail on GQ constraint violations during setup. Adds an internal
+  `bs_param_constrain_block()` helper that returns block-level constrained
+  values only.
+* Documented an honest contract for per-chain `init` mapping: when supplying
+  list-of-lists or `function(chain_id)` starts, the N positions are guaranteed
+  to be distributed one-per-chain, but the mapping from list index /
+  `chain_id` to the output chain dimension is not currently guaranteed.
+  Threading the true chain id requires an upstream change in nuts-rs.
 * `nutpie_sample()`'s `init` argument is now a single entry point that
   dispatches on the input shape:
   - `NULL` (default): per-chain Uniform(-2, 2) draw on the unconstrained

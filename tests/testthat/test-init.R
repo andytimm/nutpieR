@@ -85,6 +85,44 @@ test_that("init and init_mean are mutually exclusive", {
   )
 })
 
+test_that("partial named-list init fills missing params per chain", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  data_list <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
+  handle <- nutpieR:::bs_open(
+    test_models$normal$lib_path, nutpieR:::resolve_data(data_list), 0L
+  )
+
+  # Only sigma is supplied; mu is missing and should be filled per chain.
+  resolved <- nutpieR:::resolve_init(
+    init = list(sigma = 1), init_mean = NULL,
+    handle = handle, num_chains = 4, seed = 42
+  )
+  positions <- resolved$positions
+  expect_length(positions, 4)
+  mu_starts <- vapply(positions, `[`, numeric(1), 1L)
+  # All chains' mu fills should be distinct (with probability ~1).
+  expect_equal(length(unique(mu_starts)), 4L)
+  # sigma slot (unconstrained = log(sigma) = log(1) = 0) should match per chain.
+  sigma_unc <- vapply(positions, `[`, numeric(1), 2L)
+  expect_true(all(abs(sigma_unc) < 1e-10))
+})
+
+test_that("fully-specified named-list init broadcasts a single position", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  data_list <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
+  handle <- nutpieR:::bs_open(
+    test_models$normal$lib_path, nutpieR:::resolve_data(data_list), 0L
+  )
+  resolved <- nutpieR:::resolve_init(
+    init = list(mu = 0.5, sigma = 1), init_mean = NULL,
+    handle = handle, num_chains = 4, seed = 42
+  )
+  # Length-1 = broadcast (Rust copies it to every chain).
+  expect_length(resolved$positions, 1L)
+})
+
 test_that("partial init is reproducible from sampler seed", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
