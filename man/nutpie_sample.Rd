@@ -14,6 +14,7 @@ nutpie_sample(
   max_treedepth = 10L,
   target_accept = 0.8,
   refresh = 100L,
+  init = NULL,
   init_mean = NULL,
   save_warmup = FALSE,
   cores = NULL,
@@ -54,11 +55,45 @@ steps per draw is at most \code{2^max_treedepth}.}
 \item{refresh}{How often to print progress updates, in draws per chain.
 Set to \code{0} to suppress progress output. Default is \code{100}.}
 
-\item{init_mean}{Optional initial values in unconstrained parameter space.
-Each chain starts at \verb{init_mean + small jitter}. Can be a single scalar
-(automatically expanded to match the number of unconstrained parameters)
-or a numeric vector whose length must match exactly. If \code{NULL} (default),
-chains are initialized with \code{Uniform(-2, 2)}.}
+\item{init}{Initial values for each chain. Single entry point that
+dispatches on the input shape:
+\describe{
+\item{\code{NULL} (default)}{Each chain starts from a Uniform(-2, 2) draw on
+the unconstrained scale (nuts-rs default).}
+\item{Scalar numeric \code{x}}{Each chain starts from a Uniform(-x, x) draw
+on the unconstrained scale. \code{x = 0} starts every chain at the origin.
+Must be non-negative.}
+\item{Named list, e.g. \code{list(mu = 0, sigma = 1)}}{Constrained values
+used to start each chain. If fully specified, every chain starts at
+the same point. If partial (some parameters missing), each chain
+gets its own random fill for the missing parameters (per-chain seeds
+derived from \code{seed}).}
+\item{List of \code{num_chains} named lists}{One constrained start per
+chain. Each element may be partial.}
+\item{Function \code{function(chain_id) ...}}{Called once per chain with
+\code{chain_id} in \code{1:num_chains}; must return a (possibly partial)
+named list of constrained parameter values.}
+\item{Character path(s)}{A JSON file path, or a character vector of
+\code{num_chains} JSON file paths (CmdStan-style). Parsed values are
+treated as constrained named lists.}
+}
+No jitter is applied; starting points are used exactly (after any
+random fill for partial constrained inits). To work on the unconstrained
+scale, see \code{\link[=nutpie_unconstrain]{nutpie_unconstrain()}} to convert constrained values first.
+
+\strong{Chain assignment is unspecified.} When supplying per-chain starts
+(list-of-lists or \code{function(chain_id)}), the N positions are guaranteed
+to be distributed one-per-chain, but the mapping from list index /
+\code{chain_id} to the output chain dimension is not currently guaranteed.
+Use this to provide N dispersed starts; do not rely on "chain 1 starts
+at element 1" for downstream identifiability. (Threading the true
+chain id requires an upstream change in nuts-rs; tracked for a future
+release.)}
+
+\item{init_mean}{Deprecated. Scalar or numeric vector on the unconstrained
+scale, with ±0.5 uniform jitter per chain. Use
+\code{init = function(chain_id) ...}, \code{init = <scalar>} for Uniform(-x, x), or
+\code{init = <named list>} instead. Will be removed in a future version.}
 
 \item{save_warmup}{If \code{TRUE}, warmup draws and diagnostics are attached as
 attributes. Retrieve them with \code{\link[=nutpie_warmup_draws]{nutpie_warmup_draws()}}.}

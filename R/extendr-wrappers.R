@@ -27,9 +27,7 @@ sample_normal <- function(num_draws, num_chains, seed) .Call(wrap__sample_normal
 #' @keywords internal
 compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__compile_stan_model, stan_file, stanc_args, compile_args)
 
-#' Sample from a Stan model using nuts-rs NUTS sampler.
-#' @param lib_path Path to the compiled Stan shared library.
-#' @param data_json JSON string with model data (empty string for no data).
+#' @param handle An `ExternalPtr<BSHandle>` from `bs_open()`.
 #' @param num_draws Number of draws per chain after warmup.
 #' @param num_warmup Number of warmup (tuning) draws per chain.
 #' @param num_chains Number of parallel chains.
@@ -37,18 +35,66 @@ compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__
 #' @param max_treedepth Maximum tree depth for NUTS.
 #' @param target_accept Target acceptance probability for step size adaptation.
 #' @param refresh Print progress every `refresh` draws per chain (0 = no progress).
-#' @param init_mean Optional numeric vector of initial values in unconstrained space.
+#' @param init_positions Optional list of numeric vectors (one per chain, or length 1 = broadcast).
+#' @param jitter If TRUE, apply ±0.5 uniform jitter per coordinate.
 #' @param save_warmup Whether to return warmup draws.
 #' @param num_cores Number of CPU cores to use for parallel sampling.
 #' @param store_divergences Whether to store detailed divergence information.
 #' @param store_mass_matrix Whether to store the mass matrix at each draw.
 #' @param low_rank Whether to use low-rank modified mass matrix adaptation.
-#' @param mass_matrix_gamma Regularisation parameter for low-rank mass matrix.
-#' @param eigval_cutoff Eigenvalue cutoff for low-rank mass matrix.
+#' @param mass_matrix_gamma Regularisation parameter for low-rank mass matrix (default 1e-5).
+#' @param eigval_cutoff Eigenvalue cutoff for low-rank mass matrix (default 2.0).
 #' @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 #'   and optionally warmup_draws and warmup_diagnostics.
 #' @keywords internal
-sample_stan <- function(lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_mean, save_warmup, num_cores, store_divergences, store_mass_matrix, low_rank, mass_matrix_gamma, eigval_cutoff) .Call(wrap__sample_stan, lib_path, data_json, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_mean, save_warmup, num_cores, store_divergences, store_mass_matrix, low_rank, mass_matrix_gamma, eigval_cutoff)
+sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, low_rank, mass_matrix_gamma, eigval_cutoff) .Call(wrap__sample_stan, handle, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, low_rank, mass_matrix_gamma, eigval_cutoff)
+
+#' Open a BridgeStan model and return an `ExternalPtr<BSHandle>` that caches
+#' parameter-name metadata. The handle may be used by any of the `bs_*`
+#' accessor functions without re-opening the shared library.
+#' @keywords internal
+bs_open <- function(lib_path, data_json, seed) .Call(wrap__bs_open, lib_path, data_json, seed)
+
+#' Block-level parameter names (no transformed parameters / generated
+#' quantities), dot-indexed. Length equals `bs_ndim_block()`.
+#' @keywords internal
+bs_block_names <- function(handle) .Call(wrap__bs_block_names, handle)
+
+#' Full constrained parameter names (block + transformed parameters +
+#' generated quantities), dot-indexed.
+#' @keywords internal
+bs_full_names <- function(handle) .Call(wrap__bs_full_names, handle)
+
+#' Unconstrained parameter names, dot-indexed. Length equals `bs_ndim_unc()`.
+#' @keywords internal
+bs_unc_names <- function(handle) .Call(wrap__bs_unc_names, handle)
+
+#' Number of unconstrained parameters.
+#' @keywords internal
+bs_ndim_unc <- function(handle) .Call(wrap__bs_ndim_unc, handle)
+
+#' Number of block-level constrained parameters (no TP, no GQ).
+#' @keywords internal
+bs_ndim_block <- function(handle) .Call(wrap__bs_ndim_block, handle)
+
+#' Map a flat block-level constrained vector (length `bs_ndim_block()`,
+#' BridgeStan column-major / last-index-major order) to the unconstrained
+#' space. No JSON parsing.
+#' @keywords internal
+bs_param_unconstrain <- function(handle, theta) .Call(wrap__bs_param_unconstrain, handle, theta)
+
+#' Map an unconstrained position to the full constrained scale (including
+#' transformed parameters and generated quantities) using an already-opened
+#' handle.
+#' @keywords internal
+bs_param_constrain <- function(handle, theta_unc, seed) .Call(wrap__bs_param_constrain, handle, theta_unc, seed)
+
+#' Map an unconstrained position to the block-level constrained scale only
+#' (no transformed parameters, no generated quantities). No RNG is used and
+#' no GQ code runs, so this cannot fail on GQ constraint violations — the
+#' right primitive for resolving partial-init random fills.
+#' @keywords internal
+bs_param_constrain_block <- function(handle, theta_unc) .Call(wrap__bs_param_constrain_block, handle, theta_unc)
 
 
 # nolint end

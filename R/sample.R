@@ -18,11 +18,44 @@
 #' @param target_accept Target acceptance probability for step size adaptation.
 #' @param refresh How often to print progress updates, in draws per chain.
 #'   Set to `0` to suppress progress output. Default is `100`.
-#' @param init_mean Optional initial values in unconstrained parameter space.
-#'   Each chain starts at `init_mean + small jitter`. Can be a single scalar
-#'   (automatically expanded to match the number of unconstrained parameters)
-#'   or a numeric vector whose length must match exactly. If `NULL` (default),
-#'   chains are initialized with `Uniform(-2, 2)`.
+#' @param init Initial values for each chain. Single entry point that
+#'   dispatches on the input shape:
+#'   \describe{
+#'     \item{`NULL` (default)}{Each chain starts from a Uniform(-2, 2) draw on
+#'       the unconstrained scale (nuts-rs default).}
+#'     \item{Scalar numeric `x`}{Each chain starts from a Uniform(-x, x) draw
+#'       on the unconstrained scale. `x = 0` starts every chain at the origin.
+#'       Must be non-negative.}
+#'     \item{Named list, e.g. `list(mu = 0, sigma = 1)`}{Constrained values
+#'       used to start each chain. If fully specified, every chain starts at
+#'       the same point. If partial (some parameters missing), each chain
+#'       gets its own random fill for the missing parameters (per-chain seeds
+#'       derived from `seed`).}
+#'     \item{List of `num_chains` named lists}{One constrained start per
+#'       chain. Each element may be partial.}
+#'     \item{Function `function(chain_id) ...`}{Called once per chain with
+#'       `chain_id` in `1:num_chains`; must return a (possibly partial)
+#'       named list of constrained parameter values.}
+#'     \item{Character path(s)}{A JSON file path, or a character vector of
+#'       `num_chains` JSON file paths (CmdStan-style). Parsed values are
+#'       treated as constrained named lists.}
+#'   }
+#'   No jitter is applied; starting points are used exactly (after any
+#'   random fill for partial constrained inits). To work on the unconstrained
+#'   scale, see [nutpie_unconstrain()] to convert constrained values first.
+#'
+#'   **Chain assignment is unspecified.** When supplying per-chain starts
+#'   (list-of-lists or `function(chain_id)`), the N positions are guaranteed
+#'   to be distributed one-per-chain, but the mapping from list index /
+#'   `chain_id` to the output chain dimension is not currently guaranteed.
+#'   Use this to provide N dispersed starts; do not rely on "chain 1 starts
+#'   at element 1" for downstream identifiability. (Threading the true
+#'   chain id requires an upstream change in nuts-rs; tracked for a future
+#'   release.)
+#' @param init_mean Deprecated. Scalar or numeric vector on the unconstrained
+#'   scale, with ±0.5 uniform jitter per chain. Use
+#'   `init = function(chain_id) ...`, `init = <scalar>` for Uniform(-x, x), or
+#'   `init = <named list>` instead. Will be removed in a future version.
 #' @param save_warmup If `TRUE`, warmup draws and diagnostics are attached as
 #'   attributes. Retrieve them with [nutpie_warmup_draws()].
 #' @param cores Number of CPU cores to use for parallel sampling. Defaults to
@@ -60,7 +93,9 @@
 nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           num_warmup = 400L, num_chains = 4L, seed = NULL,
                           max_treedepth = 10L, target_accept = 0.8,
-                          refresh = 100L, init_mean = NULL,
+                          refresh = 100L,
+                          init = NULL,
+                          init_mean = NULL,
                           save_warmup = FALSE, cores = NULL,
                           pars = NULL, include = TRUE,
                           store_divergences = FALSE,
@@ -82,9 +117,12 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   }
   cores <- as.integer(cores)
 
+  handle <- bs_open(lib_path, data_json, as.integer(seed))
+  init_resolved <- resolve_init(init, init_mean, handle, num_chains,
+                                seed = seed)
+
   raw <- sample_stan(
-    lib_path,
-    data_json,
+    handle,
     num_draws,
     num_warmup,
     num_chains,
@@ -92,7 +130,8 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     as.integer(max_treedepth),
     as.double(target_accept),
     as.integer(refresh),
-    init_mean,
+    init_resolved$positions,
+    isTRUE(init_resolved$jitter),
     isTRUE(save_warmup),
     cores,
     isTRUE(store_divergences),

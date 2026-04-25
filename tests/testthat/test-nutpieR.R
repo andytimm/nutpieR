@@ -318,10 +318,13 @@ test_that("low_rank_modified_mass_matrix produces valid draws", {
 test_that("scalar init_mean is auto-expanded to correct length", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
-    init_mean = 0
+  expect_warning(
+    draws <- nutpie_sample(test_models$bernoulli,
+      data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
+      num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+      init_mean = 0
+    ),
+    "init_mean.*deprecated"
   )
 
   expect_s3_class(draws, "draws_array")
@@ -333,10 +336,13 @@ test_that("vector init_mean still works", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
   # bernoulli has 1 unconstrained parameter
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
-    init_mean = c(0.5)
+  expect_warning(
+    draws <- nutpie_sample(test_models$bernoulli,
+      data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
+      num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+      init_mean = c(0.5)
+    ),
+    "init_mean.*deprecated"
   )
 
   expect_s3_class(draws, "draws_array")
@@ -347,11 +353,11 @@ test_that("wrong-length init_mean vector errors", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
   expect_error(
-    nutpie_sample(test_models$bernoulli,
+    suppressWarnings(nutpie_sample(test_models$bernoulli,
       data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
       num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
       init_mean = c(0.1, 0.2, 0.3)
-    )
+    ))
   )
 })
 

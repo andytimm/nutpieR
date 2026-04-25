@@ -312,8 +312,7 @@ fn run_sampler<S: Settings>(
     Ok(results)
 }
 
-/// @param lib_path Path to the compiled Stan shared library.
-/// @param data_json JSON string with model data (empty string for no data).
+/// @param handle An `ExternalPtr<BSHandle>` from `bs_open()`.
 /// @param num_draws Number of draws per chain after warmup.
 /// @param num_warmup Number of warmup (tuning) draws per chain.
 /// @param num_chains Number of parallel chains.
@@ -321,7 +320,8 @@ fn run_sampler<S: Settings>(
 /// @param max_treedepth Maximum tree depth for NUTS.
 /// @param target_accept Target acceptance probability for step size adaptation.
 /// @param refresh Print progress every `refresh` draws per chain (0 = no progress).
-/// @param init_mean Optional numeric vector of initial values in unconstrained space.
+/// @param init_positions Optional list of numeric vectors (one per chain, or length 1 = broadcast).
+/// @param jitter If TRUE, apply ±0.5 uniform jitter per coordinate.
 /// @param save_warmup Whether to return warmup draws.
 /// @param num_cores Number of CPU cores to use for parallel sampling.
 /// @param store_divergences Whether to store detailed divergence information.
@@ -334,8 +334,7 @@ fn run_sampler<S: Settings>(
 /// @keywords internal
 #[extendr]
 fn sample_stan(
-    lib_path: &str,
-    data_json: &str,
+    handle: ExternalPtr<model::BSHandle>,
     num_draws: i32,
     num_warmup: i32,
     num_chains: i32,
@@ -343,7 +342,8 @@ fn sample_stan(
     max_treedepth: i32,
     target_accept: f64,
     refresh: i32,
-    init_mean: Robj,
+    init_positions: Robj,
+    jitter: bool,
     save_warmup: bool,
     num_cores: i32,
     store_divergences: bool,
@@ -352,32 +352,28 @@ fn sample_stan(
     mass_matrix_gamma: f64,
     eigval_cutoff: f64,
 ) -> Result<List> {
-    // Parse init_mean from R (NULL or numeric vector)
-    let init_mean_raw: Option<Vec<f64>> = if init_mean.is_null() {
+    let init_positions_raw: Option<Vec<Vec<f64>>> = if init_positions.is_null() {
         None
     } else {
-        Some(
-            init_mean
-                .as_real_vector()
-                .ok_or_else(|| Error::Other("init_mean must be a numeric vector".into()))?,
-        )
+        let lst = init_positions
+            .as_list()
+            .ok_or_else(|| Error::Other("init_positions must be a list of numeric vectors".into()))?;
+        let mut out = Vec::with_capacity(lst.len());
+        for (i, (_, el)) in lst.iter().enumerate() {
+            let v = el.as_real_vector().ok_or_else(|| {
+                Error::Other(format!(
+                    "init_positions[[{}]] must be a numeric vector",
+                    i + 1
+                ))
+            })?;
+            out.push(v);
+        }
+        Some(out)
     };
 
-    // Create model first (without init_mean) to learn ndim, then set init_mean
-    let stan_model = model::StanModel::new(
-        std::path::Path::new(lib_path),
-        data_json,
-        seed as u32,
-        None,
-    )
-    .map_err(r_err)?;
-
-    // Auto-expand scalar init_mean to the correct length
-    let init_mean_vec: Option<Vec<f64>> = match init_mean_raw {
-        Some(v) if v.len() == 1 => Some(vec![v[0]; stan_model.param_unc_num()]),
-        other => other,
-    };
-    let stan_model = stan_model.with_init_mean(init_mean_vec).map_err(r_err)?;
+    let stan_model = model::StanModel::new(&handle)
+        .with_init_positions(init_positions_raw, jitter)
+        .map_err(r_err)?;
 
     let ndim = stan_model.num_constrained();
     let param_names: Vec<String> = stan_model.constrained_param_names().to_vec();
@@ -386,8 +382,6 @@ fn sample_stan(
     let num_tune = num_warmup as usize;
     let n_draws_per_chain = num_draws as usize;
 
-    // Branch on mass matrix type — both implement Settings but are different types.
-    // Common fields are set via the configure_settings! macro to avoid duplication.
     macro_rules! configure_settings {
         ($settings:expr) => {{
             $settings.num_tune = num_warmup as u64;
@@ -413,10 +407,8 @@ fn sample_stan(
         run_sampler(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
     };
 
-    // Build post-warmup draws matrix (column-major for R)
     let draws_robj = build_draws_matrix(&results, ndim, num_tune, n_draws_per_chain, &param_names)?;
 
-    // Extract post-warmup diagnostics
     let diagnostics = extract_diagnostics(
         &results,
         num_tune,
@@ -425,7 +417,6 @@ fn sample_stan(
         store_mass_matrix,
     );
 
-    // Optionally extract warmup draws and diagnostics
     let warmup_draws_robj: Robj = if save_warmup {
         build_draws_matrix(&results, ndim, 0, num_tune, &param_names)?
     } else {
@@ -523,7 +514,6 @@ fn extract_diagnostics(
     let mut step_size_bar = vec![0.0f64; total];
     let mut mean_tree_accept = vec![0.0f64; total];
 
-    // Pre-allocate optional vectors with R NULLs (non-divergent draws stay NULL)
     fn null_robj_vec(n: usize, include: bool) -> Vec<Robj> {
         if include { (0..n).map(|_| ().into_robj()).collect() } else { vec![] }
     }
@@ -676,9 +666,142 @@ fn extract_large_list_f64(
     }
 }
 
+/// Open a BridgeStan model and return an `ExternalPtr<BSHandle>` that caches
+/// parameter-name metadata. The handle may be used by any of the `bs_*`
+/// accessor functions without re-opening the shared library.
+/// @keywords internal
+#[extendr]
+fn bs_open(lib_path: &str, data_json: &str, seed: i32) -> Result<ExternalPtr<model::BSHandle>> {
+    let handle = model::BSHandle::open(std::path::Path::new(lib_path), data_json, seed as u32)
+        .map_err(r_err)?;
+    Ok(ExternalPtr::new(handle))
+}
+
+/// Block-level parameter names (no transformed parameters / generated
+/// quantities), dot-indexed. Length equals `bs_ndim_block()`.
+/// @keywords internal
+#[extendr]
+fn bs_block_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
+    handle.block_names.clone()
+}
+
+/// Full constrained parameter names (block + transformed parameters +
+/// generated quantities), dot-indexed.
+/// @keywords internal
+#[extendr]
+fn bs_full_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
+    handle.full_names.clone()
+}
+
+/// Unconstrained parameter names, dot-indexed. Length equals `bs_ndim_unc()`.
+/// @keywords internal
+#[extendr]
+fn bs_unc_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
+    handle.unc_names.clone()
+}
+
+/// Number of unconstrained parameters.
+/// @keywords internal
+#[extendr]
+fn bs_ndim_unc(handle: ExternalPtr<model::BSHandle>) -> i32 {
+    handle.ndim_unc as i32
+}
+
+/// Number of block-level constrained parameters (no TP, no GQ).
+/// @keywords internal
+#[extendr]
+fn bs_ndim_block(handle: ExternalPtr<model::BSHandle>) -> i32 {
+    handle.ndim_block as i32
+}
+
+/// Map a flat block-level constrained vector (length `bs_ndim_block()`,
+/// BridgeStan column-major / last-index-major order) to the unconstrained
+/// space. No JSON parsing.
+/// @keywords internal
+#[extendr]
+fn bs_param_unconstrain(
+    handle: ExternalPtr<model::BSHandle>,
+    theta: Vec<f64>,
+) -> Result<Vec<f64>> {
+    if theta.len() != handle.ndim_block {
+        return Err(Error::Other(format!(
+            "theta length {} does not match block-level parameter count {}",
+            theta.len(),
+            handle.ndim_block
+        )));
+    }
+    let mut out = vec![0.0f64; handle.ndim_unc];
+    handle
+        .model
+        .param_unconstrain(&theta, &mut out)
+        .map_err(r_err)?;
+    Ok(out)
+}
+
+/// Map an unconstrained position to the full constrained scale (including
+/// transformed parameters and generated quantities) using an already-opened
+/// handle.
+/// @keywords internal
+#[extendr]
+fn bs_param_constrain(
+    handle: ExternalPtr<model::BSHandle>,
+    theta_unc: Vec<f64>,
+    seed: i32,
+) -> Result<Vec<f64>> {
+    if theta_unc.len() != handle.ndim_unc {
+        return Err(Error::Other(format!(
+            "theta_unc length {} does not match unconstrained parameter count {}",
+            theta_unc.len(),
+            handle.ndim_unc
+        )));
+    }
+    let mut out = vec![0.0f64; handle.ndim_full];
+    let mut rng = handle.model.new_rng(seed as u32).map_err(r_err)?;
+    handle
+        .model
+        .param_constrain(&theta_unc, true, true, &mut out, Some(&mut rng))
+        .map_err(r_err)?;
+    Ok(out)
+}
+
+/// Map an unconstrained position to the block-level constrained scale only
+/// (no transformed parameters, no generated quantities). No RNG is used and
+/// no GQ code runs, so this cannot fail on GQ constraint violations — the
+/// right primitive for resolving partial-init random fills.
+/// @keywords internal
+#[extendr]
+fn bs_param_constrain_block(
+    handle: ExternalPtr<model::BSHandle>,
+    theta_unc: Vec<f64>,
+) -> Result<Vec<f64>> {
+    if theta_unc.len() != handle.ndim_unc {
+        return Err(Error::Other(format!(
+            "theta_unc length {} does not match unconstrained parameter count {}",
+            theta_unc.len(),
+            handle.ndim_unc
+        )));
+    }
+    let mut out = vec![0.0f64; handle.ndim_block];
+    let no_rng: Option<&mut bridgestan::Rng<Arc<bridgestan::StanLibrary>>> = None;
+    handle
+        .model
+        .param_constrain(&theta_unc, false, false, &mut out, no_rng)
+        .map_err(r_err)?;
+    Ok(out)
+}
+
 extendr_module! {
     mod nutpieR;
     fn sample_normal;
     fn compile_stan_model;
     fn sample_stan;
+    fn bs_open;
+    fn bs_block_names;
+    fn bs_full_names;
+    fn bs_unc_names;
+    fn bs_ndim_unc;
+    fn bs_ndim_block;
+    fn bs_param_unconstrain;
+    fn bs_param_constrain;
+    fn bs_param_constrain_block;
 }
