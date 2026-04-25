@@ -135,7 +135,7 @@ test_that("nutpie_diagnostics returns expected fields", {
   expect_equal(length(diag$logp), 200)
 
   expect_type(diag$diverging, "logical")
-  expect_type(diag$depth, "double")
+  expect_type(diag$depth, "integer")
   expect_type(diag$energy, "double")
   expect_true(all(diag$depth > 0))
   expect_true(all(is.finite(diag$logp)))
@@ -162,11 +162,16 @@ test_that("schema-driven extraction exposes nuts-rs fields", {
     expect_true(f %in% names(diag), info = paste("missing field:", f))
   }
 
-  # All numeric Arrow types are surfaced as R double — never integer.
-  # Integer cast is the trap that lets a Float64 logp silently truncate.
-  numeric_fields <- c("depth", "n_steps", "chain", "draw",
-                      "index_in_trajectory", "logp", "energy", "step_size")
-  for (f in numeric_fields) {
+  # Int*/UInt* columns become R integer when values fit in i32; Float* are
+  # always double. logp is Float64 in the schema, so the integer arm can
+  # never reach it — the silent-truncation trap is structurally avoided.
+  integer_fields <- c("depth", "n_steps", "chain", "draw",
+                      "index_in_trajectory")
+  for (f in integer_fields) {
+    expect_type(diag[[f]], "integer")
+  }
+  double_fields <- c("logp", "energy", "step_size")
+  for (f in double_fields) {
     expect_type(diag[[f]], "double")
   }
 

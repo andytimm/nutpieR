@@ -494,10 +494,11 @@ fn build_draws_matrix(
 
 /// Convert an Arrow column window (across all chains) into an R object.
 ///
-/// All numeric Arrow types (Float64/32, Int64/32, UInt64/32) become R `double`.
-/// Integer Arrow types are *not* cast to R integer — i32 can silently truncate
-/// values like a Float64 logp that gets misrouted, which is exactly the kind of
-/// bug schema-driven extraction is meant to prevent.
+/// `Float*` columns always become R `double`. `Int*`/`UInt*` columns become R
+/// `integer` when every non-null value fits in `(i32::MIN, i32::MAX]`
+/// (`i32::MIN` is reserved as `NA_INTEGER`); otherwise they fall back to
+/// `double`. `logp` is `Float64` in the nuts-rs schema, so it can never reach
+/// the integer arm — no risk of silently truncating a misrouted logp.
 ///
 /// Returns `None` for unsupported Arrow types so the caller can warn-and-skip.
 fn column_to_robj(
@@ -508,59 +509,111 @@ fn column_to_robj(
 ) -> Option<Robj> {
     let total = cols.len() * n_draws;
 
-    macro_rules! scalar_to_doubles {
+    macro_rules! build_doubles {
         ($arr_ty:ty) => {{
-            let mut out: Vec<f64> = Vec::with_capacity(total);
+            let mut out = Doubles::new(total);
+            let dest: &mut [Rfloat] = &mut out;
+            let mut i = 0;
             for c in cols {
                 let arr = c.as_any().downcast_ref::<$arr_ty>()?;
-                for i in 0..n_draws {
-                    let row = skip + i;
-                    out.push(if arr.is_null(row) {
-                        f64::NAN
+                for k in 0..n_draws {
+                    let row = skip + k;
+                    dest[i] = if arr.is_null(row) {
+                        Rfloat::na()
                     } else {
-                        arr.value(row) as f64
-                    });
+                        Rfloat::from(arr.value(row) as f64)
+                    };
+                    i += 1;
                 }
             }
-            Some(out.into_robj())
+            Some(out.into())
+        }};
+    }
+
+    macro_rules! build_int_or_double {
+        ($arr_ty:ty, $fits:expr) => {{
+            let mut fits_i32 = true;
+            'fit: for c in cols {
+                let arr = c.as_any().downcast_ref::<$arr_ty>()?;
+                for k in 0..n_draws {
+                    let row = skip + k;
+                    if arr.is_null(row) {
+                        continue;
+                    }
+                    if !$fits(arr.value(row)) {
+                        fits_i32 = false;
+                        break 'fit;
+                    }
+                }
+            }
+            if fits_i32 {
+                let mut out = Integers::new(total);
+                let dest: &mut [Rint] = &mut out;
+                let mut i = 0;
+                for c in cols {
+                    let arr = c.as_any().downcast_ref::<$arr_ty>()?;
+                    for k in 0..n_draws {
+                        let row = skip + k;
+                        dest[i] = if arr.is_null(row) {
+                            Rint::na()
+                        } else {
+                            Rint::from(arr.value(row) as i32)
+                        };
+                        i += 1;
+                    }
+                }
+                Some(out.into())
+            } else {
+                build_doubles!($arr_ty)
+            }
         }};
     }
 
     match dtype {
         DataType::Boolean => {
-            let mut out: Vec<bool> = Vec::with_capacity(total);
+            let mut out = Logicals::new(total);
+            let dest: &mut [Rbool] = &mut out;
+            let mut i = 0;
             for c in cols {
                 let arr = c.as_any().downcast_ref::<BooleanArray>()?;
-                for i in 0..n_draws {
-                    let row = skip + i;
-                    out.push(!arr.is_null(row) && arr.value(row));
+                for k in 0..n_draws {
+                    let row = skip + k;
+                    dest[i] = if arr.is_null(row) {
+                        Rbool::na()
+                    } else {
+                        Rbool::from(arr.value(row))
+                    };
+                    i += 1;
                 }
             }
-            Some(out.into_robj())
+            Some(out.into())
         }
-        DataType::Float64 => scalar_to_doubles!(Float64Array),
-        DataType::Float32 => scalar_to_doubles!(Float32Array),
-        DataType::Int64 => scalar_to_doubles!(Int64Array),
-        DataType::UInt64 => scalar_to_doubles!(UInt64Array),
-        DataType::Int32 => scalar_to_doubles!(Int32Array),
-        DataType::UInt32 => scalar_to_doubles!(UInt32Array),
+        DataType::Float64 => build_doubles!(Float64Array),
+        DataType::Float32 => build_doubles!(Float32Array),
+        DataType::Int64 => build_int_or_double!(
+            Int64Array,
+            |v: i64| v > i32::MIN as i64 && v <= i32::MAX as i64
+        ),
+        DataType::UInt64 => build_int_or_double!(UInt64Array, |v: u64| v <= i32::MAX as u64),
+        DataType::Int32 => build_int_or_double!(Int32Array, |v: i32| v > i32::MIN),
+        DataType::UInt32 => build_int_or_double!(UInt32Array, |v: u32| v <= i32::MAX as u32),
         DataType::LargeList(inner) if matches!(inner.data_type(), DataType::Float64) => {
             let mut out: Vec<Robj> = Vec::with_capacity(total);
             for c in cols {
                 let list_arr = c.as_any().downcast_ref::<LargeListArray>()?;
-                for i in 0..n_draws {
-                    let row = skip + i;
+                for k in 0..n_draws {
+                    let row = skip + k;
                     if list_arr.is_null(row) {
                         out.push(().into_robj());
                         continue;
                     }
                     let inner_arr = list_arr.value(row);
                     let values = inner_arr.as_any().downcast_ref::<Float64Array>()?;
-                    if values.is_empty() {
+                    let slice: &[f64] = values.values();
+                    if slice.is_empty() {
                         out.push(().into_robj());
                     } else {
-                        let v: Vec<f64> = (0..values.len()).map(|j| values.value(j)).collect();
-                        out.push(v.into_robj());
+                        out.push(slice.to_vec().into_robj());
                     }
                 }
             }
@@ -590,23 +643,13 @@ fn extract_diagnostics(
     let mut names: Vec<String> = Vec::new();
     let mut values: Vec<Robj> = Vec::new();
 
-    for field in schema.fields() {
+    for (idx, field) in schema.fields().iter().enumerate() {
         let name = field.name();
 
-        let mut cols: Vec<&dyn Array> = Vec::with_capacity(results.len());
-        let mut all_present = true;
-        for trace in results {
-            match trace.sample_stats.column_by_name(name) {
-                Some(c) => cols.push(c.as_ref()),
-                None => {
-                    all_present = false;
-                    break;
-                }
-            }
-        }
-        if !all_present {
-            continue;
-        }
+        let cols: Vec<&dyn Array> = results
+            .iter()
+            .map(|t| t.sample_stats.column(idx).as_ref())
+            .collect();
 
         // Drop columns that are entirely null in the requested window
         // (e.g. mass_matrix_inv / divergence_* when their flags are off).
@@ -632,13 +675,8 @@ fn extract_diagnostics(
         }
     }
 
-    let lst = List::from_values(values);
-    let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
-    let mut robj = lst.into_robj();
-    robj.set_attrib("names", name_refs)
-        .map_err(|e| Error::Other(format!("failed to set diagnostics names: {e}")))?;
-    let lst: List = robj.try_into().map_err(r_err)?;
-    Ok(lst)
+    let pairs: Vec<(&str, Robj)> = names.iter().map(String::as_str).zip(values).collect();
+    Ok(List::from_pairs(pairs))
 }
 
 /// Open a BridgeStan model and return an `ExternalPtr<BSHandle>` that caches
