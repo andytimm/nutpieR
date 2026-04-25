@@ -1,3 +1,9 @@
+# nutpieR 1.3.1
+
+* Bumped `extendr-api` from 0.8.1 to 0.9.0. Fixes the R CMD check NOTE
+  about a non-API call to `R_UnboundValue` on R 4.6.0+ (#7) — the symbol
+  was removed from R's public API and from extendr in the 0.9.0 release.
+
 # nutpieR 1.3.0
 
 * `nutpie_sample()`'s `init` as a *partial* named list now fills the missing
