@@ -17,7 +17,8 @@ Imports:
 Suggests:
     posteriordb,
     reticulate,
-    testthat (>= 3.0.0)
+    testthat (>= 3.0.0),
+    withr
 Config/testthat/edition: 3
 Config/rextendr/version: 0.4.2
 SystemRequirements: Cargo (Rust's package manager), rustc >= 1.85, GNU make

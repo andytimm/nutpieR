@@ -91,6 +91,8 @@ NUTPIER_RUN_SLOW_TESTS=1 devtools::test()
 devtools::check()
 ```
 
+See `tests/README.md` for the full list of optional test env vars and the cross-implementation comparison script.
+
 **Important:** `devtools::load_all()` doesn't work well — debug builds are ~269MB and `pkgload::load_dll()` can't handle them. Always use `devtools::install()`.
 
 ## System Requirements

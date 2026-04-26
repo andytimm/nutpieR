@@ -44,30 +44,22 @@ test_that("nutpie_param_names which = 'full' includes TP/GQ", {
   expect_true("sigma" %in% names_full)
 })
 
-test_that("nutpie_param_names unconstrained = TRUE is deprecated but works", {
+test_that("nutpie_param_names `unconstrained` is deprecated for both values", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
+  data <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
+
   expect_warning(
-    names_unc <- nutpie_param_names(
-      test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-      unconstrained = TRUE
-    ),
+    names_unc <- nutpie_param_names(test_models$normal, data = data,
+                                    unconstrained = TRUE),
     "unconstrained.*deprecated"
   )
   expect_length(names_unc, 2)
   expect_true(all(c("mu", "sigma") %in% names_unc))
-})
-
-test_that("nutpie_param_names unconstrained = FALSE is deprecated but works", {
-  skip_if(is.null(test_models$normal), "Normal model not compiled")
 
   expect_warning(
-    names_full <- nutpie_param_names(
-      test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-      unconstrained = FALSE
-    ),
+    names_full <- nutpie_param_names(test_models$normal, data = data,
+                                     unconstrained = FALSE),
     "unconstrained.*deprecated"
   )
   expect_true("mu" %in% names_full)
