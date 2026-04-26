@@ -1,4 +1,7 @@
 skip_if_not_installed("posteriordb")
+# `posteriordb::pdb_github()` loads `remotes` without a guard; it's a Suggest
+# of posteriordb, so R CMD check's clean lib won't have it available.
+skip_if_not_installed("remotes")
 skip_on_cran()
 
 # Helper: compile posteriordb model, sample, compare to reference
