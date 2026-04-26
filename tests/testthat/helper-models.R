@@ -33,3 +33,19 @@ test_models$tp_gq <- try_compile(
   "tp_gq",
   stan_file = test_path("test_models", "tp_gq.stan")
 )
+
+# Shared fixtures used by test-init.R, test-helpers.R, test-nutpieR.R.
+
+bernoulli_data <- function() {
+  list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1))
+}
+
+normal_data <- function() {
+  list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
+}
+
+open_normal_handle <- function() {
+  nutpieR:::bs_open(
+    test_models$normal$lib_path, nutpieR:::resolve_data(normal_data()), 0L
+  )
+}

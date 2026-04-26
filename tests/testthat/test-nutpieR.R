@@ -6,15 +6,7 @@ TP_GQ_BLOCK    <- c("mu", "sigma")
 TP_GQ_BLOCK_TP <- c("mu", "sigma", "mu_sq")
 TP_GQ_FULL_DOT <- c("mu", "sigma", "mu_sq",
                     "y_rep.1", "y_rep.2", "y_rep.3", "y_rep.4", "y_rep.5")
-TP_GQ_FULL     <- c("mu", "sigma", "mu_sq", "y_rep")
-
-bernoulli_data <- function() {
-  list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1))
-}
-
-normal_data <- function() {
-  list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
-}
+TP_GQ_FULL     <- nutpieR:::block_prefixes(TP_GQ_FULL_DOT)
 
 # --- resolve_data unit tests -------------------------------------------------
 
@@ -66,11 +58,10 @@ test_that("nutpie_sample rejects malformed target_accept", {
 
 # --- resolve_constrain_flags_impl unit tests (no handle) ---------------------
 
-test_that("resolve_constrain_flags returns (TRUE, TRUE) when pars is NULL", {
-  flags <- nutpieR:::resolve_constrain_flags_impl(
-    block = TP_GQ_BLOCK, block_tp = TP_GQ_BLOCK_TP, full = TP_GQ_FULL,
-    pars = NULL, include = TRUE
-  )
+test_that("resolve_constrain_flags short-circuits without touching the handle when pars is NULL", {
+  # handle = NULL would crash if the wrapper evaluated bs_*_names on it.
+  flags <- nutpieR:::resolve_constrain_flags(handle = NULL, pars = NULL,
+                                             include = TRUE)
   expect_true(flags$include_tp)
   expect_true(flags$include_gq)
 })

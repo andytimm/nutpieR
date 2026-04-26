@@ -1,12 +1,3 @@
-# Helper: open a bs handle for the normal model (cached compile + small data).
-# Used by the resolve_init unit tests below.
-open_normal_handle <- function() {
-  data_list <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
-  nutpieR:::bs_open(
-    test_models$normal$lib_path, nutpieR:::resolve_data(data_list), 0L
-  )
-}
-
 # --- Integration tests (real sampler runs) ----------------------------------
 
 test_that("init with full constrained list samples successfully", {
@@ -14,7 +5,7 @@ test_that("init with full constrained list samples successfully", {
 
   draws <- nutpie_sample(
     test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    data = normal_data(),
     num_draws = 100, num_chains = 2, seed = 42, refresh = 0,
     init = list(mu = 0, sigma = 1)
   )
@@ -29,7 +20,7 @@ test_that("init = function(chain_id) samples and yields distinct starts", {
   # (the per-chain dispatcher is checked directly below).
   draws <- nutpie_sample(
     test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    data = normal_data(),
     num_draws = 50, num_chains = 3, seed = 42, refresh = 0,
     init = function(chain_id) list(mu = chain_id - 2, sigma = 1)
   )
@@ -51,7 +42,7 @@ test_that("init = function(chain_id) samples and yields distinct starts", {
 test_that("partial init is reproducible from sampler seed", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
-  data_list <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
+  data_list <- normal_data()
 
   # Advance the global RNG between calls so that any reliance on it would
   # produce different random fills.
@@ -203,7 +194,7 @@ test_that("init errors on unknown parameter name", {
   expect_error(
     nutpie_sample(
       test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+      data = normal_data(),
       num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
       init = list(nonexistent = 0)
     ),
@@ -217,7 +208,7 @@ test_that("init and init_mean are mutually exclusive", {
   expect_error(
     suppressWarnings(nutpie_sample(
       test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+      data = normal_data(),
       num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
       init = list(mu = 0, sigma = 1),
       init_mean = 0
@@ -233,7 +224,7 @@ test_that("init with wrong per-chain list length errors", {
   expect_error(
     nutpie_sample(
       test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+      data = normal_data(),
       num_draws = 10, num_chains = 3, seed = 42, refresh = 0,
       init = list(
         list(mu = 0, sigma = 1),
@@ -249,7 +240,7 @@ test_that("init = <negative scalar> errors", {
   expect_error(
     nutpie_sample(
       test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+      data = normal_data(),
       num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
       init = -1
     ),
@@ -263,7 +254,7 @@ test_that("init function with zero args errors with clear message", {
   expect_error(
     nutpie_sample(
       test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+      data = normal_data(),
       num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
       init = function() list(mu = 0, sigma = 1)
     ),
@@ -277,7 +268,7 @@ test_that("init function returning non-list errors", {
   expect_error(
     nutpie_sample(
       test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+      data = normal_data(),
       num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
       init = function(chain_id) "not a list"
     ),
