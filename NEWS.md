@@ -1,3 +1,17 @@
+# nutpieR 1.4.1
+
+* Result conversion no longer copies the draws matrix. `matrix_to_draws_array()`
+  was wrapping the Rust-side flat matrix with `array(., dim = ...)`, which
+  triggers a full memcpy of the buffer; the buffer is already laid out so that
+  `(n_draws, n_chains, n_params)` is just a different `dim` attribute on the
+  same memory, so we now reassign `dim` and `dimnames` in place. Output is
+  `identical()` to before. Savings scale linearly with the result size: ~5 ms
+  on small fits, ~80 ms on a 30 MB result, ~500 ms on a 305 MB result, and
+  multiple seconds on larger hierarchical models. Doubled when
+  `save_warmup = TRUE` (the warmup draws went through the same path).
+* `dot_to_bracket()` is now vectorized instead of `vapply`-per-name. Saves
+  ~80 ms on a model with 1000 parameter names; invisible on small models.
+
 # nutpieR 1.4.0
 
 * Memory-efficiency pass on the R/Rust boundary. No API changes for typical
