@@ -3,6 +3,32 @@
 #' Compiles a Stan model to a shared library using BridgeStan.
 #' Downloads BridgeStan sources on first use (this is slow).
 #'
+#' @section Caching:
+#'
+#' By default the compiled `.so` is cached so repeat calls are near-instant:
+#'
+#' * `stan_file = ...` --- the artifact lives next to the `.stan` as
+#'   `<basename>_model.so` (matching cmdstanr's convention), with a small
+#'   `<basename>_model.cache_meta` sidecar tracking BridgeStan version and
+#'   compile flags. A subsequent call hits the cache when the artifact
+#'   mtime is at least as new as the `.stan` and every `#include`'d
+#'   file (transitively walked) *and* the sidecar matches. If the user's
+#'   `.stan` directory is read-only, the call falls back to the inline
+#'   cache below with a warning -- except for models that use
+#'   `#include`, which error since the inline cache discards the source
+#'   dirname needed to resolve includes.
+#' * `code = "..."` --- the artifact lives under
+#'   [`nutpie_cache_dir()`][nutpie_cache_dir], keyed by a hash of the source
+#'   plus BridgeStan version and compile flags (argument order preserved).
+#'
+#' Cache controls:
+#'
+#' * `cache = FALSE` on a single call --- force a fresh compile that
+#'   overwrites the cached artifact and updates the sidecar.
+#' * `Sys.setenv(NUTPIER_DISABLE_COMPILE_CACHE = "1")` --- same effect
+#'   process-wide, without changing call sites.
+#' * [`nutpie_clear_cache()`][nutpie_clear_cache] wipes the inline cache.
+#'
 #' @param stan_file Path to a `.stan` file. Exactly one of `stan_file` or
 #'   `code` must be provided.
 #' @param code A string containing Stan model code. If provided, the code is
@@ -15,21 +41,23 @@
 #'   `1` (default) = print status messages.
 #'   Note: full make/stanc output (verbose=2) is not yet supported because
 #'   bridgestan captures subprocess output internally rather than streaming it.
+#' @param cache Logical, default `TRUE`. When `TRUE`, reuse a previously
+#'   compiled artifact when the source, BridgeStan version, and compile
+#'   flags all match. When `FALSE`, force a fresh compile.
 #' @return An object of class `"nutpie_model"` containing the path to the
 #'   compiled shared library.
 #' @export
 nutpie_compile_model <- function(stan_file = NULL, code = NULL,
                                  stanc_args = character(),
                                  compile_args = character(),
-                                 verbose = 1L) {
+                                 verbose = 1L,
+                                 cache = TRUE) {
   if (!is.null(stan_file) && !is.null(code)) {
     stop("Provide exactly one of `stan_file` or `code`, not both.", call. = FALSE)
   }
   if (is.null(stan_file) && is.null(code)) {
     stop("Provide exactly one of `stan_file` or `code`.", call. = FALSE)
   }
-
-  # bridgestan::compile_model shells out to make
 
   if (Sys.which("make") == "") {
     platform_hint <- if (.Platform$OS.type == "windows") {
@@ -46,37 +74,50 @@ nutpie_compile_model <- function(stan_file = NULL, code = NULL,
     )
   }
 
+  verbose <- as.integer(verbose)
+  use_cache <- isTRUE(cache) &&
+    !identical(Sys.getenv("NUTPIER_DISABLE_COMPILE_CACHE"), "1")
+
   if (!is.null(code)) {
-    stan_file <- tempfile(fileext = ".stan")
-    writeLines(code, stan_file)
+    return(compile_inline(code, stanc_args, compile_args, verbose, use_cache))
   }
 
   stan_file <- normalizePath(stan_file, mustWork = TRUE)
 
-  # bridgestan shells out to make, which can't handle spaces in paths.
-  # Copy the stan file to a temp dir if the path contains spaces.
-  if (grepl(" ", stan_file)) {
-    tmp_dir <- tempfile("nutpie_model_")
-    dir.create(tmp_dir)
-    tmp_stan <- file.path(tmp_dir, basename(stan_file))
-    file.copy(stan_file, tmp_stan)
-    stan_file <- tmp_stan
+  if (!dir_writable(dirname(stan_file))) {
+    # Inline-cache fallback reads the .stan as a string and discards the
+    # original directory context, so #include directives can no longer
+    # resolve. Refuse rather than produce a silently broken compile.
+    if (length(included_files(stan_file)) > 0) {
+      stop(
+        "Stan file directory ", dirname(stan_file), " is not writable and ",
+        "the model uses `#include`. Make the directory writable or ",
+        "pre-resolve the includes into a single file.", call. = FALSE
+      )
+    }
+    if (use_cache) {
+      warning(
+        "Stan file directory ", dirname(stan_file), " is not writable; ",
+        "falling back to the inline cache. Pass cache = FALSE to suppress.",
+        call. = FALSE
+      )
+    }
+    code <- paste(readLines(stan_file, warn = FALSE), collapse = "\n")
+    return(compile_inline(code, stanc_args, compile_args, verbose, use_cache))
   }
-  verbose <- as.integer(verbose)
-  if (verbose >= 1L) {
-    message("Compiling Stan model...")
-    start_time <- proc.time()[["elapsed"]]
+
+  bs <- bs_version()
+  if (use_cache && in_place_hit(stan_file, bs, stanc_args, compile_args)) {
+    if (verbose >= 1L) message("Using cached compiled model.")
+    return(nutpie_model(
+      normalizePath(expected_artifact_path(stan_file), mustWork = TRUE),
+      stan_file
+    ))
   }
-  lib_path <- compile_stan_model(stan_file, as.character(stanc_args),
-                                  as.character(compile_args))
-  if (verbose >= 1L) {
-    elapsed <- proc.time()[["elapsed"]] - start_time
-    message(sprintf("Compiled in %.1fs", elapsed))
-  }
-  structure(
-    list(lib_path = lib_path, stan_file = stan_file),
-    class = "nutpie_model"
-  )
+
+  lib_path <- compile_in_place(stan_file, stanc_args, compile_args, verbose)
+  write_cache_meta(stan_file, bs, stanc_args, compile_args)
+  nutpie_model(lib_path, stan_file)
 }
 
 #' @export

@@ -9,6 +9,12 @@
 #' @keywords internal
 sample_normal <- function(num_draws, num_chains, seed) .Call(wrap__sample_normal, num_draws, num_chains, seed)
 
+#' Return the linked BridgeStan crate version, e.g. "2.7.0". Used by the
+#' inline-code compile cache key so a BridgeStan version bump invalidates
+#' cached entries automatically.
+#' @keywords internal
+bridgestan_version <- function() .Call(wrap__bridgestan_version)
+
 #' Compile a Stan model to a shared library using BridgeStan.
 #' Downloads BridgeStan sources if needed (first call is slow).
 #' @param stan_file Path to the .stan file.

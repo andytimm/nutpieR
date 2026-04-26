@@ -171,6 +171,15 @@ fn sample_normal(num_draws: i32, num_chains: i32, seed: i32) -> Result<Robj> {
     Ok(matrix.into_robj())
 }
 
+/// Return the linked BridgeStan crate version, e.g. "2.7.0". Used by the
+/// inline-code compile cache key so a BridgeStan version bump invalidates
+/// cached entries automatically.
+/// @keywords internal
+#[extendr]
+fn bridgestan_version() -> String {
+    bridgestan::VERSION.to_string()
+}
+
 /// Compile a Stan model to a shared library using BridgeStan.
 /// Downloads BridgeStan sources if needed (first call is slow).
 /// @param stan_file Path to the .stan file.
@@ -926,6 +935,7 @@ fn bs_param_constrain_block(
 extendr_module! {
     mod nutpieR;
     fn sample_normal;
+    fn bridgestan_version;
     fn compile_stan_model;
     fn sample_stan;
     fn bs_open;

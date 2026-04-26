@@ -116,6 +116,8 @@ nutpieR compiles Stan models via the BridgeStan Rust crate and samples using the
 
 Results are transferred from Rust to R via Apache Arrow (zero-copy) and returned as a `posterior::draws_array`.
 
+Compiled artifacts are cached, matching cmdstanr's convention -- repeat calls return in <1s. See `?nutpie_compile_model` for cache controls and `?nutpie_clear_cache` to invalidate.
+
 ## License
 
 MIT

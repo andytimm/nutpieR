@@ -1,3 +1,12 @@
+# nutpieR 1.5.0
+
+* `nutpie_compile_model()` caches compiled artifacts. `stan_file` mode
+  drops `<basename>_model.so` next to the `.stan` (cmdstanr-compatible);
+  `code` mode hashes into `nutpie_cache_dir()`. Both keys cover BridgeStan
+  version and compile flags. Pass `cache = FALSE` (or set
+  `NUTPIER_DISABLE_COMPILE_CACHE=1`) to force a recompile;
+  `nutpie_clear_cache()` wipes the inline cache.
+
 # nutpieR 1.4.1
 
 * Result conversion no longer copies the draws matrix. The Rust-side buffer
