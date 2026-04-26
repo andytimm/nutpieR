@@ -1,13 +1,4 @@
-#' Sample from a 10-d standard normal using nuts-rs.
-
 # nolint start
-
-#' Returns a matrix of draws (rows = draws*chains, cols = parameters).
-#' @param num_draws Number of draws per chain after warmup.
-#' @param num_chains Number of parallel chains.
-#' @param seed Random seed.
-#' @keywords internal
-sample_normal <- function(num_draws, num_chains, seed) .Call(wrap__sample_normal, num_draws, num_chains, seed)
 
 #' Return the linked BridgeStan crate version, e.g. "2.7.0". Used by the
 #' inline-code compile cache key so a BridgeStan version bump invalidates

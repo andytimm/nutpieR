@@ -3,7 +3,7 @@ test_that("nutpie_param_names returns block-level names by default", {
 
   names_block <- nutpie_param_names(
     test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1))
+    data = bernoulli_data()
   )
   expect_type(names_block, "character")
   expect_equal(names_block, "theta")
@@ -14,7 +14,7 @@ test_that("nutpie_param_names which = 'block' returns just block names", {
 
   names_block <- nutpie_param_names(
     test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    data = normal_data(),
     which = "block"
   )
   expect_equal(sort(names_block), c("mu", "sigma"))
@@ -25,7 +25,7 @@ test_that("nutpie_param_names which = 'unconstrained' returns unc names", {
 
   names_unc <- nutpie_param_names(
     test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    data = normal_data(),
     which = "unconstrained"
   )
   expect_length(names_unc, 2)
@@ -37,37 +37,29 @@ test_that("nutpie_param_names which = 'full' includes TP/GQ", {
 
   names_full <- nutpie_param_names(
     test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    data = normal_data(),
     which = "full"
   )
   expect_true("mu" %in% names_full)
   expect_true("sigma" %in% names_full)
 })
 
-test_that("nutpie_param_names unconstrained = TRUE is deprecated but works", {
+test_that("nutpie_param_names `unconstrained` is deprecated for both values", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
+  data <- normal_data()
+
   expect_warning(
-    names_unc <- nutpie_param_names(
-      test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-      unconstrained = TRUE
-    ),
+    names_unc <- nutpie_param_names(test_models$normal, data = data,
+                                    unconstrained = TRUE),
     "unconstrained.*deprecated"
   )
   expect_length(names_unc, 2)
   expect_true(all(c("mu", "sigma") %in% names_unc))
-})
-
-test_that("nutpie_param_names unconstrained = FALSE is deprecated but works", {
-  skip_if(is.null(test_models$normal), "Normal model not compiled")
 
   expect_warning(
-    names_full <- nutpie_param_names(
-      test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-      unconstrained = FALSE
-    ),
+    names_full <- nutpie_param_names(test_models$normal, data = data,
+                                     unconstrained = FALSE),
     "unconstrained.*deprecated"
   )
   expect_true("mu" %in% names_full)
@@ -81,7 +73,7 @@ test_that("nutpie_unconstrain round-trips identity params", {
   unc <- nutpie_unconstrain(
     test_models$normal,
     list(mu = 0, sigma = 1),
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
+    data = normal_data()
   )
   expect_type(unc, "double")
   expect_length(unc, 2)
@@ -98,7 +90,7 @@ test_that("nutpie_unconstrain applies log transform to bounded params", {
   unc <- nutpie_unconstrain(
     test_models$normal,
     list(mu = 3, sigma = exp(2)),
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
+    data = normal_data()
   )
   expect_equal(unname(unc[["mu"]]), 3, tolerance = 1e-10)
   expect_equal(unname(unc[["sigma"]]), 2, tolerance = 1e-10)
@@ -111,7 +103,7 @@ test_that("nutpie_unconstrain errors on wrong-named params", {
     nutpie_unconstrain(
       test_models$normal,
       list(mu = 0, nonexistent = 1),
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
+      data = normal_data()
     )
   )
 })
@@ -121,7 +113,7 @@ test_that("nutpie_unconstrain errors on unnamed list", {
 
   expect_error(
     nutpie_unconstrain(test_models$normal, list(0, 1),
-                       data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))),
+                       data = normal_data()),
     "fully named"
   )
 })

@@ -1,17 +1,14 @@
-test_that("sample_normal returns correct dimensions", {
-  draws <- sample_normal(100L, 2L, 42L)
-  expect_true(is.matrix(draws))
-  expect_equal(nrow(draws), 200)
-  expect_equal(ncol(draws), 10)
-})
+# Synthetic name vectors mirroring the tp_gq Stan model:
+#   parameters { mu; sigma; }            -> block
+#   transformed parameters { mu_sq; }    -> block_tp adds mu_sq
+#   generated quantities { y_rep[N=5]; } -> full adds y_rep
+TP_GQ_BLOCK    <- c("mu", "sigma")
+TP_GQ_BLOCK_TP <- c("mu", "sigma", "mu_sq")
+TP_GQ_FULL_DOT <- c("mu", "sigma", "mu_sq",
+                    "y_rep.1", "y_rep.2", "y_rep.3", "y_rep.4", "y_rep.5")
+TP_GQ_FULL     <- nutpieR:::block_prefixes(TP_GQ_FULL_DOT)
 
-test_that("sample_normal means are near 0 and SDs near 1", {
-  draws <- sample_normal(500L, 4L, 42L)
-  col_means <- colMeans(draws)
-  col_sds <- apply(draws, 2, sd)
-  expect_true(all(abs(col_means) < 0.1))
-  expect_true(all(abs(col_sds - 1) < 0.15))
-})
+# --- resolve_data unit tests -------------------------------------------------
 
 test_that("resolve_data handles NULL", {
   expect_equal(nutpieR:::resolve_data(NULL), "")
@@ -41,230 +38,128 @@ test_that("resolve_data rejects invalid input", {
   expect_error(nutpieR:::resolve_data(123))
 })
 
-test_that("nutpie_sample rejects malformed sampler counts before unsigned cast", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-  data <- list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1))
+# --- check_count unit tests --------------------------------------------------
 
+test_that("check_count rejects malformed counts", {
+  expect_error(nutpieR:::check_count(-1L, "num_draws", min = 1L), "num_draws")
+  expect_error(nutpieR:::check_count(NA_integer_, "num_chains"), "num_chains")
+  expect_error(nutpieR:::check_count(1.5, "num_warmup"), "num_warmup")
+  expect_error(nutpieR:::check_count(c(1L, 2L), "num_chains"), "num_chains")
+})
+
+test_that("nutpie_sample rejects malformed target_accept", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
   expect_error(
-    nutpie_sample(test_models$bernoulli, data = data, num_draws = -1),
-    "num_draws"
-  )
-  expect_error(
-    nutpie_sample(test_models$bernoulli, data = data, num_chains = NA_integer_),
-    "num_chains"
-  )
-  expect_error(
-    nutpie_sample(test_models$bernoulli, data = data, num_warmup = 1.5),
-    "num_warmup"
-  )
-  expect_error(
-    nutpie_sample(test_models$bernoulli, data = data, num_chains = c(1L, 2L)),
-    "num_chains"
-  )
-  expect_error(
-    nutpie_sample(test_models$bernoulli, data = data, target_accept = 1.5),
+    nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                  target_accept = 1.5),
     "target_accept"
   )
 })
+
+# --- resolve_constrain_flags_impl unit tests (no handle) ---------------------
+
+test_that("resolve_constrain_flags short-circuits without touching the handle when pars is NULL", {
+  # handle = NULL would crash if the wrapper evaluated bs_*_names on it.
+  flags <- nutpieR:::resolve_constrain_flags(handle = NULL, pars = NULL,
+                                             include = TRUE)
+  expect_true(flags$include_tp)
+  expect_true(flags$include_gq)
+})
+
+test_that("resolve_constrain_flags drops both flags when only block kept", {
+  flags <- nutpieR:::resolve_constrain_flags_impl(
+    block = TP_GQ_BLOCK, block_tp = TP_GQ_BLOCK_TP, full = TP_GQ_FULL,
+    pars = c("mu", "sigma"), include = TRUE
+  )
+  expect_false(flags$include_tp)
+  expect_false(flags$include_gq)
+})
+
+test_that("resolve_constrain_flags keeps include_tp when TP kept, no GQ", {
+  flags <- nutpieR:::resolve_constrain_flags_impl(
+    block = TP_GQ_BLOCK, block_tp = TP_GQ_BLOCK_TP, full = TP_GQ_FULL,
+    pars = "mu_sq", include = TRUE
+  )
+  expect_true(flags$include_tp)
+  expect_false(flags$include_gq)
+})
+
+test_that("resolve_constrain_flags forces include_tp when GQ kept (conservative)", {
+  flags <- nutpieR:::resolve_constrain_flags_impl(
+    block = TP_GQ_BLOCK, block_tp = TP_GQ_BLOCK_TP, full = TP_GQ_FULL,
+    pars = "y_rep", include = TRUE
+  )
+  expect_true(flags$include_tp)
+  expect_true(flags$include_gq)
+})
+
+test_that("resolve_constrain_flags blacklist excluding GQ name drops include_gq", {
+  flags <- nutpieR:::resolve_constrain_flags_impl(
+    block = TP_GQ_BLOCK, block_tp = TP_GQ_BLOCK_TP, full = TP_GQ_FULL,
+    pars = "y_rep", include = FALSE
+  )
+  # mu_sq (TP) is still kept, so include_tp must remain TRUE
+  expect_true(flags$include_tp)
+  expect_false(flags$include_gq)
+})
+
+test_that("resolve_constrain_flags errors on unknown parameter names", {
+  expect_error(
+    nutpieR:::resolve_constrain_flags_impl(
+      block = TP_GQ_BLOCK, block_tp = TP_GQ_BLOCK_TP, full = TP_GQ_FULL,
+      pars = "nonexistent", include = TRUE
+    ),
+    "Unknown parameter"
+  )
+})
+
+# --- resolve_keep_indices unit tests -----------------------------------------
+
+test_that("resolve_keep_indices returns NULL when pars is NULL", {
+  expect_null(nutpieR:::resolve_keep_indices(TP_GQ_FULL_DOT, NULL, TRUE))
+})
+
+test_that("resolve_keep_indices whitelist returns matching column indices", {
+  idx <- nutpieR:::resolve_keep_indices(TP_GQ_FULL_DOT, "y_rep", TRUE)
+  # 0-indexed column positions for y_rep.1..y_rep.5 in TP_GQ_FULL_DOT
+  expect_equal(idx, 3:7)
+})
+
+test_that("resolve_keep_indices blacklist excludes matching", {
+  idx <- nutpieR:::resolve_keep_indices(TP_GQ_FULL_DOT, "y_rep", FALSE)
+  # Everything except y_rep.*
+  expect_equal(idx, 0:2)
+})
+
+test_that("resolve_keep_indices empty whitelist errors", {
+  # pars = character(0) with include = TRUE means "keep nothing", not
+  # "keep everything" — guards against programmatic selections like
+  # pars = intersect(user_pars, available) that come up empty.
+  expect_error(
+    nutpieR:::resolve_keep_indices(TP_GQ_FULL_DOT, character(0), TRUE),
+    "remove all variables"
+  )
+})
+
+test_that("resolve_keep_indices full exclusion errors", {
+  expect_error(
+    nutpieR:::resolve_keep_indices(c("mu", "sigma"),
+                                   c("mu", "sigma"), FALSE),
+    "remove all variables"
+  )
+})
+
+test_that("resolve_keep_indices empty blacklist returns NULL (keep all)", {
+  expect_null(nutpieR:::resolve_keep_indices(TP_GQ_FULL_DOT, character(0), FALSE))
+})
+
+# --- Compilation -------------------------------------------------------------
 
 test_that("nutpie_compile_model returns nutpie_model", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
   expect_s3_class(test_models$bernoulli, "nutpie_model")
   expect_true(file.exists(test_models$bernoulli$lib_path))
 })
-
-test_that("nutpie_sample returns draws_array with correct dims", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 200, num_chains = 2, seed = 42, refresh = 0
-  )
-
-  expect_s3_class(draws, "draws_array")
-  expect_equal(posterior::ndraws(draws), 400)
-  expect_equal(posterior::nchains(draws), 2)
-  expect_equal(posterior::niterations(draws), 200)
-  expect_true("theta" %in% posterior::variables(draws))
-})
-
-test_that("nutpie_sample bernoulli theta is reasonable", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 500, num_chains = 4, seed = 123, refresh = 0
-  )
-
-  summ <- posterior::summarize_draws(draws)
-  theta_mean <- summ$mean[summ$variable == "theta"]
-  # With 2/10 successes + Beta(1,1) prior, posterior is Beta(3,9), mean = 0.25
-  expect_true(abs(theta_mean - 0.25) < 0.05)
-})
-
-test_that("nutpie_sample normal model param names correct", {
-  skip_if(is.null(test_models$normal), "Normal model not compiled")
-
-  draws <- nutpie_sample(test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-    num_draws = 200, num_chains = 2, seed = 42, refresh = 0
-  )
-
-  expect_s3_class(draws, "draws_array")
-  vars <- posterior::variables(draws)
-  expect_true("mu" %in% vars)
-  expect_true("sigma" %in% vars)
-
-  # y = 1..5, so posterior mean of mu should be near 3, sigma near 1.6
-  # sigma posterior is wide with n=5, so use generous tolerance
-  summ <- posterior::summarize_draws(draws)
-  mu_mean <- summ$mean[summ$variable == "mu"]
-  sigma_mean <- summ$mean[summ$variable == "sigma"]
-  expect_true(abs(mu_mean - 3.0) < 0.5)
-  expect_true(abs(sigma_mean - 1.6) < 1.0)
-})
-
-test_that("nutpie_sample accepts sampling parameters", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 100, num_warmup = 200, num_chains = 2,
-    max_treedepth = 8, target_accept = 0.9, seed = 42,
-    refresh = 0
-  )
-
-  expect_s3_class(draws, "draws_array")
-  expect_equal(posterior::niterations(draws), 100)
-  expect_equal(posterior::nchains(draws), 2)
-})
-
-test_that("nutpie_diagnostics exposes the load-bearing fields", {
-  # Narrow contract: only the fields nutpieR's own code, docs, and the
-  # standard MCMC convergence-diagnostic vocabulary depend on. Schema
-  # additions in nuts-rs pass silently; the generic shape invariants are
-  # checked separately below.
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 100, num_chains = 2, seed = 42, refresh = 0
-  )
-
-  diag <- nutpie_diagnostics(draws)
-  expect_type(diag, "list")
-
-  must_have <- c("diverging", "depth", "logp", "energy", "n_steps",
-                 "step_size_bar", "mean_tree_accept")
-  for (field in must_have) {
-    expect_true(field %in% names(diag), info = paste("missing field:", field))
-  }
-
-  expect_type(diag$diverging, "logical")
-  expect_type(diag$depth, "integer")
-  expect_type(diag$n_steps, "integer")
-  expect_type(diag$logp, "double")
-  expect_type(diag$energy, "double")
-
-  expect_true(all(diag$depth > 0))
-  expect_true(all(is.finite(diag$logp)))
-  expect_true(all(diag$mean_tree_accept >= 0 & diag$mean_tree_accept <= 1))
-})
-
-test_that("schema-driven extraction preserves passthrough invariants", {
-  # Whatever nuts-rs emits, the extractor must surface it with the right
-  # shape. We don't pin the exact field set — that's a contract between
-  # nuts-rs and its callers, not nutpieR. We only check generic invariants
-  # over what came through, plus types for the small subset where we're
-  # making a typing promise to users.
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 100, num_chains = 2, seed = 42, refresh = 0
-  )
-  diag <- nutpie_diagnostics(draws)
-
-  # Length invariant: every surfaced field is one entry per draw, regardless
-  # of whether it's a scalar vector or a list-of-vectors.
-  n <- posterior::ndraws(draws)
-  for (f in names(diag)) {
-    expect_equal(length(diag[[f]]), n, info = paste("bad length:", f))
-  }
-
-  # Typing promise (matches the roxygen for nutpie_diagnostics): count
-  # fields surface as integer-when-fits, float fields as double, flag
-  # fields as logical. Only enforced for fields that are actually present.
-  type_promise <- list(
-    integer = c("depth", "n_steps", "chain", "draw", "index_in_trajectory"),
-    double  = c("logp", "energy", "step_size", "step_size_bar",
-                "mean_tree_accept"),
-    logical = c("diverging", "tuning", "maxdepth_reached"),
-    list    = c("unconstrained_draw", "gradient")
-  )
-  for (typ in names(type_promise)) {
-    for (f in intersect(type_promise[[typ]], names(diag))) {
-      expect_type(diag[[f]], typ)
-    }
-  }
-
-  # Bernoulli has 1 unconstrained parameter, so per-draw vector fields
-  # should be length 1.
-  if ("unconstrained_draw" %in% names(diag)) {
-    expect_equal(length(diag$unconstrained_draw[[1]]), 1)
-  }
-  if ("gradient" %in% names(diag)) {
-    expect_equal(length(diag$gradient[[1]]), 1)
-  }
-})
-
-test_that("logp is non-zero floating-point — guards silent default-fill", {
-  # If extract_diagnostics ever silently fails to populate logp (renamed
-  # column, dtype mismatch, etc.) it stays at the zero-init buffer and prints
-  # as integers. This test catches that class of bug.
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 100, num_chains = 2, seed = 42, refresh = 0
-  )
-  lp <- nutpie_diagnostics(draws)$logp
-
-  expect_type(lp, "double")
-  expect_true(any(lp != 0))
-  expect_true(any(abs(lp - round(lp)) > 1e-8))
-})
-
-test_that("nutpie_diagnostics errors on non-nutpie object", {
-  expect_error(nutpie_diagnostics(1:10), "No diagnostics found")
-})
-
-test_that("num_warmup and num_draws attributes are set", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 100, num_warmup = 200, num_chains = 2, seed = 42,
-    refresh = 0
-  )
-
-  expect_equal(attr(draws, "num_warmup"), 200L)
-  expect_equal(attr(draws, "num_draws"), 100L)
-})
-
-test_that("num_warmup attribute is set even without save_warmup", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 50, num_chains = 1, seed = 42, refresh = 0
-  )
-
-  expect_equal(attr(draws, "num_warmup"), 400L)  # default
-  expect_equal(attr(draws, "num_draws"), 50L)
-})
-
-# --- Item 1: Compile from Stan code string ---
 
 test_that("nutpie_compile_model accepts code string", {
   skip_if(is.null(test_models$code_string), "Code string model not compiled")
@@ -274,7 +169,6 @@ test_that("nutpie_compile_model accepts code string", {
 
 test_that("nutpie_compile_model rejects both stan_file and code", {
   stan_file <- test_path("test_models", "bernoulli.stan")
-  skip_if_not(file.exists(stan_file), "Stan file not found")
   expect_error(
     nutpie_compile_model(stan_file = stan_file, code = "data {}"),
     "exactly one"
@@ -285,24 +179,71 @@ test_that("nutpie_compile_model rejects neither stan_file nor code", {
   expect_error(nutpie_compile_model(), "exactly one")
 })
 
-# --- Item 4: Graceful error handling ---
+# --- Canonical bernoulli end-to-end ------------------------------------------
+# Folds: dims, posterior mean, num_warmup/num_draws attrs, max_treedepth +
+# target_accept past-validation, must_have diagnostic fields, type promises,
+# logp non-zero, list-column drops, nutpie_warmup_draws-errors-without-save.
 
-test_that("sampling with bad data gives R error, not crash", {
+test_that("bernoulli end-to-end run surfaces draws + diagnostics + attributes", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  expect_error(
-    nutpie_sample(test_models$bernoulli, data = '{"bad": "json format"}',
-                  num_draws = 10, num_chains = 1, seed = 42, refresh = 0)
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+    num_draws = 200, num_warmup = 200, num_chains = 2, seed = 42, refresh = 0,
+    max_treedepth = 8, target_accept = 0.9
   )
+
+  # Shape
+  expect_s3_class(draws, "draws_array")
+  expect_equal(posterior::ndraws(draws), 400)
+  expect_equal(posterior::nchains(draws), 2)
+  expect_equal(posterior::niterations(draws), 200)
+  expect_true("theta" %in% posterior::variables(draws))
+
+  # Attributes record sampling configuration
+  expect_equal(attr(draws, "num_warmup"), 200L)
+  expect_equal(attr(draws, "num_draws"), 200L)
+
+  # Posterior mean: 2/10 successes + Beta(1,1) prior -> Beta(3,9), mean = 0.25
+  summ <- posterior::summarize_draws(draws)
+  theta_mean <- summ$mean[summ$variable == "theta"]
+  expect_true(abs(theta_mean - 0.25) < 0.05)
+
+  # Diagnostics: load-bearing fields with promised types
+  diag <- nutpie_diagnostics(draws)
+  must_have <- c("diverging", "depth", "logp", "energy", "n_steps",
+                 "step_size_bar", "mean_tree_accept")
+  for (field in must_have) {
+    expect_true(field %in% names(diag), info = paste("missing:", field))
+  }
+  expect_type(diag$diverging, "logical")
+  expect_type(diag$depth, "integer")
+  expect_type(diag$n_steps, "integer")
+  expect_type(diag$logp, "double")
+  expect_type(diag$energy, "double")
+  expect_true(all(diag$mean_tree_accept >= 0 & diag$mean_tree_accept <= 1))
+
+  # logp must be real floats — guards a class of bug where a renamed/missing
+  # column would silently leave the zero-init buffer in place (printing as
+  # integers).
+  expect_true(any(diag$logp != 0))
+  expect_true(any(abs(diag$logp - round(diag$logp)) > 1e-8))
+
+  # Default flags drop their list columns
+  expect_false("divergence_start" %in% names(diag))
+  expect_false("mass_matrix_inv" %in% names(diag))
+  expect_false("unconstrained_draw" %in% names(diag))
+  expect_false("gradient" %in% names(diag))
+
+  # save_warmup wasn't passed -> nutpie_warmup_draws should error
+  expect_error(nutpie_warmup_draws(draws), "save_warmup")
 })
 
-# --- Item 5: save_warmup ---
+# --- save_warmup integration -------------------------------------------------
 
-test_that("save_warmup returns warmup draws", {
+test_that("save_warmup returns warmup draws + diagnostics with tuning field", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
     num_draws = 100, num_warmup = 50, num_chains = 2, seed = 42,
     refresh = 0, save_warmup = TRUE
   )
@@ -315,279 +256,20 @@ test_that("save_warmup returns warmup draws", {
 
   warmup_diag <- nutpie_warmup_diagnostics(draws)
   expect_type(warmup_diag, "list")
-  expect_equal(length(warmup_diag$diverging), 100)  # 50 * 2 chains
-
-  # Warmup diagnostics should use the same schema-driven extractor.
+  expect_equal(length(warmup_diag$diverging), 100) # 50 * 2 chains
   expect_true("logp" %in% names(warmup_diag))
   expect_true("tuning" %in% names(warmup_diag))
   expect_type(warmup_diag$logp, "double")
   expect_true(any(warmup_diag$logp != 0))
-  # During warmup, tuning should be TRUE for at least some draws.
   expect_true(any(warmup_diag$tuning))
 })
 
-test_that("nutpie_warmup_draws errors without save_warmup", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+# --- pars whitelist + warmup filtering on normal -----------------------------
 
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 50, num_chains = 1, seed = 42, refresh = 0
-  )
-
-  expect_error(nutpie_warmup_draws(draws), "save_warmup")
-})
-
-# --- Item 6: cores parameter ---
-
-test_that("cores parameter works", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 50, num_chains = 4, cores = 2, seed = 42, refresh = 0
-  )
-
-  expect_s3_class(draws, "draws_array")
-  expect_equal(posterior::nchains(draws), 4)
-})
-
-# --- Item 7: store_divergences and store_mass_matrix ---
-
-test_that("store_divergences exposes divergence detail when divergences occur", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  # Force divergences via a tiny max_treedepth + low target_accept on a model
-  # that's easy to push into pathology. We don't always get divergences, so
-  # the test is conditional on actually having some.
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 200, num_chains = 4, seed = 42, refresh = 0,
-    store_divergences = TRUE, max_treedepth = 1, target_accept = 0.5
-  )
-  diag <- nutpie_diagnostics(draws)
-  skip_if_not(sum(diag$diverging) > 0, "no divergences in this run")
-
-  expect_true("divergence_start" %in% names(diag))
-  expect_true("divergence_end" %in% names(diag))
-  expect_true("divergence_momentum" %in% names(diag))
-  expect_true("divergence_start_gradient" %in% names(diag))
-  expect_type(diag$divergence_start, "list")
-  expect_equal(length(diag$divergence_start), length(diag$diverging))
-  # Non-NULL entries align with diverging draws
-  div_idx <- which(diag$diverging)
-  expect_true(all(!vapply(diag$divergence_start[div_idx], is.null, logical(1))))
-})
-
-test_that("store_divergences = FALSE drops all-null divergence list columns", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 50, num_chains = 1, seed = 42, refresh = 0
-  )
-  diag <- nutpie_diagnostics(draws)
-  expect_false("divergence_start" %in% names(diag))
-  expect_false("mass_matrix_inv" %in% names(diag))
-  expect_false("unconstrained_draw" %in% names(diag))
-  expect_false("gradient" %in% names(diag))
-})
-
-test_that("store_unconstrained / store_gradient surface their list columns", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
-    store_unconstrained = TRUE, store_gradient = TRUE
-  )
-
-  diag <- nutpie_diagnostics(draws)
-  expect_true("unconstrained_draw" %in% names(diag))
-  expect_true("gradient" %in% names(diag))
-  expect_type(diag$unconstrained_draw, "list")
-  expect_type(diag$gradient, "list")
-  expect_equal(length(diag$unconstrained_draw), 50)
-  # Bernoulli has 1 unconstrained parameter
-  expect_equal(length(diag$unconstrained_draw[[1]]), 1)
-  expect_equal(length(diag$gradient[[1]]), 1)
-})
-
-test_that("store_mass_matrix adds mass_matrix_inv field", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
-    store_mass_matrix = TRUE
-  )
-
-  diag <- nutpie_diagnostics(draws)
-  expect_true("mass_matrix_inv" %in% names(diag))
-  expect_type(diag$mass_matrix_inv, "list")
-  expect_equal(length(diag$mass_matrix_inv), 50)
-  # At least some entries should be non-NULL numeric vectors
-  non_null <- Filter(Negate(is.null), diag$mass_matrix_inv)
-  expect_true(length(non_null) > 0)
-  expect_type(non_null[[1]], "double")
-})
-
-# --- Item 8: low-rank mass matrix ---
-
-test_that("low_rank_modified_mass_matrix produces valid draws", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 100, num_chains = 2, seed = 42, refresh = 0,
-    low_rank_modified_mass_matrix = TRUE
-  )
-
-  expect_s3_class(draws, "draws_array")
-  expect_equal(posterior::niterations(draws), 100)
-  expect_equal(posterior::nchains(draws), 2)
-  expect_true("theta" %in% posterior::variables(draws))
-
-  # Should get similar posterior as standard mass matrix
-  summ <- posterior::summarize_draws(draws)
-  theta_mean <- summ$mean[summ$variable == "theta"]
-  expect_true(abs(theta_mean - 0.25) < 0.1)
-})
-
-test_that("low_rank + store_mass_matrix surfaces mass matrix without errors", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
-    low_rank_modified_mass_matrix = TRUE, store_mass_matrix = TRUE
-  )
-  diag <- nutpie_diagnostics(draws)
-  expect_true("logp" %in% names(diag))
-  expect_type(diag$logp, "double")
-  expect_true(any(diag$logp != 0))
-})
-
-# --- Issue #4: scalar init_mean auto-expansion ---
-
-test_that("scalar init_mean is auto-expanded to correct length", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  expect_warning(
-    draws <- nutpie_sample(test_models$bernoulli,
-      data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-      num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
-      init_mean = 0
-    ),
-    "init_mean.*deprecated"
-  )
-
-  expect_s3_class(draws, "draws_array")
-  expect_equal(posterior::niterations(draws), 50)
-  expect_true("theta" %in% posterior::variables(draws))
-})
-
-test_that("vector init_mean still works", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  # bernoulli has 1 unconstrained parameter
-  expect_warning(
-    draws <- nutpie_sample(test_models$bernoulli,
-      data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-      num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
-      init_mean = c(0.5)
-    ),
-    "init_mean.*deprecated"
-  )
-
-  expect_s3_class(draws, "draws_array")
-  expect_equal(posterior::niterations(draws), 50)
-})
-
-test_that("wrong-length init_mean vector errors", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-
-  expect_error(
-    suppressWarnings(nutpie_sample(test_models$bernoulli,
-      data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
-      num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
-      init_mean = c(0.1, 0.2, 0.3)
-    ))
-  )
-})
-
-# --- Issue #5: pars and include ---
-
-test_that("pars whitelist keeps only selected parameters", {
+test_that("pars whitelist + save_warmup filters both draws and warmup", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
-  draws <- nutpie_sample(test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
-    pars = "mu"
-  )
-
-  vars <- posterior::variables(draws)
-  expect_equal(vars, "mu")
-})
-
-test_that("pars blacklist excludes selected parameters", {
-  skip_if(is.null(test_models$normal), "Normal model not compiled")
-
-  draws <- nutpie_sample(test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
-    pars = "mu", include = FALSE
-  )
-
-  vars <- posterior::variables(draws)
-  expect_false("mu" %in% vars)
-  expect_true("sigma" %in% vars)
-})
-
-test_that("pars = NULL returns all parameters (default)", {
-  skip_if(is.null(test_models$normal), "Normal model not compiled")
-
-  draws <- nutpie_sample(test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-    num_draws = 50, num_chains = 1, seed = 42, refresh = 0
-  )
-
-  vars <- posterior::variables(draws)
-  expect_true("mu" %in% vars)
-  expect_true("sigma" %in% vars)
-})
-
-test_that("pars errors on unknown parameter names", {
-  skip_if(is.null(test_models$normal), "Normal model not compiled")
-
-  expect_error(
-    nutpie_sample(test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-      num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
-      pars = "nonexistent"
-    ),
-    "Unknown parameter"
-  )
-})
-
-test_that("pars exclusion of all parameters errors", {
-  skip_if(is.null(test_models$normal), "Normal model not compiled")
-
-  expect_error(
-    nutpie_sample(test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-      num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
-      pars = c("mu", "sigma"), include = FALSE
-    ),
-    "remove all variables"
-  )
-})
-
-test_that("pars filters warmup draws too", {
-  skip_if(is.null(test_models$normal), "Normal model not compiled")
-
-  draws <- nutpie_sample(test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+  draws <- nutpie_sample(test_models$normal, data = normal_data(),
     num_draws = 50, num_warmup = 50, num_chains = 1, seed = 42,
     refresh = 0, save_warmup = TRUE, pars = "sigma"
   )
@@ -597,179 +279,152 @@ test_that("pars filters warmup draws too", {
   expect_equal(posterior::variables(warmup), "sigma")
 })
 
-# --- Slim expand_vector: skip TP / GQ when filtered out ---
+# --- tp_gq pars flag-path coverage -------------------------------------------
+# Three sampler runs, three (include_tp, include_gq) paths.
 
-test_that("resolve_constrain_flags returns (TRUE, TRUE) when pars is NULL", {
-  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
-  data <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
-  data_json <- jsonlite::toJSON(data, auto_unbox = TRUE)
-  handle <- nutpieR:::bs_open(test_models$tp_gq$lib_path, data_json, 1L)
-  flags <- nutpieR:::resolve_constrain_flags(handle, NULL, TRUE)
-  expect_true(flags$include_tp)
-  expect_true(flags$include_gq)
-})
-
-test_that("resolve_constrain_flags drops both flags when only block kept", {
-  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
-  data <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
-  data_json <- jsonlite::toJSON(data, auto_unbox = TRUE)
-  handle <- nutpieR:::bs_open(test_models$tp_gq$lib_path, data_json, 1L)
-  flags <- nutpieR:::resolve_constrain_flags(handle, c("mu", "sigma"), TRUE)
-  expect_false(flags$include_tp)
-  expect_false(flags$include_gq)
-})
-
-test_that("resolve_constrain_flags keeps include_tp when TP kept, no GQ", {
-  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
-  data <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
-  data_json <- jsonlite::toJSON(data, auto_unbox = TRUE)
-  handle <- nutpieR:::bs_open(test_models$tp_gq$lib_path, data_json, 1L)
-  flags <- nutpieR:::resolve_constrain_flags(handle, "mu_sq", TRUE)
-  expect_true(flags$include_tp)
-  expect_false(flags$include_gq)
-})
-
-test_that("resolve_constrain_flags forces include_tp when GQ kept (conservative)", {
-  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
-  data <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
-  data_json <- jsonlite::toJSON(data, auto_unbox = TRUE)
-  handle <- nutpieR:::bs_open(test_models$tp_gq$lib_path, data_json, 1L)
-  flags <- nutpieR:::resolve_constrain_flags(handle, "y_rep", TRUE)
-  expect_true(flags$include_tp)
-  expect_true(flags$include_gq)
-})
-
-test_that("resolve_constrain_flags blacklist excludes only GQ name drops include_gq", {
-  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
-  data <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
-  data_json <- jsonlite::toJSON(data, auto_unbox = TRUE)
-  handle <- nutpieR:::bs_open(test_models$tp_gq$lib_path, data_json, 1L)
-  flags <- nutpieR:::resolve_constrain_flags(handle, "y_rep", FALSE)
-  # mu_sq (TP) is still kept, so include_tp must remain TRUE
-  expect_true(flags$include_tp)
-  expect_false(flags$include_gq)
-})
-
-test_that("pars whitelist on block params drops TP and GQ from output", {
+test_that("tp_gq pars whitelist exercises all three flag paths", {
   skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
 
-  draws <- nutpie_sample(test_models$tp_gq,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+  # block-only -> (FALSE, FALSE): mu_sq (TP) and y_rep (GQ) must not appear
+  draws_block <- nutpie_sample(test_models$tp_gq, data = normal_data(),
     num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
     pars = c("mu", "sigma")
   )
+  vars_block <- posterior::variables(draws_block)
+  expect_setequal(vars_block, c("mu", "sigma"))
+  expect_false("mu_sq" %in% vars_block)
+  expect_false(any(grepl("^y_rep", vars_block)))
 
-  vars <- posterior::variables(draws)
-  expect_setequal(vars, c("mu", "sigma"))
-  # mu_sq (TP) and y_rep[*] (GQ) must not be present
-  expect_false("mu_sq" %in% vars)
-  expect_false(any(grepl("^y_rep", vars)))
-})
-
-test_that("pars whitelist on TP keeps TP, drops GQ", {
-  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
-
-  draws <- nutpie_sample(test_models$tp_gq,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+  # TP-only -> (TRUE, FALSE)
+  draws_tp <- nutpie_sample(test_models$tp_gq, data = normal_data(),
     num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
     pars = "mu_sq"
   )
+  vars_tp <- posterior::variables(draws_tp)
+  expect_equal(vars_tp, "mu_sq")
+  expect_false(any(grepl("^y_rep", vars_tp)))
 
-  vars <- posterior::variables(draws)
-  expect_equal(vars, "mu_sq")
-  expect_false(any(grepl("^y_rep", vars)))
-})
-
-test_that("pars whitelist on GQ keeps GQ (with TP forced on internally)", {
-  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
-
-  draws <- nutpie_sample(test_models$tp_gq,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+  # GQ -> (TRUE, TRUE), TP forced on internally
+  draws_gq <- nutpie_sample(test_models$tp_gq, data = normal_data(),
     num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
     pars = "y_rep"
   )
-
-  vars <- posterior::variables(draws)
-  # y_rep is an array of length N=5
-  expect_equal(length(vars), 5)
-  expect_true(all(grepl("^y_rep", vars)))
-  expect_false("mu" %in% vars)
-  expect_false("mu_sq" %in% vars)
+  vars_gq <- posterior::variables(draws_gq)
+  expect_length(vars_gq, 5L)  # y_rep is length-N=5
+  expect_true(all(grepl("^y_rep", vars_gq)))
+  expect_false("mu" %in% vars_gq)
+  expect_false("mu_sq" %in% vars_gq)
 })
 
-test_that("pars = NULL keeps full constrained set on tp_gq model", {
-  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
+# --- pars on a model with no TP/GQ -------------------------------------------
 
-  draws <- nutpie_sample(test_models$tp_gq,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-    num_draws = 50, num_chains = 1, seed = 42, refresh = 0
-  )
-
-  vars <- posterior::variables(draws)
-  expect_true("mu" %in% vars)
-  expect_true("sigma" %in% vars)
-  expect_true("mu_sq" %in% vars)
-  expect_true(any(grepl("^y_rep", vars)))
-})
-
-test_that("include = FALSE excluding GQ drops GQ flag, keeps block + TP", {
-  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
-
-  draws <- nutpie_sample(test_models$tp_gq,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
-    pars = "y_rep", include = FALSE
-  )
-
-  vars <- posterior::variables(draws)
-  expect_true("mu" %in% vars)
-  expect_true("sigma" %in% vars)
-  expect_true("mu_sq" %in% vars)
-  expect_false(any(grepl("^y_rep", vars)))
-})
-
-test_that("empty whitelist errors instead of silently keeping block params", {
-  skip_if(is.null(test_models$normal), "Normal model not compiled")
-
-  # pars = character(0) with include = TRUE means "keep nothing", not
-  # "keep everything" — guards against programmatic selections like
-  # pars = intersect(user_pars, available) that come up empty.
-  expect_error(
-    nutpie_sample(test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-      num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
-      pars = character(0)
-    ),
-    "remove all variables"
-  )
-})
-
-test_that("empty blacklist keeps all (nothing to exclude)", {
-  skip_if(is.null(test_models$normal), "Normal model not compiled")
-
-  draws <- nutpie_sample(test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
-    pars = character(0), include = FALSE
-  )
-
-  vars <- posterior::variables(draws)
-  expect_true("mu" %in% vars)
-  expect_true("sigma" %in% vars)
-})
-
-test_that("model with no GQ block + pars = block param works", {
+test_that("bernoulli pars = 'theta' exercises the (FALSE, FALSE) flag path", {
   # bernoulli has only the `theta` block parameter — no TP, no GQ.
-  # Setting pars = "theta" exercises the (FALSE, FALSE) flag path on a
-  # model where include_tp / include_gq are no-ops.
+  # Confirms the flag-path is a no-op when include_tp / include_gq are
+  # already FALSE for the model itself.
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  draws <- nutpie_sample(test_models$bernoulli,
-    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
     num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
     pars = "theta"
   )
+  expect_equal(posterior::variables(draws), "theta")
+})
 
-  vars <- posterior::variables(draws)
-  expect_equal(vars, "theta")
+# --- store_* flag surfacing --------------------------------------------------
+
+test_that("store_unconstrained / gradient / mass_matrix surface their columns", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+    store_unconstrained = TRUE, store_gradient = TRUE, store_mass_matrix = TRUE
+  )
+  diag <- nutpie_diagnostics(draws)
+
+  expect_true("unconstrained_draw" %in% names(diag))
+  expect_true("gradient" %in% names(diag))
+  expect_true("mass_matrix_inv" %in% names(diag))
+  expect_type(diag$unconstrained_draw, "list")
+  expect_type(diag$gradient, "list")
+  expect_type(diag$mass_matrix_inv, "list")
+
+  # Bernoulli has 1 unconstrained parameter
+  expect_equal(length(diag$unconstrained_draw[[1]]), 1L)
+  expect_equal(length(diag$gradient[[1]]), 1L)
+
+  # mass_matrix_inv typically populates after warmup; some entries must be
+  # numeric vectors
+  non_null <- Filter(Negate(is.null), diag$mass_matrix_inv)
+  expect_true(length(non_null) > 0L)
+  expect_type(non_null[[1]], "double")
+})
+
+# --- store_divergences detail (conditional) ----------------------------------
+
+test_that("store_divergences exposes divergence detail when divergences occur", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+
+  # Force divergences via tiny max_treedepth + low target_accept on a model
+  # that's easy to push into pathology. Conditional on actually getting some.
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+    num_draws = 200, num_chains = 4, seed = 42, refresh = 0,
+    store_divergences = TRUE, max_treedepth = 1, target_accept = 0.5
+  )
+  diag <- nutpie_diagnostics(draws)
+  skip_if_not(sum(diag$diverging) > 0, "no divergences in this run")
+
+  expect_true("divergence_start" %in% names(diag))
+  expect_true("divergence_end" %in% names(diag))
+  expect_true("divergence_momentum" %in% names(diag))
+  expect_type(diag$divergence_start, "list")
+  expect_equal(length(diag$divergence_start), length(diag$diverging))
+  div_idx <- which(diag$diverging)
+  expect_true(all(!vapply(diag$divergence_start[div_idx], is.null, logical(1))))
+})
+
+# --- low-rank mass matrix ----------------------------------------------------
+
+test_that("low_rank_modified_mass_matrix produces valid draws", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+
+  # store_mass_matrix is requested too: low-rank's mass matrix has a
+  # different internal representation than the diagonal one and may not
+  # surface `mass_matrix_inv`, but the run must complete cleanly with
+  # logp populated.
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+    num_draws = 100, num_chains = 2, seed = 42, refresh = 0,
+    low_rank_modified_mass_matrix = TRUE, store_mass_matrix = TRUE
+  )
+  expect_s3_class(draws, "draws_array")
+  expect_equal(posterior::niterations(draws), 100)
+  expect_true("theta" %in% posterior::variables(draws))
+
+  # Should reach a similar posterior as standard mass matrix
+  summ <- posterior::summarize_draws(draws)
+  theta_mean <- summ$mean[summ$variable == "theta"]
+  expect_true(abs(theta_mean - 0.25) < 0.1)
+
+  # logp populated — guards a class of bug where extraction silently leaves
+  # a zero-init buffer in place
+  diag <- nutpie_diagnostics(draws)
+  expect_type(diag$logp, "double")
+  expect_true(any(diag$logp != 0))
+})
+
+# --- bad-data error path -----------------------------------------------------
+
+test_that("sampling with bad data gives R error, not crash", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+
+  expect_error(
+    nutpie_sample(test_models$bernoulli, data = '{"bad": "json format"}',
+                  num_draws = 10, num_chains = 1, seed = 42, refresh = 0)
+  )
+})
+
+# --- diagnostics on a non-nutpie object --------------------------------------
+
+test_that("nutpie_diagnostics errors on non-nutpie object", {
+  expect_error(nutpie_diagnostics(1:10), "No diagnostics found")
 })

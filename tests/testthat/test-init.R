@@ -1,9 +1,11 @@
+# --- Integration tests (real sampler runs) ----------------------------------
+
 test_that("init with full constrained list samples successfully", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
   draws <- nutpie_sample(
     test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    data = normal_data(),
     num_draws = 100, num_chains = 2, seed = 42, refresh = 0,
     init = list(mu = 0, sigma = 1)
   )
@@ -11,78 +13,148 @@ test_that("init with full constrained list samples successfully", {
   expect_equal(posterior::niterations(draws), 100)
 })
 
-test_that("init with partial list fills missing params randomly", {
+test_that("init = function(chain_id) samples and yields distinct starts", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
-  # sigma supplied, mu missing -> mu filled randomly; should still sample OK.
+  # Real sampler run verifies the function-form init plumbs through cleanly
+  # (the per-chain dispatcher is checked directly below).
   draws <- nutpie_sample(
     test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-    num_draws = 100, num_chains = 2, seed = 42, refresh = 0,
-    init = list(sigma = 1)
+    data = normal_data(),
+    num_draws = 50, num_chains = 3, seed = 42, refresh = 0,
+    init = function(chain_id) list(mu = chain_id - 2, sigma = 1)
   )
   expect_s3_class(draws, "draws_array")
+  expect_equal(posterior::nchains(draws), 3)
+
+  # Internal check: dispatcher produces 3 distinct position vectors.
+  handle <- open_normal_handle()
+  resolved <- nutpieR:::resolve_init(
+    init = function(chain_id) list(mu = chain_id - 2, sigma = 1),
+    init_mean = NULL, handle = handle, num_chains = 3, seed = 42
+  )
+  positions <- resolved$positions
+  expect_length(positions, 3)
+  mu_starts <- vapply(positions, `[`, numeric(1), 1L)
+  expect_equal(sort(mu_starts), c(-1, 0, 1))
 })
 
-test_that("init as list-of-lists provides per-chain starts", {
+test_that("partial init is reproducible from sampler seed", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
-  draws <- nutpie_sample(
-    test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-    num_draws = 50, num_chains = 3, seed = 42, refresh = 0,
+  data_list <- normal_data()
+
+  # Advance the global RNG between calls so that any reliance on it would
+  # produce different random fills.
+  draws1 <- nutpie_sample(
+    test_models$normal, data = data_list,
+    num_draws = 50, num_chains = 2, seed = 123, refresh = 0,
+    init = list(sigma = 1)
+  )
+  invisible(stats::runif(10))
+  draws2 <- nutpie_sample(
+    test_models$normal, data = data_list,
+    num_draws = 50, num_chains = 2, seed = 123, refresh = 0,
+    init = list(sigma = 1)
+  )
+  expect_equal(as.array(draws1), as.array(draws2))
+})
+
+# --- Direct resolve_init unit tests (no sampler) ----------------------------
+
+test_that("partial named-list init fills missing params per chain", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  handle <- open_normal_handle()
+
+  # Only sigma is supplied; mu is missing and should be filled per chain.
+  resolved <- nutpieR:::resolve_init(
+    init = list(sigma = 1), init_mean = NULL,
+    handle = handle, num_chains = 4, seed = 42
+  )
+  positions <- resolved$positions
+  expect_length(positions, 4)
+  mu_starts <- vapply(positions, `[`, numeric(1), 1L)
+  # All chains' mu fills should be distinct (with probability ~1).
+  expect_equal(length(unique(mu_starts)), 4L)
+  # sigma slot (unconstrained = log(sigma) = log(1) = 0) should match per chain.
+  sigma_unc <- vapply(positions, `[`, numeric(1), 2L)
+  expect_true(all(abs(sigma_unc) < 1e-10))
+})
+
+test_that("fully-specified named-list init broadcasts a single position", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  handle <- open_normal_handle()
+  resolved <- nutpieR:::resolve_init(
+    init = list(mu = 0.5, sigma = 1), init_mean = NULL,
+    handle = handle, num_chains = 4, seed = 42
+  )
+  # Length-1 = broadcast (Rust copies it to every chain).
+  expect_length(resolved$positions, 1L)
+})
+
+test_that("list-of-lists init produces one position per chain", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  handle <- open_normal_handle()
+  resolved <- nutpieR:::resolve_init(
     init = list(
       list(mu = -2, sigma = 0.5),
       list(mu = 0, sigma = 1),
       list(mu = 2, sigma = 4)
-    )
+    ),
+    init_mean = NULL, handle = handle, num_chains = 3, seed = 42
   )
-  expect_equal(posterior::nchains(draws), 3)
+  expect_length(resolved$positions, 3L)
+  # Each chain's mu (unconstrained = constrained for unbounded mu) should
+  # match the supplied value.
+  mu_starts <- vapply(resolved$positions, `[`, numeric(1), 1L)
+  expect_setequal(mu_starts, c(-2, 0, 2))
 })
 
-test_that("init from JSON file path works", {
+test_that("init from JSON file path parses and resolves", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
   tmp <- tempfile(fileext = ".json")
   on.exit(unlink(tmp))
   jsonlite::write_json(list(mu = 0, sigma = 1), tmp, auto_unbox = TRUE)
 
-  draws <- nutpie_sample(
-    test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
-    init = tmp
+  handle <- open_normal_handle()
+  resolved <- nutpieR:::resolve_init(
+    init = tmp, init_mean = NULL,
+    handle = handle, num_chains = 1, seed = 42
   )
-  expect_s3_class(draws, "draws_array")
+  # Fully-specified -> broadcast (length 1).
+  expect_length(resolved$positions, 1L)
+  expect_length(resolved$positions[[1]], 2L)
 })
 
-test_that("init errors on unknown parameter name", {
+test_that("init = 0 starts every chain at the origin", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
-  expect_error(
-    nutpie_sample(
-      test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-      num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
-      init = list(nonexistent = 0)
-    ),
-    "Unknown parameter"
+  handle <- open_normal_handle()
+  resolved <- nutpieR:::resolve_init(
+    init = 0, init_mean = NULL,
+    handle = handle, num_chains = 2, seed = 42
   )
+  # Scalar 0 broadcasts a single all-zero position (Rust copies to every chain).
+  expect_length(resolved$positions, 1L)
+  expect_true(all(resolved$positions[[1]] == 0))
 })
 
-test_that("init and init_mean are mutually exclusive", {
+test_that("init = <positive scalar> draws Uniform(-x, x) per chain", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
-  expect_error(
-    suppressWarnings(nutpie_sample(
-      test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-      num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
-      init = list(mu = 0, sigma = 1),
-      init_mean = 0
-    )),
-    "Supply either"
+  handle <- open_normal_handle()
+  resolved <- nutpieR:::resolve_init(
+    init = 2, init_mean = NULL,
+    handle = handle, num_chains = 3, seed = 42
   )
+  expect_length(resolved$positions, 3L)
+  # All draws within [-2, 2].
+  all_vals <- unlist(resolved$positions)
+  expect_true(all(all_vals >= -2 & all_vals <= 2))
 })
 
 test_that("partial init resolves even when generated quantities can't be evaluated", {
@@ -114,63 +186,35 @@ test_that("partial init resolves even when generated quantities can't be evaluat
   expect_length(resolved$positions, 2L)
 })
 
-test_that("partial named-list init fills missing params per chain", {
+# --- Error-path tests -------------------------------------------------------
+
+test_that("init errors on unknown parameter name", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
-  data_list <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
-  handle <- nutpieR:::bs_open(
-    test_models$normal$lib_path, nutpieR:::resolve_data(data_list), 0L
+  expect_error(
+    nutpie_sample(
+      test_models$normal,
+      data = normal_data(),
+      num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
+      init = list(nonexistent = 0)
+    ),
+    "Unknown parameter"
   )
-
-  # Only sigma is supplied; mu is missing and should be filled per chain.
-  resolved <- nutpieR:::resolve_init(
-    init = list(sigma = 1), init_mean = NULL,
-    handle = handle, num_chains = 4, seed = 42
-  )
-  positions <- resolved$positions
-  expect_length(positions, 4)
-  mu_starts <- vapply(positions, `[`, numeric(1), 1L)
-  # All chains' mu fills should be distinct (with probability ~1).
-  expect_equal(length(unique(mu_starts)), 4L)
-  # sigma slot (unconstrained = log(sigma) = log(1) = 0) should match per chain.
-  sigma_unc <- vapply(positions, `[`, numeric(1), 2L)
-  expect_true(all(abs(sigma_unc) < 1e-10))
 })
 
-test_that("fully-specified named-list init broadcasts a single position", {
+test_that("init and init_mean are mutually exclusive", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
-  data_list <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
-  handle <- nutpieR:::bs_open(
-    test_models$normal$lib_path, nutpieR:::resolve_data(data_list), 0L
+  expect_error(
+    suppressWarnings(nutpie_sample(
+      test_models$normal,
+      data = normal_data(),
+      num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
+      init = list(mu = 0, sigma = 1),
+      init_mean = 0
+    )),
+    "Supply either"
   )
-  resolved <- nutpieR:::resolve_init(
-    init = list(mu = 0.5, sigma = 1), init_mean = NULL,
-    handle = handle, num_chains = 4, seed = 42
-  )
-  # Length-1 = broadcast (Rust copies it to every chain).
-  expect_length(resolved$positions, 1L)
-})
-
-test_that("partial init is reproducible from sampler seed", {
-  skip_if(is.null(test_models$normal), "Normal model not compiled")
-
-  data_list <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
-
-  # Advance the global RNG between calls so that any reliance on it would
-  # produce different random fills.
-  draws1 <- nutpie_sample(
-    test_models$normal, data = data_list,
-    num_draws = 50, num_chains = 2, seed = 123, refresh = 0,
-    init = list(sigma = 1)
-  )
-  invisible(stats::runif(10))
-  draws2 <- nutpie_sample(
-    test_models$normal, data = data_list,
-    num_draws = 50, num_chains = 2, seed = 123, refresh = 0,
-    init = list(sigma = 1)
-  )
-  expect_equal(as.array(draws1), as.array(draws2))
 })
 
 test_that("init with wrong per-chain list length errors", {
@@ -180,7 +224,7 @@ test_that("init with wrong per-chain list length errors", {
   expect_error(
     nutpie_sample(
       test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+      data = normal_data(),
       num_draws = 10, num_chains = 3, seed = 42, refresh = 0,
       init = list(
         list(mu = 0, sigma = 1),
@@ -190,71 +234,18 @@ test_that("init with wrong per-chain list length errors", {
   )
 })
 
-test_that("init = 0 starts every chain at the origin and samples", {
-  skip_if(is.null(test_models$normal), "Normal model not compiled")
-
-  draws <- nutpie_sample(
-    test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-    num_draws = 50, num_chains = 2, seed = 42, refresh = 0,
-    init = 0
-  )
-  expect_s3_class(draws, "draws_array")
-  expect_equal(posterior::nchains(draws), 2)
-})
-
-test_that("init = <positive scalar> samples successfully", {
-  skip_if(is.null(test_models$normal), "Normal model not compiled")
-
-  draws <- nutpie_sample(
-    test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-    num_draws = 50, num_chains = 2, seed = 42, refresh = 0,
-    init = 2
-  )
-  expect_s3_class(draws, "draws_array")
-})
-
 test_that("init = <negative scalar> errors", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
   expect_error(
     nutpie_sample(
       test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+      data = normal_data(),
       num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
       init = -1
     ),
     "non-negative"
   )
-})
-
-test_that("init = function(chain_id) samples and yields distinct starts", {
-  skip_if(is.null(test_models$normal), "Normal model not compiled")
-
-  draws <- nutpie_sample(
-    test_models$normal,
-    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
-    num_draws = 50, num_chains = 3, seed = 42, refresh = 0,
-    init = function(chain_id) list(mu = chain_id - 2, sigma = 1)
-  )
-  expect_s3_class(draws, "draws_array")
-  expect_equal(posterior::nchains(draws), 3)
-
-  # Internal check: the dispatcher produces 3 distinct position vectors.
-  handle <- nutpieR:::bs_open(
-    test_models$normal$lib_path,
-    nutpieR:::resolve_data(list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))),
-    0L
-  )
-  resolved <- nutpieR:::resolve_init(
-    init = function(chain_id) list(mu = chain_id - 2, sigma = 1),
-    init_mean = NULL, handle = handle, num_chains = 3, seed = 42
-  )
-  positions <- resolved$positions
-  expect_length(positions, 3)
-  mu_starts <- vapply(positions, `[`, numeric(1), 1L)
-  expect_equal(sort(mu_starts), c(-1, 0, 1))
 })
 
 test_that("init function with zero args errors with clear message", {
@@ -263,7 +254,7 @@ test_that("init function with zero args errors with clear message", {
   expect_error(
     nutpie_sample(
       test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+      data = normal_data(),
       num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
       init = function() list(mu = 0, sigma = 1)
     ),
@@ -277,10 +268,55 @@ test_that("init function returning non-list errors", {
   expect_error(
     nutpie_sample(
       test_models$normal,
-      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+      data = normal_data(),
       num_draws = 10, num_chains = 1, seed = 42, refresh = 0,
       init = function(chain_id) "not a list"
     ),
     "named list"
+  )
+})
+
+# --- init_mean (soft-deprecated) --------------------------------------------
+
+test_that("init_mean = scalar broadcasts to the unconstrained dim", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  handle <- open_normal_handle()  # ndim_unc = 2 (mu, log(sigma))
+  expect_warning(
+    resolved <- nutpieR:::resolve_init(
+      init = NULL, init_mean = 0.5, handle = handle, num_chains = 2, seed = 42
+    ),
+    "init_mean.*deprecated"
+  )
+  expect_length(resolved$positions, 1L)  # broadcast
+  expect_equal(resolved$positions[[1]], c(0.5, 0.5))
+  expect_true(resolved$jitter)
+})
+
+test_that("init_mean = numeric vector of correct length passes through", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  handle <- open_normal_handle()
+  expect_warning(
+    resolved <- nutpieR:::resolve_init(
+      init = NULL, init_mean = c(0.5, 1.0), handle = handle,
+      num_chains = 2, seed = 42
+    ),
+    "init_mean.*deprecated"
+  )
+  expect_equal(resolved$positions[[1]], c(0.5, 1.0))
+  expect_true(resolved$jitter)
+})
+
+test_that("init_mean of wrong length errors", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  handle <- open_normal_handle()
+  expect_error(
+    suppressWarnings(nutpieR:::resolve_init(
+      init = NULL, init_mean = c(0.1, 0.2, 0.3), handle = handle,
+      num_chains = 2, seed = 42
+    )),
+    "does not match model dimension"
   )
 })

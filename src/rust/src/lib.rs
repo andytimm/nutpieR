@@ -8,12 +8,9 @@ use arrow::datatypes::DataType;
 use extendr_api::prelude::*;
 use extendr_api::error::Result;
 use nuts_rs::{
-    ArrowConfig, ArrowTrace, ChainProgress, CpuLogpFunc, CpuMath, DiagGradNutsSettings, HasDims,
-    LowRankNutsSettings, Model, ProgressCallback, Sampler, SamplerWaitResult,
-    Settings,
+    ArrowConfig, ArrowTrace, ChainProgress, DiagGradNutsSettings, LowRankNutsSettings,
+    ProgressCallback, Sampler, SamplerWaitResult, Settings,
 };
-use rand::RngExt;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -24,151 +21,6 @@ mod model;
 /// Convert any Display error to an extendr Error.
 fn r_err(e: impl std::fmt::Display) -> Error {
     Error::Other(e.to_string())
-}
-
-// --- 10-d standard normal: logp = -0.5 * sum(x^2) ---
-
-const NDIM: usize = 10;
-
-#[derive(Debug)]
-struct NormalLogp;
-
-#[derive(Debug, thiserror::Error)]
-#[error("normal logp error")]
-struct NormalError;
-
-impl nuts_rs::LogpError for NormalError {
-    fn is_recoverable(&self) -> bool {
-        false
-    }
-}
-
-impl HasDims for NormalLogp {
-    fn dim_sizes(&self) -> HashMap<String, u64> {
-        let mut m = HashMap::new();
-        m.insert("dim".to_string(), NDIM as u64);
-        m
-    }
-}
-
-impl CpuLogpFunc for NormalLogp {
-    type LogpError = NormalError;
-    type FlowParameters = ();
-    type ExpandedVector = Vec<f64>;
-
-    fn dim(&self) -> usize {
-        NDIM
-    }
-
-    fn logp(
-        &mut self,
-        position: &[f64],
-        gradient: &mut [f64],
-    ) -> std::result::Result<f64, Self::LogpError> {
-        let mut logp = 0.0;
-        for i in 0..NDIM {
-            logp -= 0.5 * position[i] * position[i];
-            gradient[i] = -position[i];
-        }
-        Ok(logp)
-    }
-
-    fn expand_vector<R: rand::Rng + ?Sized>(
-        &mut self,
-        _rng: &mut R,
-        array: &[f64],
-    ) -> std::result::Result<Self::ExpandedVector, nuts_rs::CpuMathError> {
-        Ok(array.to_vec())
-    }
-}
-
-// --- Model factory: creates one NormalLogp per chain ---
-
-struct NormalModel;
-
-impl Model for NormalModel {
-    type Math<'model> = CpuMath<NormalLogp>;
-
-    fn math<R: rand::Rng + ?Sized>(
-        &self,
-        _rng: &mut R,
-    ) -> anyhow::Result<Self::Math<'_>> {
-        Ok(CpuMath::new(NormalLogp))
-    }
-
-    fn init_position<R: rand::Rng + ?Sized>(
-        &self,
-        rng: &mut R,
-        position: &mut [f64],
-    ) -> anyhow::Result<()> {
-        for p in position.iter_mut() {
-            *p = rng.random_range(-2.0..2.0);
-        }
-        Ok(())
-    }
-}
-
-/// Sample from a 10-d standard normal using nuts-rs.
-/// Returns a matrix of draws (rows = draws*chains, cols = parameters).
-/// @param num_draws Number of draws per chain after warmup.
-/// @param num_chains Number of parallel chains.
-/// @param seed Random seed.
-/// @keywords internal
-#[extendr]
-fn sample_normal(num_draws: i32, num_chains: i32, seed: i32) -> Result<Robj> {
-    let mut settings = DiagGradNutsSettings::default();
-    settings.num_tune = 300;
-    settings.num_draws = num_draws as u64;
-    settings.num_chains = num_chains as usize;
-    settings.seed = seed as u64;
-
-    let model = NormalModel;
-    let trace_config = ArrowConfig::new();
-
-    let sampler = Sampler::new(model, settings, trace_config, num_chains as usize, None)
-        .map_err(r_err)?;
-
-    let results = match sampler.wait_timeout(Duration::from_secs(300)) {
-        SamplerWaitResult::Trace(traces) => traces,
-        SamplerWaitResult::Timeout(_) => return Err(Error::Other("Sampling timed out".into())),
-        SamplerWaitResult::Err(e, _) => return Err(r_err(e)),
-    };
-
-    let n_chains = results.len();
-    let num_tune = settings.num_tune as usize;
-    let n_draws_per_chain = num_draws as usize;
-    let total_rows = n_draws_per_chain * n_chains;
-
-    let mut data = vec![0.0f64; total_rows * NDIM];
-
-    for (chain_idx, trace) in results.iter().enumerate() {
-        let batch = &trace.posterior;
-        let col = batch
-            .column_by_name("value")
-            .ok_or_else(|| Error::Other("No 'value' column in posterior".into()))?;
-
-        let list_arr = col
-            .as_any()
-            .downcast_ref::<arrow::array::LargeListArray>()
-            .ok_or_else(|| Error::Other("'value' column is not LargeList".into()))?;
-
-        for draw in 0..n_draws_per_chain {
-            let row = num_tune + draw;
-            let inner = list_arr.value(row);
-            let values = inner
-                .as_any()
-                .downcast_ref::<arrow::array::Float64Array>()
-                .ok_or_else(|| Error::Other("inner array is not Float64".into()))?;
-
-            for param in 0..NDIM {
-                let row_idx = chain_idx * n_draws_per_chain + draw;
-                data[row_idx + param * total_rows] = values.value(param);
-            }
-        }
-    }
-
-    let matrix = RMatrix::new_matrix(total_rows, NDIM, |r, c| data[r + c * total_rows]);
-    Ok(matrix.into_robj())
 }
 
 /// Return the linked BridgeStan crate version, e.g. "2.7.0". Used by the
@@ -803,10 +655,11 @@ fn extract_diagnostics(
 /// accessor functions without re-opening the shared library.
 /// @keywords internal
 #[extendr]
-fn bs_open(lib_path: &str, data_json: &str, seed: i32) -> Result<ExternalPtr<model::BSHandle>> {
-    let handle = model::BSHandle::open(std::path::Path::new(lib_path), data_json, seed as u32)
-        .map_err(r_err)?;
-    Ok(ExternalPtr::new(handle))
+fn bs_open(lib_path: &str, data_json: &str, seed: i32) -> Robj {
+    match model::BSHandle::open(std::path::Path::new(lib_path), data_json, seed as u32) {
+        Ok(handle) => ExternalPtr::new(handle).into_robj(),
+        Err(e) => throw_r_error(e.to_string()),
+    }
 }
 
 /// Block-level parameter names (no transformed parameters / generated
@@ -934,7 +787,6 @@ fn bs_param_constrain_block(
 
 extendr_module! {
     mod nutpieR;
-    fn sample_normal;
     fn bridgestan_version;
     fn compile_stan_model;
     fn sample_stan;

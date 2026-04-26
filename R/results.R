@@ -43,11 +43,19 @@ block_prefixes <- function(dot_names) unique(sub("\\..*", "", dot_names))
 #' @noRd
 resolve_constrain_flags <- function(handle, pars, include) {
   if (is.null(pars)) return(list(include_tp = TRUE, include_gq = TRUE))
+  resolve_constrain_flags_impl(
+    block = block_prefixes(bs_block_names(handle)),
+    block_tp = block_prefixes(bs_block_tp_names(handle)),
+    full = block_prefixes(bs_full_names(handle)),
+    pars = pars,
+    include = include
+  )
+}
 
-  block <- block_prefixes(bs_block_names(handle))
-  block_tp <- block_prefixes(bs_block_tp_names(handle))
-  full <- block_prefixes(bs_full_names(handle))
-
+#' Pure-R core of `resolve_constrain_flags`: takes name vectors, no handle.
+#' Caller must filter `pars = NULL` upstream.
+#' @noRd
+resolve_constrain_flags_impl <- function(block, block_tp, full, pars, include) {
   bad <- setdiff(pars, full)
   if (length(bad) > 0) {
     stop("Unknown parameter(s): ", paste(bad, collapse = ", "),
