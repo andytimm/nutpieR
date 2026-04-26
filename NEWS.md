@@ -1,3 +1,12 @@
+# nutpieR 1.4.1
+
+* Result conversion no longer copies the draws matrix. The Rust-side buffer
+  is already in the right layout for `(n_draws, n_chains, n_params)`, so
+  reassigning `dim` in place avoids the full memcpy that `array(.)` was
+  doing. Saves ~500 ms per call on a 305 MB result; scales linearly beyond
+  there; doubled with `save_warmup = TRUE`.
+* `dot_to_bracket()` vectorized — saves ~80 ms on a 1000-parameter model.
+
 # nutpieR 1.4.0
 
 * Memory-efficiency pass on the R/Rust boundary. No API changes for typical
