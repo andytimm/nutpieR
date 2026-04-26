@@ -80,19 +80,12 @@ nutpie_compile_model <- function(stan_file = NULL, code = NULL,
 
   stan_file <- normalizePath(stan_file, mustWork = TRUE)
 
-  if (use_cache && cache_hit_in_place(stan_file)) {
-    if (verbose >= 1L) message("Using cached compiled model.")
-    return(structure(
-      list(
-        lib_path = normalizePath(expected_artifact_path(stan_file),
-                                 mustWork = TRUE),
-        stan_file = stan_file
-      ),
-      class = "nutpie_model"
-    ))
-  }
-
   if (use_cache) {
+    hit <- in_place_hit(stan_file)
+    if (!is.null(hit)) {
+      if (verbose >= 1L) message("Using cached compiled model.")
+      return(nutpie_model(normalizePath(hit, mustWork = TRUE), stan_file))
+    }
     if (!dir_writable(dirname(stan_file))) {
       warning(
         "Stan file directory ", dirname(stan_file), " is not writable; ",
@@ -102,17 +95,12 @@ nutpie_compile_model <- function(stan_file = NULL, code = NULL,
       code <- paste(readLines(stan_file, warn = FALSE), collapse = "\n")
       return(compile_inline(code, stanc_args, compile_args, verbose, TRUE))
     }
-    lib_path <- compile_stan_file_to_inplace(stan_file, stanc_args,
-                                             compile_args, verbose)
-  } else {
-    lib_path <- compile_stan_file_to_tempdir(stan_file, stanc_args,
-                                             compile_args, verbose)
   }
 
-  structure(
-    list(lib_path = lib_path, stan_file = stan_file),
-    class = "nutpie_model"
-  )
+  target <- if (use_cache) expected_artifact_path(stan_file) else NULL
+  lib_path <- compile_via_staging(stan_file, stanc_args, compile_args,
+                                  verbose, target = target)
+  nutpie_model(lib_path, stan_file)
 }
 
 #' @export
