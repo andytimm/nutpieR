@@ -41,6 +41,32 @@ test_that("resolve_data rejects invalid input", {
   expect_error(nutpieR:::resolve_data(123))
 })
 
+test_that("nutpie_sample rejects malformed sampler counts before unsigned cast", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  data <- list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1))
+
+  expect_error(
+    nutpie_sample(test_models$bernoulli, data = data, num_draws = -1),
+    "num_draws"
+  )
+  expect_error(
+    nutpie_sample(test_models$bernoulli, data = data, num_chains = NA_integer_),
+    "num_chains"
+  )
+  expect_error(
+    nutpie_sample(test_models$bernoulli, data = data, num_warmup = 1.5),
+    "num_warmup"
+  )
+  expect_error(
+    nutpie_sample(test_models$bernoulli, data = data, num_chains = c(1L, 2L)),
+    "num_chains"
+  )
+  expect_error(
+    nutpie_sample(test_models$bernoulli, data = data, target_accept = 1.5),
+    "target_accept"
+  )
+})
+
 test_that("nutpie_compile_model returns nutpie_model", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
   expect_s3_class(test_models$bernoulli, "nutpie_model")
@@ -362,6 +388,28 @@ test_that("store_divergences = FALSE drops all-null divergence list columns", {
   diag <- nutpie_diagnostics(draws)
   expect_false("divergence_start" %in% names(diag))
   expect_false("mass_matrix_inv" %in% names(diag))
+  expect_false("unconstrained_draw" %in% names(diag))
+  expect_false("gradient" %in% names(diag))
+})
+
+test_that("store_unconstrained / store_gradient surface their list columns", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+
+  draws <- nutpie_sample(test_models$bernoulli,
+    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+    store_unconstrained = TRUE, store_gradient = TRUE
+  )
+
+  diag <- nutpie_diagnostics(draws)
+  expect_true("unconstrained_draw" %in% names(diag))
+  expect_true("gradient" %in% names(diag))
+  expect_type(diag$unconstrained_draw, "list")
+  expect_type(diag$gradient, "list")
+  expect_equal(length(diag$unconstrained_draw), 50)
+  # Bernoulli has 1 unconstrained parameter
+  expect_equal(length(diag$unconstrained_draw[[1]]), 1)
+  expect_equal(length(diag$gradient[[1]]), 1)
 })
 
 test_that("store_mass_matrix adds mass_matrix_inv field", {
@@ -547,4 +595,181 @@ test_that("pars filters warmup draws too", {
   expect_equal(posterior::variables(draws), "sigma")
   warmup <- nutpie_warmup_draws(draws)
   expect_equal(posterior::variables(warmup), "sigma")
+})
+
+# --- Slim expand_vector: skip TP / GQ when filtered out ---
+
+test_that("resolve_constrain_flags returns (TRUE, TRUE) when pars is NULL", {
+  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
+  data <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
+  data_json <- jsonlite::toJSON(data, auto_unbox = TRUE)
+  handle <- nutpieR:::bs_open(test_models$tp_gq$lib_path, data_json, 1L)
+  flags <- nutpieR:::resolve_constrain_flags(handle, NULL, TRUE)
+  expect_true(flags$include_tp)
+  expect_true(flags$include_gq)
+})
+
+test_that("resolve_constrain_flags drops both flags when only block kept", {
+  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
+  data <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
+  data_json <- jsonlite::toJSON(data, auto_unbox = TRUE)
+  handle <- nutpieR:::bs_open(test_models$tp_gq$lib_path, data_json, 1L)
+  flags <- nutpieR:::resolve_constrain_flags(handle, c("mu", "sigma"), TRUE)
+  expect_false(flags$include_tp)
+  expect_false(flags$include_gq)
+})
+
+test_that("resolve_constrain_flags keeps include_tp when TP kept, no GQ", {
+  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
+  data <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
+  data_json <- jsonlite::toJSON(data, auto_unbox = TRUE)
+  handle <- nutpieR:::bs_open(test_models$tp_gq$lib_path, data_json, 1L)
+  flags <- nutpieR:::resolve_constrain_flags(handle, "mu_sq", TRUE)
+  expect_true(flags$include_tp)
+  expect_false(flags$include_gq)
+})
+
+test_that("resolve_constrain_flags forces include_tp when GQ kept (conservative)", {
+  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
+  data <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
+  data_json <- jsonlite::toJSON(data, auto_unbox = TRUE)
+  handle <- nutpieR:::bs_open(test_models$tp_gq$lib_path, data_json, 1L)
+  flags <- nutpieR:::resolve_constrain_flags(handle, "y_rep", TRUE)
+  expect_true(flags$include_tp)
+  expect_true(flags$include_gq)
+})
+
+test_that("resolve_constrain_flags blacklist excludes only GQ name drops include_gq", {
+  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
+  data <- list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0))
+  data_json <- jsonlite::toJSON(data, auto_unbox = TRUE)
+  handle <- nutpieR:::bs_open(test_models$tp_gq$lib_path, data_json, 1L)
+  flags <- nutpieR:::resolve_constrain_flags(handle, "y_rep", FALSE)
+  # mu_sq (TP) is still kept, so include_tp must remain TRUE
+  expect_true(flags$include_tp)
+  expect_false(flags$include_gq)
+})
+
+test_that("pars whitelist on block params drops TP and GQ from output", {
+  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
+
+  draws <- nutpie_sample(test_models$tp_gq,
+    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+    pars = c("mu", "sigma")
+  )
+
+  vars <- posterior::variables(draws)
+  expect_setequal(vars, c("mu", "sigma"))
+  # mu_sq (TP) and y_rep[*] (GQ) must not be present
+  expect_false("mu_sq" %in% vars)
+  expect_false(any(grepl("^y_rep", vars)))
+})
+
+test_that("pars whitelist on TP keeps TP, drops GQ", {
+  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
+
+  draws <- nutpie_sample(test_models$tp_gq,
+    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+    pars = "mu_sq"
+  )
+
+  vars <- posterior::variables(draws)
+  expect_equal(vars, "mu_sq")
+  expect_false(any(grepl("^y_rep", vars)))
+})
+
+test_that("pars whitelist on GQ keeps GQ (with TP forced on internally)", {
+  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
+
+  draws <- nutpie_sample(test_models$tp_gq,
+    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+    pars = "y_rep"
+  )
+
+  vars <- posterior::variables(draws)
+  # y_rep is an array of length N=5
+  expect_equal(length(vars), 5)
+  expect_true(all(grepl("^y_rep", vars)))
+  expect_false("mu" %in% vars)
+  expect_false("mu_sq" %in% vars)
+})
+
+test_that("pars = NULL keeps full constrained set on tp_gq model", {
+  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
+
+  draws <- nutpie_sample(test_models$tp_gq,
+    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0
+  )
+
+  vars <- posterior::variables(draws)
+  expect_true("mu" %in% vars)
+  expect_true("sigma" %in% vars)
+  expect_true("mu_sq" %in% vars)
+  expect_true(any(grepl("^y_rep", vars)))
+})
+
+test_that("include = FALSE excluding GQ drops GQ flag, keeps block + TP", {
+  skip_if(is.null(test_models$tp_gq), "tp_gq model not compiled")
+
+  draws <- nutpie_sample(test_models$tp_gq,
+    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+    pars = "y_rep", include = FALSE
+  )
+
+  vars <- posterior::variables(draws)
+  expect_true("mu" %in% vars)
+  expect_true("sigma" %in% vars)
+  expect_true("mu_sq" %in% vars)
+  expect_false(any(grepl("^y_rep", vars)))
+})
+
+test_that("empty whitelist errors instead of silently keeping block params", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  # pars = character(0) with include = TRUE means "keep nothing", not
+  # "keep everything" — guards against programmatic selections like
+  # pars = intersect(user_pars, available) that come up empty.
+  expect_error(
+    nutpie_sample(test_models$normal,
+      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+      num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+      pars = character(0)
+    ),
+    "remove all variables"
+  )
+})
+
+test_that("empty blacklist keeps all (nothing to exclude)", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  draws <- nutpie_sample(test_models$normal,
+    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+    pars = character(0), include = FALSE
+  )
+
+  vars <- posterior::variables(draws)
+  expect_true("mu" %in% vars)
+  expect_true("sigma" %in% vars)
+})
+
+test_that("model with no GQ block + pars = block param works", {
+  # bernoulli has only the `theta` block parameter — no TP, no GQ.
+  # Setting pars = "theta" exercises the (FALSE, FALSE) flag path on a
+  # model where include_tp / include_gq are no-ops.
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+
+  draws <- nutpie_sample(test_models$bernoulli,
+    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+    pars = "theta"
+  )
+
+  vars <- posterior::variables(draws)
+  expect_equal(vars, "theta")
 })

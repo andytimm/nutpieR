@@ -9,5 +9,7 @@
 ^src/\.cargo$
 ^src/rust/vendor$
 ^src/rust/target$
+^src/rust/\.rustc_info\.json$
 ^src/Makevars$
 ^src/Makevars\.win$
+^benchmarks$

@@ -22,6 +22,8 @@ nutpie_sample(
   include = TRUE,
   store_divergences = FALSE,
   store_mass_matrix = FALSE,
+  store_unconstrained = FALSE,
+  store_gradient = FALSE,
   low_rank_modified_mass_matrix = FALSE,
   mass_matrix_gamma = 1e-05,
   mass_matrix_eigval_cutoff = 2
@@ -82,7 +84,7 @@ random fill for partial constrained inits). To work on the unconstrained
 scale, see \code{\link[=nutpie_unconstrain]{nutpie_unconstrain()}} to convert constrained values first.
 
 \strong{Chain assignment is unspecified.} When supplying per-chain starts
-(list-of-lists or \code{function(chain_id)}), the N positions are guaranteed
+(list-of-lists or \verb{function(chain_id)}), the N positions are guaranteed
 to be distributed one-per-chain, but the mapping from list index /
 \code{chain_id} to the output chain dimension is not currently guaranteed.
 Use this to provide N dispersed starts; do not rely on "chain 1 starts
@@ -92,8 +94,8 @@ release.)}
 
 \item{init_mean}{Deprecated. Scalar or numeric vector on the unconstrained
 scale, with ±0.5 uniform jitter per chain. Use
-\code{init = function(chain_id) ...}, \code{init = <scalar>} for Uniform(-x, x), or
-\code{init = <named list>} instead. Will be removed in a future version.}
+\code{init = function(chain_id) ...}, \verb{init = <scalar>} for Uniform(-x, x), or
+\verb{init = <named list>} instead. Will be removed in a future version.}
 
 \item{save_warmup}{If \code{TRUE}, warmup draws and diagnostics are attached as
 attributes. Retrieve them with \code{\link[=nutpie_warmup_draws]{nutpie_warmup_draws()}}.}
@@ -106,7 +108,9 @@ attributes. Retrieve them with \code{\link[=nutpie_warmup_draws]{nutpie_warmup_d
 all parameters \emph{except} these, depending on \code{include}) are returned in the
 output draws. By default (\code{NULL}), all parameters are returned. Parameter
 names should be the Stan block names, not indexed names — e.g. \code{"beta"}
-will match \code{beta}, \code{beta[1]}, \code{beta[2]}, etc.}
+will match \code{beta}, \code{beta[1]}, \code{beta[2]}, etc. When the kept set excludes
+the entire transformed-parameter and/or generated-quantities blocks,
+those slices are skipped at sample time (see \code{NEWS.md} for benchmarks).}
 
 \item{include}{Logical (default \code{TRUE}). If \code{TRUE}, \code{pars} specifies the
 parameters to \emph{keep} (whitelist). If \code{FALSE}, \code{pars} specifies parameters
@@ -118,6 +122,15 @@ list columns to diagnostics.}
 
 \item{store_mass_matrix}{If \code{TRUE}, store the inverse mass matrix diagonal
 at each draw. Adds a list column to diagnostics.}
+
+\item{store_unconstrained}{If \code{TRUE}, store the unconstrained position at
+each draw as a list column on diagnostics (\code{unconstrained_draw}). Adds
+one \code{ndim_unc}-length numeric vector per draw — for high-dimensional
+models this can rival the draws matrix in size. Default \code{FALSE}.}
+
+\item{store_gradient}{If \code{TRUE}, store the log-density gradient at each
+draw as a list column on diagnostics (\code{gradient}). Same size profile as
+\code{store_unconstrained}. Default \code{FALSE}.}
 
 \item{low_rank_modified_mass_matrix}{If \code{TRUE}, use low-rank modified mass
 matrix adaptation. This can improve sampling efficiency for models with

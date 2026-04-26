@@ -331,9 +331,23 @@ fn run_sampler<S: Settings>(
 /// @param num_cores Number of CPU cores to use for parallel sampling.
 /// @param store_divergences Whether to store detailed divergence information.
 /// @param store_mass_matrix Whether to store the mass matrix at each draw.
+/// @param store_unconstrained Whether to store the unconstrained position at each draw.
+/// @param store_gradient Whether to store the gradient at each draw.
 /// @param low_rank Whether to use low-rank modified mass matrix adaptation.
 /// @param mass_matrix_gamma Regularisation parameter for low-rank mass matrix (default 1e-5).
 /// @param eigval_cutoff Eigenvalue cutoff for low-rank mass matrix (default 2.0).
+/// @param keep_indices Optional 0-indexed integer vector of constrained
+///   parameter columns to materialize. NULL means keep all. Indices are
+///   resolved against the post-flag column layout selected by
+///   `include_tp` / `include_gq`.
+/// @param include_tp Whether bridgestan should compute transformed parameters
+///   when expanding each draw. When the caller has filtered them out via
+///   `pars`/`include`, set this to `FALSE` to skip the per-draw allocation
+///   and Stan-side work.
+/// @param include_gq Whether bridgestan should compute generated quantities
+///   when expanding each draw. Setting this `FALSE` skips the GQ block
+///   (including any `*_rng` calls) entirely. Must imply `include_tp = TRUE`
+///   when `TRUE`, since GQ may reference TP.
 /// @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 ///   and optionally warmup_draws and warmup_diagnostics.
 /// @keywords internal
@@ -353,10 +367,45 @@ fn sample_stan(
     num_cores: i32,
     store_divergences: bool,
     store_mass_matrix: bool,
+    store_unconstrained: bool,
+    store_gradient: bool,
     low_rank: bool,
     mass_matrix_gamma: f64,
     eigval_cutoff: f64,
+    keep_indices: Robj,
+    include_tp: bool,
+    include_gq: bool,
 ) -> Result<List> {
+    // Defensive guards before unsigned casts. The R wrapper validates these
+    // already; we re-check here so direct callers (or malformed inputs that
+    // somehow slip past the R layer) can't turn negative ints into huge
+    // u64/usize allocations.
+    for (val, name) in [
+        (num_draws, "num_draws"),
+        (num_chains, "num_chains"),
+        (max_treedepth, "max_treedepth"),
+        (num_cores, "num_cores"),
+    ] {
+        if val <= 0 {
+            return Err(Error::Other(format!(
+                "{} must be >= 1, got {}",
+                name, val
+            )));
+        }
+    }
+    if num_warmup < 0 {
+        return Err(Error::Other(format!(
+            "num_warmup must be >= 0, got {}",
+            num_warmup
+        )));
+    }
+    if !(target_accept > 0.0 && target_accept < 1.0) {
+        return Err(Error::Other(format!(
+            "target_accept must be in (0, 1), got {}",
+            target_accept
+        )));
+    }
+
     let init_positions_raw: Option<Vec<Vec<f64>>> = if init_positions.is_null() {
         None
     } else {
@@ -378,10 +427,34 @@ fn sample_stan(
 
     let stan_model = model::StanModel::new(&handle)
         .with_init_positions(init_positions_raw, jitter)
+        .and_then(|m| m.with_constrain_flags(&handle, include_tp, include_gq))
         .map_err(r_err)?;
 
     let ndim = stan_model.num_constrained();
-    let param_names: Vec<String> = stan_model.constrained_param_names().to_vec();
+    let all_param_names: &[String] = stan_model.constrained_param_names();
+
+    // Resolve keep_indices: NULL → keep all, else use as-supplied. Indices
+    // are 0-based and must be within [0, ndim).
+    let keep_cols: Vec<usize> = if keep_indices.is_null() {
+        (0..ndim).collect()
+    } else {
+        let v = keep_indices
+            .as_integer_vector()
+            .ok_or_else(|| Error::Other("keep_indices must be NULL or an integer vector".into()))?;
+        let mut out = Vec::with_capacity(v.len());
+        for &idx in v.iter() {
+            if idx < 0 || (idx as usize) >= ndim {
+                return Err(Error::Other(format!(
+                    "keep_indices contains out-of-range value {} (ndim={})",
+                    idx, ndim
+                )));
+            }
+            out.push(idx as usize);
+        }
+        out
+    };
+    let kept_param_names: Vec<String> =
+        keep_cols.iter().map(|&i| all_param_names[i].clone()).collect();
     let expand_error_count = stan_model.expand_error_count_handle();
 
     let num_tune = num_warmup as usize;
@@ -396,6 +469,8 @@ fn sample_stan(
             $settings.maxdepth = max_treedepth as u64;
             $settings.adapt_options.step_size_settings.target_accept = target_accept;
             $settings.store_divergences = store_divergences;
+            $settings.store_unconstrained = store_unconstrained;
+            $settings.store_gradient = store_gradient;
             $settings.adapt_options.mass_matrix_options.store_mass_matrix = store_mass_matrix;
         }};
     }
@@ -412,18 +487,40 @@ fn sample_stan(
         run_sampler(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
     };
 
-    let draws_robj = build_draws_matrix(&results, ndim, num_tune, n_draws_per_chain, &param_names)?;
+    let draws_robj = build_draws_matrix(
+        &results,
+        &keep_cols,
+        num_tune,
+        n_draws_per_chain,
+        &kept_param_names,
+    )?;
 
-    // Extract post-warmup diagnostics (schema-driven)
-    let diagnostics = extract_diagnostics(&results, num_tune, n_draws_per_chain)?;
+    // Diagnostic columns to suppress at the R boundary. nuts-rs 0.17.4
+    // populates `unconstrained_draw` and `gradient` unconditionally
+    // regardless of `store_unconstrained` / `store_gradient` (the flags
+    // exist but are not read in `chain.rs::extract_stats`). To match the
+    // documented R-side semantics — and to avoid surfacing one
+    // `ndim_unc`-wide list-of-vectors per draw by default — drop those
+    // columns here unless the user opts in. When nuts-rs starts honouring
+    // the flags, the columns will already be all-null and our existing
+    // `any_non_null` filter will drop them.
+    let mut drop_cols: Vec<&str> = Vec::new();
+    if !store_unconstrained {
+        drop_cols.push("unconstrained_draw");
+    }
+    if !store_gradient {
+        drop_cols.push("gradient");
+    }
+
+    let diagnostics = extract_diagnostics(&results, num_tune, n_draws_per_chain, &drop_cols)?;
 
     let warmup_draws_robj: Robj = if save_warmup {
-        build_draws_matrix(&results, ndim, 0, num_tune, &param_names)?
+        build_draws_matrix(&results, &keep_cols, 0, num_tune, &kept_param_names)?
     } else {
         ().into_robj()
     };
     let warmup_diagnostics_robj: Robj = if save_warmup {
-        extract_diagnostics(&results, 0, num_tune)?.into_robj()
+        extract_diagnostics(&results, 0, num_tune, &drop_cols)?.into_robj()
     } else {
         ().into_robj()
     };
@@ -442,17 +539,29 @@ fn sample_stan(
 }
 
 /// Build a draws matrix from Arrow traces.
-/// `skip` is the number of initial rows to skip, `n_draws` is how many to extract.
+///
+/// Materializes only the columns listed in `keep_cols` (0-indexed, against
+/// the full constrained parameter dimension), writing directly into an
+/// R-allocated `Doubles` in column-major order. On wide models with
+/// large transformed-parameter / generated-quantities blocks this avoids
+/// allocating columns the user is going to drop anyway.
+///
+/// `skip` is the number of initial Arrow rows to skip, `n_draws` is how
+/// many to extract. `param_names` must already be filtered to match
+/// `keep_cols`.
 fn build_draws_matrix(
     results: &[ArrowTrace],
-    ndim: usize,
+    keep_cols: &[usize],
     skip: usize,
     n_draws: usize,
     param_names: &[String],
 ) -> Result<Robj> {
     let n_chains = results.len();
     let total_rows = n_draws * n_chains;
-    let mut data = vec![0.0f64; total_rows * ndim];
+    let n_kept = keep_cols.len();
+
+    let mut out = Doubles::new(total_rows * n_kept);
+    let dest: &mut [Rfloat] = &mut out;
 
     for (chain_idx, trace) in results.iter().enumerate() {
         let batch = &trace.posterior;
@@ -472,16 +581,18 @@ fn build_draws_matrix(
                 .as_any()
                 .downcast_ref::<arrow::array::Float64Array>()
                 .ok_or_else(|| Error::Other("inner array is not Float64".into()))?;
+            let row_data = values.values();
 
-            for param in 0..ndim {
-                let row_idx = chain_idx * n_draws + draw;
-                data[row_idx + param * total_rows] = values.value(param);
+            let dest_row = chain_idx * n_draws + draw;
+            for (out_col, &src_col) in keep_cols.iter().enumerate() {
+                dest[dest_row + out_col * total_rows] = Rfloat::from(row_data[src_col]);
             }
         }
     }
 
-    let matrix = RMatrix::new_matrix(total_rows, ndim, |r, c| data[r + c * total_rows]);
-    let mut robj = matrix.into_robj();
+    let mut robj: Robj = out.into();
+    robj.set_attrib("dim", [total_rows as i32, n_kept as i32].into_robj())
+        .map_err(r_err)?;
     if !param_names.is_empty() {
         let colnames: Vec<&str> = param_names.iter().map(|s| s.as_str()).collect();
         let dimnames = List::from_values(&[
@@ -628,6 +739,7 @@ fn extract_diagnostics(
     results: &[ArrowTrace],
     skip: usize,
     n_draws: usize,
+    drop_cols: &[&str],
 ) -> Result<List> {
     if results.is_empty() {
         return Ok(List::from_values(Vec::<Robj>::new()));
@@ -639,6 +751,10 @@ fn extract_diagnostics(
 
     for (idx, field) in schema.fields().iter().enumerate() {
         let name = field.name();
+
+        if drop_cols.iter().any(|c| c == name) {
+            continue;
+        }
 
         let cols: Vec<&dyn Array> = results
             .iter()
@@ -690,6 +806,16 @@ fn bs_open(lib_path: &str, data_json: &str, seed: i32) -> Result<ExternalPtr<mod
 #[extendr]
 fn bs_block_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
     handle.block_names.clone()
+}
+
+/// Block-level + transformed-parameter names (no generated quantities),
+/// dot-indexed. Length equals `param_num(true, false)`. Used by R-side
+/// `pars` / `include` resolution to partition names into block / TP / GQ
+/// without an extra round-trip into bridgestan.
+/// @keywords internal
+#[extendr]
+fn bs_block_tp_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
+    handle.block_tp_names.clone()
 }
 
 /// Full constrained parameter names (block + transformed parameters +
@@ -804,6 +930,7 @@ extendr_module! {
     fn sample_stan;
     fn bs_open;
     fn bs_block_names;
+    fn bs_block_tp_names;
     fn bs_full_names;
     fn bs_unc_names;
     fn bs_ndim_unc;

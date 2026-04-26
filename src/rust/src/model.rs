@@ -55,10 +55,12 @@ fn split_csv_names(s: &str) -> Vec<String> {
 pub struct BSHandle {
     pub model: Arc<bridgestan::Model<Arc<bridgestan::StanLibrary>>>,
     pub block_names: Vec<String>,
+    pub block_tp_names: Vec<String>,
     pub full_names: Vec<String>,
     pub unc_names: Vec<String>,
     pub ndim_unc: usize,
     pub ndim_block: usize,
+    pub ndim_block_tp: usize,
     pub ndim_full: usize,
 }
 
@@ -73,18 +75,22 @@ impl BSHandle {
         };
         let mut model = bridgestan::Model::new(lib, data.as_deref(), seed)?;
         let block_names = split_csv_names(&model.param_names(false, false));
+        let block_tp_names = split_csv_names(&model.param_names(true, false));
         let full_names = split_csv_names(&model.param_names(true, true));
         let unc_names = split_csv_names(&model.param_unc_names());
         let ndim_unc = model.param_unc_num();
         let ndim_block = model.param_num(false, false);
+        let ndim_block_tp = model.param_num(true, false);
         let ndim_full = model.param_num(true, true);
         Ok(BSHandle {
             model: Arc::new(model),
             block_names,
+            block_tp_names,
             full_names,
             unc_names,
             ndim_unc,
             ndim_block,
+            ndim_block_tp,
             ndim_full,
         })
     }
@@ -131,6 +137,8 @@ thread_local! {
 pub struct StanModel {
     inner: Arc<bridgestan::Model<Arc<bridgestan::StanLibrary>>>,
     ndim: usize,
+    include_tp: bool,
+    include_gq: bool,
     num_constrained: usize,
     constrained_param_names: Vec<String>,
     /// One position per chain. `len() == 1` means broadcast to all chains.
@@ -150,6 +158,8 @@ impl StanModel {
         StanModel {
             inner: Arc::clone(&handle.model),
             ndim: handle.ndim_unc,
+            include_tp: true,
+            include_gq: true,
             num_constrained: handle.ndim_full,
             constrained_param_names: handle.full_names.clone(),
             init_positions: None,
@@ -165,6 +175,34 @@ impl StanModel {
 
     pub fn constrained_param_names(&self) -> &[String] {
         &self.constrained_param_names
+    }
+
+    /// Restrict the per-draw constrained output to the requested slice.
+    /// Rejects `(false, true)`: GQ may reference TP, so dropping TP while
+    /// keeping GQ would silently change Stan-side state. R-side resolution
+    /// forces `include_tp = true` whenever any GQ name is kept; this guard
+    /// catches direct callers that bypass that rule.
+    pub fn with_constrain_flags(
+        mut self,
+        handle: &BSHandle,
+        include_tp: bool,
+        include_gq: bool,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            !(!include_tp && include_gq),
+            "include_tp must be true when include_gq is true (GQ may reference TP)"
+        );
+        let (num_constrained, names) = match (include_tp, include_gq) {
+            (true, true) => (handle.ndim_full, handle.full_names.clone()),
+            (true, false) => (handle.ndim_block_tp, handle.block_tp_names.clone()),
+            (false, false) => (handle.ndim_block, handle.block_names.clone()),
+            (false, true) => unreachable!(),
+        };
+        self.include_tp = include_tp;
+        self.include_gq = include_gq;
+        self.num_constrained = num_constrained;
+        self.constrained_param_names = names;
+        Ok(self)
     }
 
     /// Set per-chain init positions (unconstrained space).
@@ -216,7 +254,6 @@ impl Model for StanModel {
         Ok(CpuMath::new(StanDensity {
             model: self,
             rng: bs_rng,
-            expanded_buffer: vec![0f64; self.num_constrained],
             expand_errors: Arc::clone(&self.expand_errors),
         }))
     }
@@ -254,7 +291,6 @@ impl Model for StanModel {
 pub struct StanDensity<'model> {
     model: &'model StanModel,
     rng: bridgestan::Rng<&'model bridgestan::StanLibrary>,
-    expanded_buffer: Vec<f64>,
     expand_errors: Arc<AtomicUsize>,
 }
 
@@ -295,20 +331,32 @@ impl<'model> CpuLogpFunc for StanDensity<'model> {
         _rng: &mut R,
         array: &[f64],
     ) -> std::result::Result<Self::ExpandedVector, CpuMathError> {
-        match self.model.inner.param_constrain(
-            array,
-            true,
-            true,
-            &mut self.expanded_buffer,
-            Some(&mut self.rng),
-        ) {
-            Ok(()) => Ok(self.expanded_buffer.clone()),
+        // Allocate fresh per draw and hand the buffer straight to nuts-rs.
+        // Holding a reusable field-buffer would force a per-draw clone()
+        // (same allocation count, plus a memcpy) since the trait return
+        // type is owned `Vec<f64>`.
+        let include_tp = self.model.include_tp;
+        let include_gq = self.model.include_gq;
+        let mut out = vec![0f64; self.model.num_constrained];
+        let result = if include_gq {
+            self.model
+                .inner
+                .param_constrain(array, include_tp, true, &mut out, Some(&mut self.rng))
+        } else {
+            // bridgestan asserts that an RNG is supplied iff GQ is requested.
+            let no_rng: Option<&mut bridgestan::Rng<&bridgestan::StanLibrary>> = None;
+            self.model
+                .inner
+                .param_constrain(array, include_tp, false, &mut out, no_rng)
+        };
+        match result {
+            Ok(()) => Ok(out),
             Err(_) => {
                 // param_constrain failed (e.g. generated quantities bounds violation).
                 // The draw itself is valid — fill expanded vector with NaN and continue.
                 self.expand_errors.fetch_add(1, Ordering::Relaxed);
-                self.expanded_buffer.fill(f64::NAN);
-                Ok(self.expanded_buffer.clone())
+                out.fill(f64::NAN);
+                Ok(out)
             }
         }
     }

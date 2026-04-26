@@ -65,12 +65,21 @@
 #'   list columns to diagnostics.
 #' @param store_mass_matrix If `TRUE`, store the inverse mass matrix diagonal
 #'   at each draw. Adds a list column to diagnostics.
+#' @param store_unconstrained If `TRUE`, store the unconstrained position at
+#'   each draw as a list column on diagnostics (`unconstrained_draw`). Adds
+#'   one `ndim_unc`-length numeric vector per draw — for high-dimensional
+#'   models this can rival the draws matrix in size. Default `FALSE`.
+#' @param store_gradient If `TRUE`, store the log-density gradient at each
+#'   draw as a list column on diagnostics (`gradient`). Same size profile as
+#'   `store_unconstrained`. Default `FALSE`.
 #' @param pars An optional character vector of block-level parameter names
 #'   (e.g. `"beta"`, `"sigma"`). When supplied, only these parameters (or
 #'   all parameters *except* these, depending on `include`) are returned in the
 #'   output draws. By default (`NULL`), all parameters are returned. Parameter
 #'   names should be the Stan block names, not indexed names — e.g. `"beta"`
-#'   will match `beta`, `beta[1]`, `beta[2]`, etc.
+#'   will match `beta`, `beta[1]`, `beta[2]`, etc. When the kept set excludes
+#'   the entire transformed-parameter and/or generated-quantities blocks,
+#'   those slices are skipped at sample time (see `NEWS.md` for benchmarks).
 #' @param include Logical (default `TRUE`). If `TRUE`, `pars` specifies the
 #'   parameters to *keep* (whitelist). If `FALSE`, `pars` specifies parameters
 #'   to *exclude* (blacklist). Ignored when `pars` is `NULL`.
@@ -100,6 +109,8 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           pars = NULL, include = TRUE,
                           store_divergences = FALSE,
                           store_mass_matrix = FALSE,
+                          store_unconstrained = FALSE,
+                          store_gradient = FALSE,
                           low_rank_modified_mass_matrix = FALSE,
                           mass_matrix_gamma = 1e-5,
                           mass_matrix_eigval_cutoff = 2.0) {
@@ -108,18 +119,29 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   if (is.null(seed)) {
     seed <- sample.int(.Machine$integer.max, 1L)
   }
-  num_draws <- as.integer(num_draws)
-  num_warmup <- as.integer(num_warmup)
-  num_chains <- as.integer(num_chains)
+  num_draws <- check_count(num_draws, "num_draws", min = 1L)
+  num_warmup <- check_count(num_warmup, "num_warmup", min = 0L)
+  num_chains <- check_count(num_chains, "num_chains", min = 1L)
+  max_treedepth <- check_count(max_treedepth, "max_treedepth", min = 1L)
+  if (!is.numeric(target_accept) || length(target_accept) != 1L ||
+      !is.finite(target_accept) || target_accept <= 0 || target_accept >= 1) {
+    stop("`target_accept` must be a single finite value in (0, 1).",
+         call. = FALSE)
+  }
 
   if (is.null(cores)) {
     cores <- min(num_chains, parallel::detectCores())
   }
-  cores <- as.integer(cores)
+  cores <- check_count(cores, "cores", min = 1L)
 
   handle <- bs_open(lib_path, data_json, as.integer(seed))
   init_resolved <- resolve_init(init, init_mean, handle, num_chains,
                                 seed = seed)
+
+  flags <- resolve_constrain_flags(handle, pars, include)
+  constrain_names <- constrain_names_for_flags(handle, flags$include_tp,
+                                               flags$include_gq)
+  keep_indices <- resolve_keep_indices(constrain_names, pars, include)
 
   raw <- sample_stan(
     handle,
@@ -136,12 +158,16 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     cores,
     isTRUE(store_divergences),
     isTRUE(store_mass_matrix),
+    isTRUE(store_unconstrained),
+    isTRUE(store_gradient),
     isTRUE(low_rank_modified_mass_matrix),
     as.double(mass_matrix_gamma),
-    as.double(mass_matrix_eigval_cutoff)
+    as.double(mass_matrix_eigval_cutoff),
+    keep_indices,
+    isTRUE(flags$include_tp),
+    isTRUE(flags$include_gq)
   )
   draws <- matrix_to_draws_array(raw$draws, num_draws, num_chains)
-  draws <- filter_pars(draws, pars, include)
   attr(draws, "diagnostics") <- raw$diagnostics
   attr(draws, "num_chains") <- num_chains
   attr(draws, "num_warmup") <- num_warmup
@@ -149,7 +175,6 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
 
   if (isTRUE(save_warmup) && !is.null(raw$warmup_draws)) {
     warmup <- matrix_to_draws_array(raw$warmup_draws, num_warmup, num_chains)
-    warmup <- filter_pars(warmup, pars, include)
     attr(draws, "warmup_draws") <- warmup
     attr(draws, "warmup_diagnostics") <- raw$warmup_diagnostics
   }
@@ -166,6 +191,26 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   }
 
   draws
+}
+
+check_count <- function(x, name, min = 0L) {
+  if (length(x) != 1L) {
+    stop(sprintf("`%s` must be a single integer; got length %d.",
+                 name, length(x)), call. = FALSE)
+  }
+  if (!is.numeric(x) || !is.finite(x)) {
+    stop(sprintf("`%s` must be a finite integer.", name), call. = FALSE)
+  }
+  if (x != as.integer(x)) {
+    stop(sprintf("`%s` must be a whole number; got %s.", name, format(x)),
+         call. = FALSE)
+  }
+  x <- as.integer(x)
+  if (x < min) {
+    stop(sprintf("`%s` must be >= %d; got %d.", name, min, x),
+         call. = FALSE)
+  }
+  x
 }
 
 resolve_model <- function(model) {

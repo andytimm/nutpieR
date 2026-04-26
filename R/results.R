@@ -19,41 +19,100 @@ matrix_to_draws_array <- function(flat_matrix, n_draws, n_chains) {
   posterior::as_draws_array(arr)
 }
 
-#' Filter draws to selected parameters
+#' Block-level prefixes from a vector of bridgestan dot-indexed names
 #'
-#' Subsets a draws object to include or exclude block-level parameters.
-#' Block names like `"beta"` match both scalar `beta` and indexed
-#' `beta[1]`, `beta[2]`, etc.
-#'
-#' @param draws A `posterior::draws_array`.
-#' @param pars Character vector of block-level parameter names, or `NULL`.
-#' @param include Logical; if `TRUE`, `pars` is a whitelist; if `FALSE`,
-#'   a blacklist.
-#' @return Filtered `posterior::draws_array`.
+#' `beta.1.2` and `beta.2.1` both collapse to `beta`; scalar names pass
+#' through unchanged.
 #' @noRd
-filter_pars <- function(draws, pars, include) {
-  if (is.null(pars)) return(draws)
+block_prefixes <- function(dot_names) unique(sub("\\..*", "", dot_names))
 
-  all_vars <- posterior::variables(draws)
-  block_names <- unique(sub("\\[.*", "", all_vars))
+#' Resolve `pars` / `include` to bridgestan `(include_tp, include_gq)` flags
+#'
+#' Skipping the TP / GQ slice in `param_constrain` saves both the per-draw
+#' allocation and the Stan-side compute (the GQ block's `*_rng` calls).
+#' GQ may reference TP, so we conservatively force TP on whenever GQ is on.
+#'
+#' This is also the single place where unknown `pars` names are validated;
+#' downstream `resolve_keep_indices` trusts the input.
+#' @noRd
+resolve_constrain_flags <- function(handle, pars, include) {
+  if (is.null(pars)) return(list(include_tp = TRUE, include_gq = TRUE))
 
-  bad <- setdiff(pars, block_names)
+  block <- block_prefixes(bs_block_names(handle))
+  block_tp <- block_prefixes(bs_block_tp_names(handle))
+  full <- block_prefixes(bs_full_names(handle))
+
+  bad <- setdiff(pars, full)
   if (length(bad) > 0) {
     stop("Unknown parameter(s): ", paste(bad, collapse = ", "),
-         "\nAvailable: ", paste(block_names, collapse = ", "),
+         "\nAvailable: ", paste(full, collapse = ", "),
          call. = FALSE)
   }
 
-  # Match "par" exactly (scalar) or "par[..." (indexed)
-  pat <- paste0("^(", paste(escape_regex(pars), collapse = "|"), ")(\\[|$)")
-  matched <- grepl(pat, all_vars)
+  tp_only <- setdiff(block_tp, block)
+  gq_only <- setdiff(full, block_tp)
 
+  kept <- if (include) pars else setdiff(full, pars)
+  any_gq_kept <- any(kept %in% gq_only)
+  any_tp_kept <- any(kept %in% tp_only)
+
+  list(
+    include_tp = any_tp_kept || any_gq_kept,
+    include_gq = any_gq_kept
+  )
+}
+
+#' Constrained parameter names bridgestan returns for the given flags
+#'
+#' Mirrors `StanModel::with_constrain_flags` in `model.rs`. `(FALSE, TRUE)`
+#' is unreachable: `resolve_constrain_flags` enforces `include_tp = TRUE`
+#' whenever `include_gq = TRUE`.
+#' @noRd
+constrain_names_for_flags <- function(handle, include_tp, include_gq) {
+  if (include_gq) {
+    bs_full_names(handle)
+  } else if (include_tp) {
+    bs_block_tp_names(handle)
+  } else {
+    bs_block_names(handle)
+  }
+}
+
+#' Resolve `pars` / `include` to 0-indexed column indices
+#'
+#' Operates on bridgestan dot-indexed names so the returned indices line up
+#' with the Arrow `value` column ordering — no R-side reshuffling needed.
+#' Returns `NULL` for `pars = NULL` (signalling "keep everything") or when
+#' nothing in `pars` is in scope (e.g. an `include = FALSE` blacklist that
+#' only names columns already skipped via the constrain flags).
+#'
+#' Validation of unknown names happens upstream in `resolve_constrain_flags`;
+#' this function trusts its input.
+#' @noRd
+resolve_keep_indices <- function(full_names, pars, include) {
+  if (is.null(pars)) return(NULL)
+
+  in_scope <- intersect(pars, block_prefixes(full_names))
+  if (length(in_scope) == 0L) {
+    # Whitelist with no in-scope names = "keep nothing" — surface as an error
+    # so a programmatic `pars = intersect(user_pars, available)` that came up
+    # empty doesn't silently fall back to keeping everything. Blacklist is
+    # benign: the named excludes were already skipped via the constrain flags,
+    # so there's nothing left to drop.
+    if (include) {
+      stop("Parameter selection would remove all variables.", call. = FALSE)
+    }
+    return(NULL)
+  }
+
+  pat <- paste0("^(", paste(escape_regex(in_scope), collapse = "|"), ")(\\.|$)")
+  matched <- grepl(pat, full_names)
   keep <- if (include) matched else !matched
   if (!any(keep)) {
     stop("Parameter selection would remove all variables.", call. = FALSE)
   }
 
-  posterior::subset_draws(draws, variable = all_vars[keep])
+  as.integer(which(keep) - 1L)
 }
 
 #' Escape special regex characters in a string

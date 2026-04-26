@@ -1,3 +1,36 @@
+# nutpieR 1.4.0
+
+* Memory-efficiency pass on the R/Rust boundary. No API changes for typical
+  users. Highlights:
+  - New `store_unconstrained` and `store_gradient` flags on `nutpie_sample()`
+    control whether the per-draw unconstrained position / gradient columns
+    are returned in diagnostics. Default is `FALSE`. Each is an
+    `ndim_unc`-wide list-of-vectors — one entry per draw — and on wide
+    models they each rival the draws matrix in size. Previously they were
+    always materialized into R; opt in only when you need them.
+    (Note: nuts-rs 0.17.4 itself ignores these flags and always allocates
+    the columns internally; we filter at the R boundary. When nuts-rs
+    starts honouring the flags upstream, the gating will move deeper for
+    free.)
+  - Draws matrix is now written directly into R-allocated memory in Rust,
+    eliminating a full intermediate copy during result conversion.
+  - `pars` / `include` filtering now happens in Rust before the draws matrix
+    is materialized, so memory and copy work scale with the *kept* parameter
+    count rather than the full constrained dimension.
+  - When `pars` / `include` excludes the entire transformed-parameter and/or
+    generated-quantities blocks, bridgestan is told to skip materializing
+    those slices per draw. The Stan GQ block (including `*_rng` calls) is
+    not run, the per-draw constrained buffer shrinks to the kept slice,
+    and the Arrow trace nuts-rs writes is correspondingly smaller. On a
+    wide hierarchical model with a meaningful GQ block (`y_rep`,
+    `log_lik`), this gives roughly a 38% wall-time reduction and an 80%
+    draws-matrix shrinkage when GQ is excluded. Conservative rule: keeping
+    any GQ name forces TP to also be materialized, since GQ may reference
+    TP.
+  - Sampler arguments (`num_draws`, `num_warmup`, `num_chains`, `cores`,
+    `max_treedepth`) are now validated for finite, positive values on the R
+    side, with a defensive check in Rust before unsigned casts.
+
 # nutpieR 1.3.1
 
 * Bumped `extendr-api` from 0.8.1 to 0.9.0. Fixes the R CMD check NOTE

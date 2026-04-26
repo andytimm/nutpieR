@@ -24,3 +24,8 @@ test_models$code_string <- try_compile(
   "code_string",
   code = "data { int N; } parameters { real mu; } model { mu ~ normal(0, 1); }"
 )
+
+test_models$tp_gq <- try_compile(
+  "tp_gq",
+  stan_file = test_path("test_models", "tp_gq.stan")
+)
