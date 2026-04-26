@@ -6,6 +6,7 @@ use arrow::array::{
 };
 use arrow::datatypes::DataType;
 use extendr_api::prelude::*;
+use extendr_api::error::Result;
 use nuts_rs::{
     ArrowConfig, ArrowTrace, ChainProgress, CpuLogpFunc, CpuMath, DiagGradNutsSettings, HasDims,
     LowRankNutsSettings, Model, ProgressCallback, Sampler, SamplerWaitResult,
