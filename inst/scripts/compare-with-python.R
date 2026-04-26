@@ -24,15 +24,22 @@ if (!file.exists(python)) {
 }
 reticulate::use_python(python, required = TRUE)
 
-stan_file <- system.file("test_models", "bernoulli.stan", package = "nutpieR",
-                         mustWork = FALSE)
-if (!nzchar(stan_file) || !file.exists(stan_file)) {
-  # Fall back to the test fixture for in-tree runs
-  stan_file <- file.path("tests", "testthat", "test_models", "bernoulli.stan")
+stan_code <- "
+data {
+  int<lower=0> N;
+  array[N] int<lower=0,upper=1> y;
 }
-if (!file.exists(stan_file)) {
-  stop("bernoulli.stan not found.", call. = FALSE)
+parameters {
+  real<lower=0,upper=1> theta;
 }
+model {
+  theta ~ beta(1, 1);
+  y ~ bernoulli(theta);
+}
+"
+stan_file <- tempfile(fileext = ".stan")
+writeLines(stan_code, stan_file)
+on.exit(unlink(stan_file), add = TRUE)
 
 data <- list(N = 10L, y = c(0L, 1L, 0L, 0L, 0L, 0L, 0L, 0L, 0L, 1L))
 seed <- 42L

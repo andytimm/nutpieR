@@ -14,4 +14,4 @@
 ^src/Makevars\.win$
 ^benchmarks$
 ^.*-plan\.md$
-^tests/testthat/test_models/.*_model\.so$
+^tests/testthat/test_models/.*_model\.(so|cache_meta)$
