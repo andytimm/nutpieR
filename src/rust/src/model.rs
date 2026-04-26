@@ -216,7 +216,6 @@ impl Model for StanModel {
         Ok(CpuMath::new(StanDensity {
             model: self,
             rng: bs_rng,
-            expanded_buffer: vec![0f64; self.num_constrained],
             expand_errors: Arc::clone(&self.expand_errors),
         }))
     }
@@ -254,7 +253,6 @@ impl Model for StanModel {
 pub struct StanDensity<'model> {
     model: &'model StanModel,
     rng: bridgestan::Rng<&'model bridgestan::StanLibrary>,
-    expanded_buffer: Vec<f64>,
     expand_errors: Arc<AtomicUsize>,
 }
 
@@ -295,20 +293,25 @@ impl<'model> CpuLogpFunc for StanDensity<'model> {
         _rng: &mut R,
         array: &[f64],
     ) -> std::result::Result<Self::ExpandedVector, CpuMathError> {
+        // Allocate fresh per draw and hand the buffer straight to nuts-rs.
+        // Holding a reusable field-buffer would force a per-draw clone()
+        // (same allocation count, plus a memcpy) since the trait return
+        // type is owned `Vec<f64>`.
+        let mut out = vec![0f64; self.model.num_constrained];
         match self.model.inner.param_constrain(
             array,
             true,
             true,
-            &mut self.expanded_buffer,
+            &mut out,
             Some(&mut self.rng),
         ) {
-            Ok(()) => Ok(self.expanded_buffer.clone()),
+            Ok(()) => Ok(out),
             Err(_) => {
                 // param_constrain failed (e.g. generated quantities bounds violation).
                 // The draw itself is valid — fill expanded vector with NaN and continue.
                 self.expand_errors.fetch_add(1, Ordering::Relaxed);
-                self.expanded_buffer.fill(f64::NAN);
-                Ok(self.expanded_buffer.clone())
+                out.fill(f64::NAN);
+                Ok(out)
             }
         }
     }
