@@ -11,8 +11,8 @@
 #'   `<basename>_model.so` (matching cmdstanr's convention), with a small
 #'   `<basename>_model.cache_meta` sidecar tracking BridgeStan version and
 #'   compile flags. A subsequent call hits the cache when the artifact
-#'   mtime is at least as new as the `.stan` (and any one-level
-#'   `#include`'d files) *and* the sidecar matches. If the user's
+#'   mtime is at least as new as the `.stan` and every `#include`'d
+#'   file (transitively walked) *and* the sidecar matches. If the user's
 #'   `.stan` directory is read-only, the call falls back to the inline
 #'   cache below with a warning -- except for models that use
 #'   `#include`, which error since the inline cache discards the source

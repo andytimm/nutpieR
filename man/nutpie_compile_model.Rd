@@ -52,8 +52,8 @@ By default the compiled \code{.so} is cached so repeat calls are near-instant:
 \verb{<basename>_model.so} (matching cmdstanr's convention), with a small
 \verb{<basename>_model.cache_meta} sidecar tracking BridgeStan version and
 compile flags. A subsequent call hits the cache when the artifact
-mtime is at least as new as the \code{.stan} (and any one-level
-\verb{#include}'d files) \emph{and} the sidecar matches. If the user's
+mtime is at least as new as the \code{.stan} and every \verb{#include}'d
+file (transitively walked) \emph{and} the sidecar matches. If the user's
 \code{.stan} directory is read-only, the call falls back to the inline
 cache below with a warning -- except for models that use
 \verb{#include}, which error since the inline cache discards the source

@@ -262,6 +262,41 @@ test_that("multi-space, missing, and nested #include all invalidate properly", {
   expect_equal(counter$n, 3L)
 })
 
+test_that("commented-out #include directives are ignored", {
+  # Both line and block comments must be stripped before scanning, and the
+  # directive itself must start a line (after optional whitespace). Without
+  # this, a stray `// #include ghost.stan` would track a non-existent dep
+  # forever -- in_place_hit() invalidates on missing deps, so the cache
+  # would never warm.
+  counter <- new.env(parent = emptyenv())
+  testthat::local_mocked_bindings(
+    compile_stan_model = make_compile_stub(counter),
+    bs_version = function() "TEST.0",
+    bridgestan_version = function() "TEST.0",
+    .package = "nutpieR"
+  )
+
+  d <- tempfile("nutpieR-comment-test-")
+  dir.create(d, recursive = TRUE)
+  on.exit(unlink(d, recursive = TRUE), add = TRUE)
+  main <- file.path(d, "main.stan")
+  writeLines(c(
+    "// #include ghost_line.stan",
+    "/* #include ghost_block.stan */",
+    "/* multi-line block",
+    "   #include ghost_inside_block.stan",
+    "   end */",
+    "parameters { real x; } model { x ~ normal(0, 1); }"
+  ), main)
+
+  expect_equal(nutpieR:::included_files(main), character())
+
+  nutpie_compile_model(stan_file = main, verbose = 0L)
+  expect_equal(counter$n, 1L)
+  nutpie_compile_model(stan_file = main, verbose = 0L)
+  expect_equal(counter$n, 1L)
+})
+
 test_that("read-only stan_file directory + #include errors instead of falling back", {
   # The inline-cache fallback flattens the .stan to a string and loses the
   # source dirname, so #include can't resolve. Refuse rather than silently

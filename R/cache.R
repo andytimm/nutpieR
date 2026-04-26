@@ -51,15 +51,20 @@ write_cache_meta <- function(stan_file, bs_version, stanc_args, compile_args) {
   )
 }
 
-# Returns paths referenced by `#include` directives in stan_file (one level
-# deep, resolved relative to the source's dirname). Handles bare, quoted,
-# and angle-bracket forms with any amount of whitespace after `#include`.
-# Use all_deps() for the transitive set.
+# Returns paths referenced by `#include` directives in stan_file (direct
+# children only; use all_deps() for the transitive set). Handles bare,
+# quoted, and angle-bracket forms with any amount of whitespace after
+# `#include`. Stan `//` and `/* */` comments are stripped first so a
+# commented-out directive doesn't get tracked as a real dependency, and
+# the directive itself must be at the start of a (whitespace-only) line.
 included_files <- function(stan_file) {
-  lines <- readLines(stan_file, warn = FALSE)
-  matches <- regmatches(lines, regexpr("#include\\s+\\S+", lines))
+  text <- paste(readLines(stan_file, warn = FALSE), collapse = "\n")
+  text <- gsub("(?s)/\\*.*?\\*/", "", text, perl = TRUE)
+  text <- gsub("//[^\n]*", "", text, perl = TRUE)
+  lines <- strsplit(text, "\n", fixed = TRUE)[[1L]]
+  matches <- regmatches(lines, regexpr("^\\s*#include\\s+\\S+", lines))
   if (!length(matches)) return(character())
-  raw <- sub("^#include\\s+", "", matches)
+  raw <- sub("^\\s*#include\\s+", "", matches)
   file.path(dirname(stan_file), gsub('["<>]', "", raw))
 }
 
