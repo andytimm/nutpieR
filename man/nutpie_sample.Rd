@@ -108,7 +108,16 @@ attributes. Retrieve them with \code{\link[=nutpie_warmup_draws]{nutpie_warmup_d
 all parameters \emph{except} these, depending on \code{include}) are returned in the
 output draws. By default (\code{NULL}), all parameters are returned. Parameter
 names should be the Stan block names, not indexed names — e.g. \code{"beta"}
-will match \code{beta}, \code{beta[1]}, \code{beta[2]}, etc.}
+will match \code{beta}, \code{beta[1]}, \code{beta[2]}, etc.
+
+When the kept set excludes the entire transformed-parameter and/or
+generated-quantities blocks, bridgestan is told to skip materializing
+those slices per draw. On wide models this is a meaningful speedup and
+memory reduction (the GQ block's \verb{*_rng} calls don't run, and the
+per-draw constrained buffer shrinks accordingly). One conservative rule:
+keeping any GQ name forces TP to also be materialized, since GQ is
+permitted to reference TP and we don't want a name lookup to fail
+silently.}
 
 \item{include}{Logical (default \code{TRUE}). If \code{TRUE}, \code{pars} specifies the
 parameters to \emph{keep} (whitelist). If \code{FALSE}, \code{pars} specifies parameters

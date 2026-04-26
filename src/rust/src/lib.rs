@@ -337,7 +337,17 @@ fn run_sampler<S: Settings>(
 /// @param mass_matrix_gamma Regularisation parameter for low-rank mass matrix (default 1e-5).
 /// @param eigval_cutoff Eigenvalue cutoff for low-rank mass matrix (default 2.0).
 /// @param keep_indices Optional 0-indexed integer vector of constrained
-///   parameter columns to materialize. NULL means keep all.
+///   parameter columns to materialize. NULL means keep all. Indices are
+///   resolved against the post-flag column layout selected by
+///   `include_tp` / `include_gq`.
+/// @param include_tp Whether bridgestan should compute transformed parameters
+///   when expanding each draw. When the caller has filtered them out via
+///   `pars`/`include`, set this to `FALSE` to skip the per-draw allocation
+///   and Stan-side work.
+/// @param include_gq Whether bridgestan should compute generated quantities
+///   when expanding each draw. Setting this `FALSE` skips the GQ block
+///   (including any `*_rng` calls) entirely. Must imply `include_tp = TRUE`
+///   when `TRUE`, since GQ may reference TP.
 /// @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 ///   and optionally warmup_draws and warmup_diagnostics.
 /// @keywords internal
@@ -363,6 +373,8 @@ fn sample_stan(
     mass_matrix_gamma: f64,
     eigval_cutoff: f64,
     keep_indices: Robj,
+    include_tp: bool,
+    include_gq: bool,
 ) -> Result<List> {
     // Defensive guards before unsigned casts. The R wrapper validates these
     // already; we re-check here so direct callers (or malformed inputs that
@@ -415,6 +427,7 @@ fn sample_stan(
 
     let stan_model = model::StanModel::new(&handle)
         .with_init_positions(init_positions_raw, jitter)
+        .and_then(|m| m.with_constrain_flags(&handle, include_tp, include_gq))
         .map_err(r_err)?;
 
     let ndim = stan_model.num_constrained();
@@ -795,6 +808,16 @@ fn bs_block_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
     handle.block_names.clone()
 }
 
+/// Block-level + transformed-parameter names (no generated quantities),
+/// dot-indexed. Length equals `param_num(true, false)`. Used by R-side
+/// `pars` / `include` resolution to partition names into block / TP / GQ
+/// without an extra round-trip into bridgestan.
+/// @keywords internal
+#[extendr]
+fn bs_block_tp_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
+    handle.block_tp_names.clone()
+}
+
 /// Full constrained parameter names (block + transformed parameters +
 /// generated quantities), dot-indexed.
 /// @keywords internal
@@ -907,6 +930,7 @@ extendr_module! {
     fn sample_stan;
     fn bs_open;
     fn bs_block_names;
+    fn bs_block_tp_names;
     fn bs_full_names;
     fn bs_unc_names;
     fn bs_ndim_unc;

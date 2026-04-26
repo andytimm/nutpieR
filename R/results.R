@@ -19,6 +19,74 @@ matrix_to_draws_array <- function(flat_matrix, n_draws, n_chains) {
   posterior::as_draws_array(arr)
 }
 
+#' Resolve `pars` / `include` to bridgestan `(include_tp, include_gq)` flags
+#'
+#' When the user has filtered TP / GQ out of the output, we tell bridgestan
+#' to skip materializing them in `param_constrain` — saving the per-draw
+#' allocation and the Stan-side compute (e.g. the `*_rng` calls in GQ).
+#'
+#' Resolution rules:
+#' - `pars = NULL` → `(TRUE, TRUE)` (full backward compatibility).
+#' - Otherwise, classify each block-level prefix as block / TP-only / GQ-only
+#'   using `bs_block_names`, `bs_block_tp_names`, `bs_full_names`. Compute the
+#'   set of *kept* prefixes (whitelist or blacklist), then:
+#'   - `include_gq = TRUE` iff any kept prefix is GQ-only.
+#'   - `include_tp = TRUE` iff any kept prefix is TP-only OR `include_gq = TRUE`
+#'     (GQ may reference TP, so we keep TP whenever GQ is kept).
+#'
+#' @param handle An open `BSHandle` external pointer.
+#' @param pars Character vector of block-level prefixes, or `NULL`.
+#' @param include `TRUE` for whitelist, `FALSE` for blacklist.
+#' @return A named list with logical scalars `include_tp`, `include_gq`.
+#' @noRd
+resolve_constrain_flags <- function(handle, pars, include) {
+  if (is.null(pars)) return(list(include_tp = TRUE, include_gq = TRUE))
+
+  block_prefixes <- unique(sub("\\..*", "", bs_block_names(handle)))
+  block_tp_prefixes <- unique(sub("\\..*", "", bs_block_tp_names(handle)))
+  full_prefixes <- unique(sub("\\..*", "", bs_full_names(handle)))
+
+  bad <- setdiff(pars, full_prefixes)
+  if (length(bad) > 0) {
+    stop("Unknown parameter(s): ", paste(bad, collapse = ", "),
+         "\nAvailable: ", paste(full_prefixes, collapse = ", "),
+         call. = FALSE)
+  }
+
+  tp_only <- setdiff(block_tp_prefixes, block_prefixes)
+  gq_only <- setdiff(full_prefixes, block_tp_prefixes)
+
+  kept <- if (include) pars else setdiff(full_prefixes, pars)
+  any_gq_kept <- any(kept %in% gq_only)
+  any_tp_kept <- any(kept %in% tp_only)
+
+  list(
+    include_tp = any_tp_kept || any_gq_kept,
+    include_gq = any_gq_kept
+  )
+}
+
+#' Constrained parameter names that bridgestan will return for the given flags
+#'
+#' Mirrors what bridgestan's `param_constrain` writes into its output buffer:
+#' block only / block+TP / block+TP+GQ. The `(FALSE, TRUE)` combination is
+#' rejected because GQ may reference TP — `resolve_constrain_flags` already
+#' enforces `include_tp = TRUE` whenever `include_gq = TRUE`.
+#'
+#' @noRd
+constrain_names_for_flags <- function(handle, include_tp, include_gq) {
+  if (include_tp && include_gq) {
+    bs_full_names(handle)
+  } else if (include_tp) {
+    bs_block_tp_names(handle)
+  } else if (!include_gq) {
+    bs_block_names(handle)
+  } else {
+    stop("Internal error: include_gq = TRUE requires include_tp = TRUE.",
+         call. = FALSE)
+  }
+}
+
 #' Resolve `pars` / `include` to 0-indexed column indices
 #'
 #' Operates on bridgestan dot-indexed full names ("beta.1.2"), so the
