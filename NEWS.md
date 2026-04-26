@@ -1,3 +1,21 @@
+# nutpieR 1.4.0
+
+* Memory-efficiency pass on the R/Rust boundary. No API changes for typical
+  users. Highlights:
+  - `unconstrained_draw` and `gradient` diagnostics columns are no longer
+    returned by default. They were nearly as large as the draws matrix on
+    wide models. Opt in via `store_unconstrained = TRUE` /
+    `store_gradient = TRUE` (mirrors the existing `store_divergences` /
+    `store_mass_matrix` flags).
+  - Draws matrix is now written directly into R-allocated memory in Rust,
+    eliminating a full intermediate copy during result conversion.
+  - `pars` / `include` filtering now happens in Rust before the draws matrix
+    is materialized, so memory and copy work scale with the *kept* parameter
+    count rather than the full constrained dimension.
+  - Sampler arguments (`num_draws`, `num_warmup`, `num_chains`, `cores`,
+    `max_treedepth`) are now validated for finite, positive values on the R
+    side, with a defensive check in Rust before unsigned casts.
+
 # nutpieR 1.3.1
 
 * Bumped `extendr-api` from 0.8.1 to 0.9.0. Fixes the R CMD check NOTE
