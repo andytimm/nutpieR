@@ -77,16 +77,9 @@
 #'   all parameters *except* these, depending on `include`) are returned in the
 #'   output draws. By default (`NULL`), all parameters are returned. Parameter
 #'   names should be the Stan block names, not indexed names — e.g. `"beta"`
-#'   will match `beta`, `beta[1]`, `beta[2]`, etc.
-#'
-#'   When the kept set excludes the entire transformed-parameter and/or
-#'   generated-quantities blocks, bridgestan is told to skip materializing
-#'   those slices per draw. On wide models this is a meaningful speedup and
-#'   memory reduction (the GQ block's `*_rng` calls don't run, and the
-#'   per-draw constrained buffer shrinks accordingly). One conservative rule:
-#'   keeping any GQ name forces TP to also be materialized, since GQ is
-#'   permitted to reference TP and we don't want a name lookup to fail
-#'   silently.
+#'   will match `beta`, `beta[1]`, `beta[2]`, etc. When the kept set excludes
+#'   the entire transformed-parameter and/or generated-quantities blocks,
+#'   those slices are skipped at sample time (see `NEWS.md` for benchmarks).
 #' @param include Logical (default `TRUE`). If `TRUE`, `pars` specifies the
 #'   parameters to *keep* (whitelist). If `FALSE`, `pars` specifies parameters
 #'   to *exclude* (blacklist). Ignored when `pars` is `NULL`.
@@ -148,13 +141,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   flags <- resolve_constrain_flags(handle, pars, include)
   constrain_names <- constrain_names_for_flags(handle, flags$include_tp,
                                                flags$include_gq)
-  pars_in_scope <- pars
-  if (!is.null(pars_in_scope)) {
-    constrain_prefixes <- unique(sub("\\..*", "", constrain_names))
-    pars_in_scope <- intersect(pars_in_scope, constrain_prefixes)
-    if (length(pars_in_scope) == 0) pars_in_scope <- NULL
-  }
-  keep_indices <- resolve_keep_indices(constrain_names, pars_in_scope, include)
+  keep_indices <- resolve_keep_indices(constrain_names, pars, include)
 
   raw <- sample_stan(
     handle,

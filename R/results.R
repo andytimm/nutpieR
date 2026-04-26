@@ -19,44 +19,40 @@ matrix_to_draws_array <- function(flat_matrix, n_draws, n_chains) {
   posterior::as_draws_array(arr)
 }
 
+#' Block-level prefixes from a vector of bridgestan dot-indexed names
+#'
+#' `beta.1.2` and `beta.2.1` both collapse to `beta`; scalar names pass
+#' through unchanged.
+#' @noRd
+block_prefixes <- function(dot_names) unique(sub("\\..*", "", dot_names))
+
 #' Resolve `pars` / `include` to bridgestan `(include_tp, include_gq)` flags
 #'
-#' When the user has filtered TP / GQ out of the output, we tell bridgestan
-#' to skip materializing them in `param_constrain` — saving the per-draw
-#' allocation and the Stan-side compute (e.g. the `*_rng` calls in GQ).
+#' Skipping the TP / GQ slice in `param_constrain` saves both the per-draw
+#' allocation and the Stan-side compute (the GQ block's `*_rng` calls).
+#' GQ may reference TP, so we conservatively force TP on whenever GQ is on.
 #'
-#' Resolution rules:
-#' - `pars = NULL` → `(TRUE, TRUE)` (full backward compatibility).
-#' - Otherwise, classify each block-level prefix as block / TP-only / GQ-only
-#'   using `bs_block_names`, `bs_block_tp_names`, `bs_full_names`. Compute the
-#'   set of *kept* prefixes (whitelist or blacklist), then:
-#'   - `include_gq = TRUE` iff any kept prefix is GQ-only.
-#'   - `include_tp = TRUE` iff any kept prefix is TP-only OR `include_gq = TRUE`
-#'     (GQ may reference TP, so we keep TP whenever GQ is kept).
-#'
-#' @param handle An open `BSHandle` external pointer.
-#' @param pars Character vector of block-level prefixes, or `NULL`.
-#' @param include `TRUE` for whitelist, `FALSE` for blacklist.
-#' @return A named list with logical scalars `include_tp`, `include_gq`.
+#' This is also the single place where unknown `pars` names are validated;
+#' downstream `resolve_keep_indices` trusts the input.
 #' @noRd
 resolve_constrain_flags <- function(handle, pars, include) {
   if (is.null(pars)) return(list(include_tp = TRUE, include_gq = TRUE))
 
-  block_prefixes <- unique(sub("\\..*", "", bs_block_names(handle)))
-  block_tp_prefixes <- unique(sub("\\..*", "", bs_block_tp_names(handle)))
-  full_prefixes <- unique(sub("\\..*", "", bs_full_names(handle)))
+  block <- block_prefixes(bs_block_names(handle))
+  block_tp <- block_prefixes(bs_block_tp_names(handle))
+  full <- block_prefixes(bs_full_names(handle))
 
-  bad <- setdiff(pars, full_prefixes)
+  bad <- setdiff(pars, full)
   if (length(bad) > 0) {
     stop("Unknown parameter(s): ", paste(bad, collapse = ", "),
-         "\nAvailable: ", paste(full_prefixes, collapse = ", "),
+         "\nAvailable: ", paste(full, collapse = ", "),
          call. = FALSE)
   }
 
-  tp_only <- setdiff(block_tp_prefixes, block_prefixes)
-  gq_only <- setdiff(full_prefixes, block_tp_prefixes)
+  tp_only <- setdiff(block_tp, block)
+  gq_only <- setdiff(full, block_tp)
 
-  kept <- if (include) pars else setdiff(full_prefixes, pars)
+  kept <- if (include) pars else setdiff(full, pars)
   any_gq_kept <- any(kept %in% gq_only)
   any_tp_kept <- any(kept %in% tp_only)
 
@@ -66,55 +62,51 @@ resolve_constrain_flags <- function(handle, pars, include) {
   )
 }
 
-#' Constrained parameter names that bridgestan will return for the given flags
+#' Constrained parameter names bridgestan returns for the given flags
 #'
-#' Mirrors what bridgestan's `param_constrain` writes into its output buffer:
-#' block only / block+TP / block+TP+GQ. The `(FALSE, TRUE)` combination is
-#' rejected because GQ may reference TP — `resolve_constrain_flags` already
-#' enforces `include_tp = TRUE` whenever `include_gq = TRUE`.
-#'
+#' Mirrors `StanModel::with_constrain_flags` in `model.rs`. `(FALSE, TRUE)`
+#' is unreachable: `resolve_constrain_flags` enforces `include_tp = TRUE`
+#' whenever `include_gq = TRUE`.
 #' @noRd
 constrain_names_for_flags <- function(handle, include_tp, include_gq) {
-  if (include_tp && include_gq) {
+  if (include_gq) {
     bs_full_names(handle)
   } else if (include_tp) {
     bs_block_tp_names(handle)
-  } else if (!include_gq) {
-    bs_block_names(handle)
   } else {
-    stop("Internal error: include_gq = TRUE requires include_tp = TRUE.",
-         call. = FALSE)
+    bs_block_names(handle)
   }
 }
 
 #' Resolve `pars` / `include` to 0-indexed column indices
 #'
-#' Operates on bridgestan dot-indexed full names ("beta.1.2"), so the
-#' returned indices line up with the Arrow `value` column ordering — no
-#' R-side reshuffling needed. Returns `NULL` when no filtering is
-#' requested, signalling "keep everything" to the Rust side.
+#' Operates on bridgestan dot-indexed names so the returned indices line up
+#' with the Arrow `value` column ordering — no R-side reshuffling needed.
+#' Returns `NULL` for `pars = NULL` (signalling "keep everything") or when
+#' nothing in `pars` is in scope (e.g. an `include = FALSE` blacklist that
+#' only names columns already skipped via the constrain flags).
 #'
-#' @param full_names Character vector of bridgestan dot-indexed names.
-#' @param pars Character vector of block-level parameter names, or `NULL`.
-#' @param include Logical; if `TRUE`, `pars` is a whitelist; if `FALSE`,
-#'   a blacklist.
-#' @return 0-indexed integer vector of columns to keep, or `NULL`.
+#' Validation of unknown names happens upstream in `resolve_constrain_flags`;
+#' this function trusts its input.
 #' @noRd
 resolve_keep_indices <- function(full_names, pars, include) {
   if (is.null(pars)) return(NULL)
 
-  block_names <- unique(sub("\\..*", "", full_names))
-  bad <- setdiff(pars, block_names)
-  if (length(bad) > 0) {
-    stop("Unknown parameter(s): ", paste(bad, collapse = ", "),
-         "\nAvailable: ", paste(block_names, collapse = ", "),
-         call. = FALSE)
+  in_scope <- intersect(pars, block_prefixes(full_names))
+  if (length(in_scope) == 0L) {
+    # Whitelist with no in-scope names = "keep nothing" — surface as an error
+    # so a programmatic `pars = intersect(user_pars, available)` that came up
+    # empty doesn't silently fall back to keeping everything. Blacklist is
+    # benign: the named excludes were already skipped via the constrain flags,
+    # so there's nothing left to drop.
+    if (include) {
+      stop("Parameter selection would remove all variables.", call. = FALSE)
+    }
+    return(NULL)
   }
 
-  # Match "par" exactly (scalar) or "par.<digits>..." (indexed).
-  pat <- paste0("^(", paste(escape_regex(pars), collapse = "|"), ")(\\.|$)")
+  pat <- paste0("^(", paste(escape_regex(in_scope), collapse = "|"), ")(\\.|$)")
   matched <- grepl(pat, full_names)
-
   keep <- if (include) matched else !matched
   if (!any(keep)) {
     stop("Parameter selection would remove all variables.", call. = FALSE)

@@ -178,17 +178,10 @@ impl StanModel {
     }
 
     /// Restrict the per-draw constrained output to the requested slice.
-    ///
-    /// `(true, true)` keeps the full set (block + TP + GQ) and matches
-    /// `StanModel::new`. Other combinations skip materializing the unwanted
-    /// slice in `param_constrain`, which on wide models with large
-    /// transformed-parameter / generated-quantities blocks saves both
-    /// allocation and Stan-side compute (e.g. the `*_rng` calls in GQ).
-    ///
-    /// The `(false, true)` combination is rejected: GQ may reference TP, so
-    /// dropping TP while keeping GQ would silently change Stan-side state.
-    /// R-side resolution forces `include_tp = true` whenever any GQ name is
-    /// kept; this guard catches direct callers that bypass that rule.
+    /// Rejects `(false, true)`: GQ may reference TP, so dropping TP while
+    /// keeping GQ would silently change Stan-side state. R-side resolution
+    /// forces `include_tp = true` whenever any GQ name is kept; this guard
+    /// catches direct callers that bypass that rule.
     pub fn with_constrain_flags(
         mut self,
         handle: &BSHandle,
@@ -342,11 +335,6 @@ impl<'model> CpuLogpFunc for StanDensity<'model> {
         // Holding a reusable field-buffer would force a per-draw clone()
         // (same allocation count, plus a memcpy) since the trait return
         // type is owned `Vec<f64>`.
-        //
-        // `num_constrained` already reflects `(include_tp, include_gq)`, so
-        // when the user has filtered TP/GQ out via `pars`/`include` the
-        // per-draw allocation and the Stan-side `param_constrain` call both
-        // run on the kept slice only.
         let include_tp = self.model.include_tp;
         let include_gq = self.model.include_gq;
         let mut out = vec![0f64; self.model.num_constrained];

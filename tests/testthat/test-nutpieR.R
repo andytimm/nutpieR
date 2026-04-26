@@ -728,6 +728,36 @@ test_that("include = FALSE excluding GQ drops GQ flag, keeps block + TP", {
   expect_false(any(grepl("^y_rep", vars)))
 })
 
+test_that("empty whitelist errors instead of silently keeping block params", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  # pars = character(0) with include = TRUE means "keep nothing", not
+  # "keep everything" — guards against programmatic selections like
+  # pars = intersect(user_pars, available) that come up empty.
+  expect_error(
+    nutpie_sample(test_models$normal,
+      data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+      num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+      pars = character(0)
+    ),
+    "remove all variables"
+  )
+})
+
+test_that("empty blacklist keeps all (nothing to exclude)", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+
+  draws <- nutpie_sample(test_models$normal,
+    data = list(N = 5, y = c(1.0, 2.0, 3.0, 4.0, 5.0)),
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+    pars = character(0), include = FALSE
+  )
+
+  vars <- posterior::variables(draws)
+  expect_true("mu" %in% vars)
+  expect_true("sigma" %in% vars)
+})
+
 test_that("model with no GQ block + pars = block param works", {
   # bernoulli has only the `theta` block parameter — no TP, no GQ.
   # Setting pars = "theta" exercises the (FALSE, FALSE) flag path on a
