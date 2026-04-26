@@ -12,6 +12,8 @@ src/Makevars.win
 *.dll
 *.o
 *.d
+*.hpp
+*_model.cache_meta
 src/rust/.rustc_info.json
 .vscode/
 benchmarks/results/

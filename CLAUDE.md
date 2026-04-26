@@ -81,8 +81,11 @@ nutpieR/
 # Install (compiles Rust in release mode)
 NOT_CRAN=TRUE devtools::install(quick = TRUE)
 
-# Run tests
+# Run tests (fast tier; ~25s warm-cache)
 devtools::test()
+
+# Run slow tests too (posteriordb reference comparisons; ~+70s)
+NUTPIER_RUN_SLOW_TESTS=1 devtools::test()
 
 # Full check
 devtools::check()

@@ -1,3 +1,10 @@
+# Posteriordb reference comparisons are slow (~70s warm) and verify
+# sampling quality, not API correctness. Gated to keep PR cycles fast;
+# run before tagging a release with `NUTPIER_RUN_SLOW_TESTS=1`.
+testthat::skip_if(
+  !nzchar(Sys.getenv("NUTPIER_RUN_SLOW_TESTS")),
+  "set NUTPIER_RUN_SLOW_TESTS=1 to run posteriordb reference comparisons"
+)
 skip_if_not_installed("posteriordb")
 # `posteriordb::pdb_github()` loads `remotes` without a guard; it's a Suggest
 # of posteriordb, so R CMD check's clean lib won't have it available.

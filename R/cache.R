@@ -2,13 +2,21 @@
 #
 # Two cache flavours:
 #
-#   stan_file = ...   in-place artifact next to the .stan, mtime-guarded.
-#                     Matches cmdstanr's convention so users with mixed
-#                     backends get the same artifact layout.
+#   stan_file = ...   in-place artifact next to the .stan, mtime + sidecar
+#                     guarded. Matches cmdstanr's convention so users with
+#                     mixed backends get the same artifact layout, plus a
+#                     `<basename>_model.cache_meta` sidecar that tracks
+#                     bridgestan_version() and the compile flags used --
+#                     so a flag change or toolchain bump triggers a real
+#                     rebuild instead of silently returning the old binary.
 #   code = "..."      content-hashed cache under R_user_dir("nutpieR",
 #                     "cache")/models/<hash16>/, with bridgestan_version()
-#                     and sorted compile flags folded into the key so a
-#                     toolchain bump invalidates entries automatically.
+#                     and the (order-preserving) compile flags folded into
+#                     the key.
+#
+# Both flavours compile in the user's / cache's directory directly (no
+# staging), so Stan's `#include` directives resolve correctly against the
+# source's own dirname.
 
 INLINE_STAN <- "model.stan"
 
@@ -21,12 +29,40 @@ expected_artifact_path <- function(stan_file) {
   file.path(dirname(stan_file), paste0(base, "_model.so"))
 }
 
-# Returns the artifact path on a fresh in-place hit, NULL on miss.
-in_place_hit <- function(stan_file) {
+cache_meta_path <- function(stan_file) {
+  base <- tools::file_path_sans_ext(basename(stan_file))
+  file.path(dirname(stan_file), paste0(base, "_model.cache_meta"))
+}
+
+read_cache_meta <- function(stan_file) {
+  meta_path <- cache_meta_path(stan_file)
+  if (!file.exists(meta_path)) return(NULL)
+  tryCatch(readRDS(meta_path), error = function(e) NULL)
+}
+
+write_cache_meta <- function(stan_file, bs_version, stanc_args, compile_args) {
+  saveRDS(
+    list(
+      bs_version = bs_version,
+      stanc_args = as.character(stanc_args),
+      compile_args = as.character(compile_args)
+    ),
+    cache_meta_path(stan_file)
+  )
+}
+
+# Returns TRUE iff (a) artifact exists, (b) artifact mtime >= stan mtime,
+# (c) sidecar exists and matches expected version + flags. Any miss returns
+# FALSE so the caller proceeds to compile.
+in_place_hit <- function(stan_file, bs_version, stanc_args, compile_args) {
   artifact <- expected_artifact_path(stan_file)
   info <- file.info(c(artifact, stan_file))
-  if (is.na(info$mtime[1L]) || info$mtime[1L] < info$mtime[2L]) return(NULL)
-  artifact
+  if (is.na(info$mtime[1L]) || info$mtime[1L] < info$mtime[2L]) return(FALSE)
+  meta <- read_cache_meta(stan_file)
+  !is.null(meta) &&
+    identical(meta$bs_version, bs_version) &&
+    identical(meta$stanc_args, as.character(stanc_args)) &&
+    identical(meta$compile_args, as.character(compile_args))
 }
 
 dir_writable <- function(path) {
@@ -77,28 +113,51 @@ inline_cache_dir <- function() {
   models
 }
 
+# Argument order is preserved (no sort): for override-style flags like
+# `--name=foo --name=bar`, semantics are order-sensitive and we don't want
+# the cache to silently coalesce them.
 inline_cache_key <- function(content, bs_version, stanc_args, compile_args) {
   payload <- list(
     content = content,
     bs_version = bs_version,
-    stanc_args = sort(as.character(stanc_args)),
-    compile_args = sort(as.character(compile_args))
+    stanc_args = as.character(stanc_args),
+    compile_args = as.character(compile_args)
   )
   substr(digest::digest(payload, algo = "sha256"), 1L, 16L)
 }
 
-compile_in_place <- function(stan_path, stanc_args, compile_args, verbose) {
-  build_path <- stan_path
+# Compile stan_file in its own directory. We do *not* stage to a tempdir
+# because Stan's `#include` directives resolve against the source's own
+# dirname (bridgestan auto-passes `--include-paths=<dirname>` to stanc),
+# and staging would silently break includes.
+#
+# Side effects:
+# * Removes the existing .hpp first, forcing stanc to re-run with the
+#   current stanc_args. Without this, a flag-only change produces a stale
+#   binary because make sees `.hpp` is up-to-date and skips regeneration.
+# * Leaves the existing _model.so in place until the linker overwrites it
+#   so a failed recompile doesn't strand the user without a working binary.
+compile_in_place <- function(stan_file, stanc_args, compile_args, verbose) {
+  base <- tools::file_path_sans_ext(stan_file)
+  unlink(paste0(base, ".hpp"), force = TRUE)
+
+  build_path <- stan_file
   if (.Platform$OS.type == "windows") {
-    # 8.3 short names truncate ".stan" to ".STA", which bridgestan rejects.
-    # Apply shortPathName to the directory only -- the basename is always
-    # "model.stan" (forced by compile_via_staging) so it has no spaces.
-    short_dir <- utils::shortPathName(dirname(build_path))
-    build_path <- file.path(short_dir, basename(build_path))
+    # On Windows, `make` and stanc both prefer forward slashes -- backslashes
+    # get eaten by the shell when bridgestan invokes make with STANCFLAGS,
+    # which then breaks `--include-paths=...` resolution. shortPathName is
+    # only applied if the dir has spaces, since `make` can't handle those;
+    # it must target the *directory* only (it would truncate ".stan" to
+    # ".STA" on the basename, which bridgestan rejects).
+    if (grepl(" ", dirname(build_path))) {
+      short_dir <- utils::shortPathName(dirname(build_path))
+      build_path <- file.path(short_dir, basename(build_path))
+    }
+    build_path <- gsub("\\\\", "/", build_path)
   }
   if (grepl(" ", build_path)) {
     stop(
-      "Could not resolve a no-space build path for ", stan_path, ". ",
+      "Could not resolve a no-space build path for ", stan_file, ". ",
       "On Windows, ensure 8.3 short names are enabled on the volume, or ",
       "set R_USER_CACHE_DIR to a no-space path.",
       call. = FALSE
@@ -119,36 +178,6 @@ compile_in_place <- function(stan_path, stanc_args, compile_args, verbose) {
                     proc.time()[["elapsed"]] - start_time))
   }
   normalizePath(built_so, mustWork = TRUE)
-}
-
-# Build a .stan file in a clean tempdir. If `target` is non-NULL the .so is
-# moved there and the staging dir is unlinked; otherwise the artifact stays
-# in tempdir for the session (R cleans it up at session end).
-compile_via_staging <- function(stan_file, stanc_args, compile_args, verbose,
-                                target = NULL) {
-  build_dir <- tempfile("nutpieR-build-")
-  dir.create(build_dir, recursive = TRUE)
-  if (!is.null(target)) {
-    on.exit(unlink(build_dir, recursive = TRUE), add = TRUE)
-  }
-
-  build_stan <- file.path(build_dir, INLINE_STAN)
-  if (!file.copy(stan_file, build_stan, overwrite = TRUE)) {
-    stop("Could not copy ", stan_file, " into staging dir ", build_dir,
-         call. = FALSE)
-  }
-
-  built_so <- compile_in_place(build_stan, stanc_args, compile_args, verbose)
-  if (is.null(target)) return(built_so)
-
-  # Try rename first (zero-copy on same volume); fall back to copy across
-  # devices or when the target slot is locked.
-  if (!suppressWarnings(file.rename(built_so, target)) &&
-      !file.copy(built_so, target, overwrite = TRUE)) {
-    stop("Could not move compiled artifact to ", target,
-         ". Is the directory writable?", call. = FALSE)
-  }
-  normalizePath(target, mustWork = TRUE)
 }
 
 compile_inline <- function(code, stanc_args, compile_args, verbose, use_cache) {
@@ -190,7 +219,8 @@ compile_inline <- function(code, stanc_args, compile_args, verbose, use_cache) {
 #' `nutpie_compile_model(code = ...)` stores its compiled artifacts. Inline
 #' models will be recompiled on next use. Models compiled from a `stan_file`
 #' are not affected -- those live next to the `.stan`; remove the
-#' corresponding `<basename>_model.so` directly to invalidate.
+#' corresponding `<basename>_model.so` (and `.cache_meta` sidecar) directly
+#' to invalidate.
 #'
 #' @return Invisibly `NULL`.
 #' @export

@@ -8,19 +8,20 @@
 #' By default the compiled `.so` is cached so repeat calls are near-instant:
 #'
 #' * `stan_file = ...` --- the artifact lives next to the `.stan` as
-#'   `<basename>_model.so` (matching cmdstanr's convention). A subsequent
-#'   call returns the cached artifact when its mtime is at least as new as
-#'   the `.stan`. If the user's `.stan` directory is read-only, the call
-#'   falls back transparently to the inline cache below with a warning.
+#'   `<basename>_model.so` (matching cmdstanr's convention), with a small
+#'   `<basename>_model.cache_meta` sidecar tracking BridgeStan version and
+#'   compile flags. A subsequent call hits the cache when the artifact
+#'   mtime is at least as new as the `.stan` *and* the sidecar matches.
+#'   If the user's `.stan` directory is read-only, the call falls back
+#'   transparently to the inline cache below with a warning.
 #' * `code = "..."` --- the artifact lives under
 #'   [`nutpie_cache_dir()`][nutpie_cache_dir], keyed by a hash of the source
-#'   plus BridgeStan version and compile flags. Identical inputs hit the
-#'   cache; different inputs get separate entries.
+#'   plus BridgeStan version and compile flags (argument order preserved).
 #'
 #' Cache controls:
 #'
-#' * `cache = FALSE` on a single call --- compile fresh, drop artifact in
-#'   a per-call tempdir. Result is valid for the R session.
+#' * `cache = FALSE` on a single call --- force a fresh compile that
+#'   overwrites the cached artifact and updates the sidecar.
 #' * `Sys.setenv(NUTPIER_DISABLE_COMPILE_CACHE = "1")` --- same effect
 #'   process-wide, without changing call sites.
 #' * [`nutpie_clear_cache()`][nutpie_clear_cache] wipes the inline cache.
@@ -38,8 +39,8 @@
 #'   Note: full make/stanc output (verbose=2) is not yet supported because
 #'   bridgestan captures subprocess output internally rather than streaming it.
 #' @param cache Logical, default `TRUE`. When `TRUE`, reuse a previously
-#'   compiled artifact when the source is unchanged. When `FALSE`, force a
-#'   fresh compile and place the artifact in a per-call tempdir.
+#'   compiled artifact when the source, BridgeStan version, and compile
+#'   flags all match. When `FALSE`, force a fresh compile.
 #' @return An object of class `"nutpie_model"` containing the path to the
 #'   compiled shared library.
 #' @export
@@ -80,26 +81,29 @@ nutpie_compile_model <- function(stan_file = NULL, code = NULL,
 
   stan_file <- normalizePath(stan_file, mustWork = TRUE)
 
-  if (use_cache) {
-    hit <- in_place_hit(stan_file)
-    if (!is.null(hit)) {
-      if (verbose >= 1L) message("Using cached compiled model.")
-      return(nutpie_model(normalizePath(hit, mustWork = TRUE), stan_file))
-    }
-    if (!dir_writable(dirname(stan_file))) {
+  if (!dir_writable(dirname(stan_file))) {
+    if (use_cache) {
       warning(
         "Stan file directory ", dirname(stan_file), " is not writable; ",
         "falling back to the inline cache. Pass cache = FALSE to suppress.",
         call. = FALSE
       )
-      code <- paste(readLines(stan_file, warn = FALSE), collapse = "\n")
-      return(compile_inline(code, stanc_args, compile_args, verbose, TRUE))
     }
+    code <- paste(readLines(stan_file, warn = FALSE), collapse = "\n")
+    return(compile_inline(code, stanc_args, compile_args, verbose, use_cache))
   }
 
-  target <- if (use_cache) expected_artifact_path(stan_file) else NULL
-  lib_path <- compile_via_staging(stan_file, stanc_args, compile_args,
-                                  verbose, target = target)
+  bs <- bs_version()
+  if (use_cache && in_place_hit(stan_file, bs, stanc_args, compile_args)) {
+    if (verbose >= 1L) message("Using cached compiled model.")
+    return(nutpie_model(
+      normalizePath(expected_artifact_path(stan_file), mustWork = TRUE),
+      stan_file
+    ))
+  }
+
+  lib_path <- compile_in_place(stan_file, stanc_args, compile_args, verbose)
+  write_cache_meta(stan_file, bs, stanc_args, compile_args)
   nutpie_model(lib_path, stan_file)
 }
 
