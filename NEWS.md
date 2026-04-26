@@ -1,3 +1,29 @@
+# nutpieR 1.6.0
+
+* `nutpie_sample()` now validates `seed`. `NA`, negative, fractional, and
+  values above `.Machine$integer.max` now error with a clear message instead
+  of silently sign-extending into a garbage `u64` seed in Rust (the
+  `seed = NA` case in particular previously sampled with a non-reproducible
+  seed without any indication).
+* When `low_rank_modified_mass_matrix = TRUE`, the default `num_warmup`
+  bumps from 400 to 800 to give the off-diagonal structure room to
+  stabilise (matching Python nutpie). Explicit `num_warmup` values still
+  win.
+* `cores = NULL` falls back to 1 if `parallel::detectCores()` returns
+  `NA` (some sandboxed Linux containers).
+* FFI errors no longer round-trip through extendr's panic conversion.
+  User-facing error messages are now produced via `throw_r_error` directly,
+  so the `thread '<unnamed>' panicked...` lines no longer appear on stderr
+  before R catches the error. Anyhow cause chains are preserved via the
+  alternate Display format. **User-visible error message text has changed
+  for some failure paths** (compile errors, sampler-init failures); pattern
+  matches against error strings in user code may need updating.
+* `add_tbb_to_path()` now runs at most once per process (wrapped in
+  `std::sync::Once`). Removes a per-`bs_open` directory scan and a
+  theoretical race on the process-wide `PATH` set.
+* Internal `#[extendr]` shims are now tagged `@noRd` and no longer
+  generate `man/*.Rd` pages.
+
 # nutpieR 1.5.0
 
 * `nutpie_compile_model()` caches compiled artifacts. `stan_file` mode

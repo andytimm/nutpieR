@@ -106,5 +106,3 @@ nutpie_warmup_diagnostics <- function(draws) {
   }
   diag
 }
-
-`%||%` <- function(a, b) if (is.null(a)) b else a

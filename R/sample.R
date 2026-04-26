@@ -118,6 +118,14 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   data_json <- resolve_data(data)
   if (is.null(seed)) {
     seed <- sample.int(.Machine$integer.max, 1L)
+  } else {
+    seed <- check_count(seed, "seed", min = 0L, max = .Machine$integer.max)
+  }
+  # Low-rank mass matrix needs more warmup for the off-diagonal structure to
+  # stabilise. Bump the default to 800 (matches Python nutpie); explicit
+  # user-supplied values win.
+  if (missing(num_warmup) && isTRUE(low_rank_modified_mass_matrix)) {
+    num_warmup <- 800L
   }
   num_draws <- check_count(num_draws, "num_draws", min = 1L)
   num_warmup <- check_count(num_warmup, "num_warmup", min = 0L)
@@ -131,6 +139,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
 
   if (is.null(cores)) {
     cores <- min(num_chains, parallel::detectCores())
+    if (is.na(cores)) cores <- 1L
   }
   cores <- check_count(cores, "cores", min = 1L)
 
@@ -193,7 +202,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   draws
 }
 
-check_count <- function(x, name, min = 0L) {
+check_count <- function(x, name, min = 0L, max = NULL) {
   if (length(x) != 1L) {
     stop(sprintf("`%s` must be a single integer; got length %d.",
                  name, length(x)), call. = FALSE)
@@ -201,16 +210,21 @@ check_count <- function(x, name, min = 0L) {
   if (!is.numeric(x) || !is.finite(x)) {
     stop(sprintf("`%s` must be a finite integer.", name), call. = FALSE)
   }
+  # Bounds-check on the numeric value before integer cast — values outside
+  # `c(min, max)` would warn-and-NA in `as.integer()` if max > .Machine$integer.max.
+  if (x < min) {
+    stop(sprintf("`%s` must be >= %d; got %s.", name, min, format(x)),
+         call. = FALSE)
+  }
+  if (!is.null(max) && x > max) {
+    stop(sprintf("`%s` must be <= %d; got %s.", name, max, format(x)),
+         call. = FALSE)
+  }
   if (x != as.integer(x)) {
     stop(sprintf("`%s` must be a whole number; got %s.", name, format(x)),
          call. = FALSE)
   }
-  x <- as.integer(x)
-  if (x < min) {
-    stop(sprintf("`%s` must be >= %d; got %d.", name, min, x),
-         call. = FALSE)
-  }
-  x
+  as.integer(x)
 }
 
 resolve_model <- function(model) {
