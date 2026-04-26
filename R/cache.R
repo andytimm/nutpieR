@@ -53,27 +53,48 @@ write_cache_meta <- function(stan_file, bs_version, stanc_args, compile_args) {
 
 # Returns paths referenced by `#include` directives in stan_file (one level
 # deep, resolved relative to the source's dirname). Handles bare, quoted,
-# and angle-bracket forms: `#include foo.stan`, `#include "foo.stan"`,
-# `#include <foo.stan>`. Does not walk transitive includes -- for cache
-# staleness purposes the gain is marginal and the parsing cost adds up.
+# and angle-bracket forms with any amount of whitespace after `#include`.
+# Use all_deps() for the transitive set.
 included_files <- function(stan_file) {
   lines <- readLines(stan_file, warn = FALSE)
-  raw <- regmatches(lines, regexpr("(?<=#include\\s)\\S+", lines, perl = TRUE))
-  if (!length(raw)) return(character())
+  matches <- regmatches(lines, regexpr("#include\\s+\\S+", lines))
+  if (!length(matches)) return(character())
+  raw <- sub("^#include\\s+", "", matches)
   file.path(dirname(stan_file), gsub('["<>]', "", raw))
 }
 
-# Returns TRUE iff (a) artifact exists, (b) artifact mtime >= every
-# dependency mtime (stan_file plus its #include'd files), (c) sidecar
-# exists and matches the expected version + flags. Any miss returns FALSE
-# so the caller proceeds to compile.
+# Walks #include directives transitively. Visited set is keyed on the
+# canonical (normalized + forward-slash) form so paths like `../foo.stan`
+# and `foo.stan` resolved from sibling dirs don't double-count. Missing
+# dependencies stay in the result so in_place_hit() can invalidate against
+# them rather than silently treating a deleted include as "no constraint".
+canonical_path <- function(path) {
+  normalizePath(path, mustWork = FALSE, winslash = "/")
+}
+
+all_deps <- function(stan_file, visited = character()) {
+  key <- canonical_path(stan_file)
+  if (key %in% visited) return(visited)
+  visited <- c(visited, key)
+  if (!file.exists(stan_file)) return(visited)
+  for (inc in included_files(stan_file)) {
+    visited <- all_deps(inc, visited)
+  }
+  visited
+}
+
+# Returns TRUE iff (a) artifact exists, (b) every dependency exists and is
+# no newer than the artifact, (c) sidecar matches the expected version +
+# flags. Any miss returns FALSE so the caller proceeds to compile. A
+# deleted #include'd file invalidates rather than passing silently.
 in_place_hit <- function(stan_file, bs_version, stanc_args, compile_args) {
   artifact <- expected_artifact_path(stan_file)
-  deps <- c(stan_file, included_files(stan_file))
+  deps <- all_deps(stan_file)
   info <- file.info(c(artifact, deps))
   if (is.na(info$mtime[1L])) return(FALSE)
-  newest_dep <- suppressWarnings(max(info$mtime[-1L], na.rm = TRUE))
-  if (!is.finite(newest_dep) || info$mtime[1L] < newest_dep) return(FALSE)
+  dep_mtimes <- info$mtime[-1L]
+  if (any(is.na(dep_mtimes))) return(FALSE)
+  if (info$mtime[1L] < max(dep_mtimes)) return(FALSE)
   meta <- read_cache_meta(stan_file)
   !is.null(meta) &&
     identical(meta$bs_version, bs_version) &&

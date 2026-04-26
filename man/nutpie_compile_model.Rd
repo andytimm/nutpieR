@@ -52,9 +52,12 @@ By default the compiled \code{.so} is cached so repeat calls are near-instant:
 \verb{<basename>_model.so} (matching cmdstanr's convention), with a small
 \verb{<basename>_model.cache_meta} sidecar tracking BridgeStan version and
 compile flags. A subsequent call hits the cache when the artifact
-mtime is at least as new as the \code{.stan} \emph{and} the sidecar matches.
-If the user's \code{.stan} directory is read-only, the call falls back
-transparently to the inline cache below with a warning.
+mtime is at least as new as the \code{.stan} (and any one-level
+\verb{#include}'d files) \emph{and} the sidecar matches. If the user's
+\code{.stan} directory is read-only, the call falls back to the inline
+cache below with a warning -- except for models that use
+\verb{#include}, which error since the inline cache discards the source
+dirname needed to resolve includes.
 \item \code{code = "..."} --- the artifact lives under
 \code{\link[=nutpie_cache_dir]{nutpie_cache_dir()}}, keyed by a hash of the source
 plus BridgeStan version and compile flags (argument order preserved).

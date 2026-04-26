@@ -222,6 +222,46 @@ test_that("editing an #include'd file invalidates the cache", {
   expect_equal(counter$n, 2L)
 })
 
+test_that("multi-space, missing, and nested #include all invalidate properly", {
+  counter <- new.env(parent = emptyenv())
+  testthat::local_mocked_bindings(
+    compile_stan_model = make_compile_stub(counter),
+    bs_version = function() "TEST.0",
+    bridgestan_version = function() "TEST.0",
+    .package = "nutpieR"
+  )
+
+  d <- tempfile("nutpieR-include-edge-")
+  dir.create(d, recursive = TRUE)
+  on.exit(unlink(d, recursive = TRUE), add = TRUE)
+
+  # a -> b -> c, with deliberately weird whitespace so the regex has to
+  # accept multi-space after `#include`.
+  a <- file.path(d, "a.stan")
+  b <- file.path(d, "b.stan")
+  c <- file.path(d, "c.stan")
+  writeLines("// c v1", c)
+  writeLines(c("// b v1", "#include   c.stan"), b)
+  writeLines(c("functions {", "#include  b.stan", "}",
+               "parameters { real x; } model { x ~ normal(0, 1); }"), a)
+
+  nutpie_compile_model(stan_file = a, verbose = 0L)
+  expect_equal(counter$n, 1L)
+
+  # Editing the depth-2 include must invalidate -- proves transitive walk.
+  Sys.sleep(1.1)
+  writeLines("// c v2", c)
+  Sys.setFileTime(c, Sys.time())
+  nutpie_compile_model(stan_file = a, verbose = 0L)
+  expect_equal(counter$n, 2L)
+
+  # Deleting an included file must invalidate -- a missing dep should
+  # never read as "no constraint" (would silently return a stale .so).
+  unlink(c)
+  nutpie_compile_model(stan_file = a, verbose = 0L)
+  expect_equal(counter$n, 3L)
+})
+
 test_that("read-only stan_file directory + #include errors instead of falling back", {
   # The inline-cache fallback flattens the .stan to a string and loses the
   # source dirname, so #include can't resolve. Refuse rather than silently
