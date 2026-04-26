@@ -10,6 +10,8 @@ src/Makevars.win
 .claude/
 *.so
 *.dll
+*.o
+*.d
 src/rust/.rustc_info.json
 .vscode/
 benchmarks/results/

@@ -1,3 +1,37 @@
+# nutpieR 1.5.0
+
+* `nutpie_compile_model()` now caches compiled artifacts so repeat calls are
+  near-instant (target: <1s warm vs ~18-55s cold). Cache layout matches
+  cmdstanr's convention:
+  - `stan_file = "..."`: artifact lands next to the `.stan` as
+    `<basename>_model.so`. A subsequent call returns it when the artifact
+    mtime is at least as new as the `.stan`. Same exposure as cmdstanr to
+    mtime-preserving operations like `git checkout`/`cp -p` --- delete the
+    `_model.so` (or `touch` the `.stan`) to invalidate.
+  - `code = "..."`: artifact lands under `tools::R_user_dir("nutpieR",
+    "cache")`, keyed by a 16-char `sha256` of the source plus
+    BridgeStan version and sorted compile flags. Inline cache invalidates
+    automatically on a BridgeStan version bump.
+* New `cache = TRUE` argument on `nutpie_compile_model()` --- pass `FALSE`
+  to force a fresh compile (artifact lands in a per-call tempdir). The
+  environment variable `NUTPIER_DISABLE_COMPILE_CACHE=1` has the same
+  process-wide effect without changing call sites.
+* New exported helpers `nutpie_clear_cache()` (wipes the inline-code
+  cache) and `nutpie_cache_dir()` (returns the cache root for inspection).
+* On Windows, the staging build path is now resolved via
+  `utils::shortPathName()`. Previously, every compile copied the `.stan`
+  into a fresh tempfile dir to dodge spaces-in-paths breaking `make`,
+  defeating make's incremental detection and forcing a full ~18s
+  recompile every call. Warm-cache `devtools::test()` drops from ~187s
+  to ~25-30s on this dev box.
+* If the user's `.stan` directory is read-only, `nutpie_compile_model()`
+  falls back to the inline cache transparently with a one-time warning
+  rather than failing on the move-back step.
+* New internal `bridgestan_version()` extendr function exposes the linked
+  BridgeStan crate version; folded into the inline cache key so that a
+  BridgeStan upgrade invalidates cached entries.
+* New `digest` import for the inline cache key.
+
 # nutpieR 1.4.1
 
 * Result conversion no longer copies the draws matrix. The Rust-side buffer
