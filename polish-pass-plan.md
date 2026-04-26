@@ -39,8 +39,14 @@ Internal `.Call` shims still generate `man/*.Rd` pages today (`bs_open.Rd`, `sam
 - `src/rust/src/model.rs:12-44` — wrap the entire body in `static TBB_INIT: Once = Once::new(); TBB_INIT.call_once(|| { ... });`. Currently runs `read_dir(~/.bridgestan)` + a process-wide `set_var("PATH", ...)` on every `bs_open`. Cheap individually but unnecessary, and the `set_var` race is theoretically observable.
 - Import: `use std::sync::Once;`.
 
-### 7. `r_err` preserves error chain
-- `src/rust/src/lib.rs:25-27` — change `Error::Other(e.to_string())` to `Error::Other(format!("{e:#}"))`. anyhow's `#` alternate format prints the full cause chain; users hitting BridgeStan compile failures or Stan model load errors will see the leaf cause they need.
+### 7. FFI errors should throw R errors directly and preserve cause chains
+Extendr's default `Result<T>` conversion unwraps `Err` through a Rust panic. R catches it, but the panic hook prints noisy `thread '<unnamed>' panicked...` output first. The bad-data `bs_open()` path was fixed directly in the slim-tests PR; the polish pass should make the pattern consistent across the FFI surface.
+
+- `src/rust/src/lib.rs` — add two boundary helpers:
+  - `or_throw<T, E: std::fmt::Display>(r: std::result::Result<T, E>) -> T` using `throw_r_error(e.to_string())` for generic display errors.
+  - `or_throw_anyhow<T>(r: anyhow::Result<T>) -> T` using `throw_r_error(format!("{e:#}"))` so anyhow's alternate format preserves the full cause chain.
+- Update exported `#[extendr]` functions to return plain values / `Robj` at the FFI boundary instead of `Result<T>`, and call the appropriate helper on internal fallible operations. Internal helpers can keep returning `Result` / `anyhow::Result`.
+- This subsumes the old `r_err` item (`Error::Other(e.to_string())` -> full cause-chain formatting) while avoiding extendr's panicking `Result` conversion entirely for user-facing errors.
 - Note: this changes user-visible error strings. `test-nutpieR.R:294-297` ("sampling with bad data gives R error, not crash") only matches `expect_error(...)` without a regex, so safe. Grep the tests for hardcoded error text before merging.
 
 ### 9. Relocate `%||%`

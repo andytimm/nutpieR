@@ -655,10 +655,11 @@ fn extract_diagnostics(
 /// accessor functions without re-opening the shared library.
 /// @keywords internal
 #[extendr]
-fn bs_open(lib_path: &str, data_json: &str, seed: i32) -> Result<ExternalPtr<model::BSHandle>> {
-    let handle = model::BSHandle::open(std::path::Path::new(lib_path), data_json, seed as u32)
-        .map_err(r_err)?;
-    Ok(ExternalPtr::new(handle))
+fn bs_open(lib_path: &str, data_json: &str, seed: i32) -> Robj {
+    match model::BSHandle::open(std::path::Path::new(lib_path), data_json, seed as u32) {
+        Ok(handle) => ExternalPtr::new(handle).into_robj(),
+        Err(e) => throw_r_error(e.to_string()),
+    }
 }
 
 /// Block-level parameter names (no transformed parameters / generated
