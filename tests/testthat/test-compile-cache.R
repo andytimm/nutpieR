@@ -188,3 +188,59 @@ test_that("stan_file with relative #include compiles", {
                             verbose = 0L)
   expect_true(file.exists(m$lib_path))
 })
+
+test_that("editing an #include'd file invalidates the cache", {
+  # Mocked so we can verify the invalidation policy without paying for two
+  # real compiles; the integration test above already proves #include
+  # actually compiles end-to-end.
+  counter <- new.env(parent = emptyenv())
+  testthat::local_mocked_bindings(
+    compile_stan_model = make_compile_stub(counter),
+    bs_version = function() "TEST.0",
+    bridgestan_version = function() "TEST.0",
+    .package = "nutpieR"
+  )
+
+  d <- tempfile("nutpieR-include-invalidation-")
+  dir.create(d, recursive = TRUE)
+  on.exit(unlink(d, recursive = TRUE), add = TRUE)
+  prior <- file.path(d, "priors.stan")
+  main <- file.path(d, "main.stan")
+  writeLines("// v1", prior)
+  writeLines(c("functions {", "#include priors.stan", "}",
+               "parameters { real x; } model { x ~ normal(0, 1); }"), main)
+
+  nutpie_compile_model(stan_file = main, verbose = 0L)
+  expect_equal(counter$n, 1L)
+
+  # Touch only the included file. main.stan's mtime stays put -- a
+  # main-file-only check would miss this and return the stale .so.
+  Sys.sleep(1.1)
+  writeLines("// v2", prior)
+  Sys.setFileTime(prior, Sys.time())
+  nutpie_compile_model(stan_file = main, verbose = 0L)
+  expect_equal(counter$n, 2L)
+})
+
+test_that("read-only stan_file directory + #include errors instead of falling back", {
+  # The inline-cache fallback flattens the .stan to a string and loses the
+  # source dirname, so #include can't resolve. Refuse rather than silently
+  # produce a broken compile.
+  testthat::local_mocked_bindings(
+    dir_writable = function(path) FALSE,
+    .package = "nutpieR"
+  )
+
+  d <- tempfile("nutpieR-readonly-include-")
+  dir.create(d, recursive = TRUE)
+  on.exit(unlink(d, recursive = TRUE), add = TRUE)
+  writeLines("// noop", file.path(d, "priors.stan"))
+  writeLines(c("functions {", "#include priors.stan", "}",
+               "parameters { real x; } model { x ~ normal(0, 1); }"),
+             file.path(d, "main.stan"))
+
+  expect_error(
+    nutpie_compile_model(stan_file = file.path(d, "main.stan"), verbose = 0L),
+    "uses `#include`"
+  )
+})

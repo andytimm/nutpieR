@@ -32,8 +32,8 @@ Note: full make/stanc output (verbose=2) is not yet supported because
 bridgestan captures subprocess output internally rather than streaming it.}
 
 \item{cache}{Logical, default \code{TRUE}. When \code{TRUE}, reuse a previously
-compiled artifact when the source is unchanged. When \code{FALSE}, force a
-fresh compile and place the artifact in a per-call tempdir.}
+compiled artifact when the source, BridgeStan version, and compile
+flags all match. When \code{FALSE}, force a fresh compile.}
 }
 \value{
 An object of class \code{"nutpie_model"} containing the path to the
@@ -49,20 +49,21 @@ Downloads BridgeStan sources on first use (this is slow).
 By default the compiled \code{.so} is cached so repeat calls are near-instant:
 \itemize{
 \item \code{stan_file = ...} --- the artifact lives next to the \code{.stan} as
-\verb{<basename>_model.so} (matching cmdstanr's convention). A subsequent
-call returns the cached artifact when its mtime is at least as new as
-the \code{.stan}. If the user's \code{.stan} directory is read-only, the call
-falls back transparently to the inline cache below with a warning.
+\verb{<basename>_model.so} (matching cmdstanr's convention), with a small
+\verb{<basename>_model.cache_meta} sidecar tracking BridgeStan version and
+compile flags. A subsequent call hits the cache when the artifact
+mtime is at least as new as the \code{.stan} \emph{and} the sidecar matches.
+If the user's \code{.stan} directory is read-only, the call falls back
+transparently to the inline cache below with a warning.
 \item \code{code = "..."} --- the artifact lives under
 \code{\link[=nutpie_cache_dir]{nutpie_cache_dir()}}, keyed by a hash of the source
-plus BridgeStan version and compile flags. Identical inputs hit the
-cache; different inputs get separate entries.
+plus BridgeStan version and compile flags (argument order preserved).
 }
 
 Cache controls:
 \itemize{
-\item \code{cache = FALSE} on a single call --- compile fresh, drop artifact in
-a per-call tempdir. Result is valid for the R session.
+\item \code{cache = FALSE} on a single call --- force a fresh compile that
+overwrites the cached artifact and updates the sidecar.
 \item \code{Sys.setenv(NUTPIER_DISABLE_COMPILE_CACHE = "1")} --- same effect
 process-wide, without changing call sites.
 \item \code{\link[=nutpie_clear_cache]{nutpie_clear_cache()}} wipes the inline cache.

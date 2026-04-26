@@ -82,6 +82,16 @@ nutpie_compile_model <- function(stan_file = NULL, code = NULL,
   stan_file <- normalizePath(stan_file, mustWork = TRUE)
 
   if (!dir_writable(dirname(stan_file))) {
+    # Inline-cache fallback reads the .stan as a string and discards the
+    # original directory context, so #include directives can no longer
+    # resolve. Refuse rather than produce a silently broken compile.
+    if (length(included_files(stan_file)) > 0) {
+      stop(
+        "Stan file directory ", dirname(stan_file), " is not writable and ",
+        "the model uses `#include`. Make the directory writable or ",
+        "pre-resolve the includes into a single file.", call. = FALSE
+      )
+    }
     if (use_cache) {
       warning(
         "Stan file directory ", dirname(stan_file), " is not writable; ",

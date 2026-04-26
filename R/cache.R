@@ -51,13 +51,29 @@ write_cache_meta <- function(stan_file, bs_version, stanc_args, compile_args) {
   )
 }
 
-# Returns TRUE iff (a) artifact exists, (b) artifact mtime >= stan mtime,
-# (c) sidecar exists and matches expected version + flags. Any miss returns
-# FALSE so the caller proceeds to compile.
+# Returns paths referenced by `#include` directives in stan_file (one level
+# deep, resolved relative to the source's dirname). Handles bare, quoted,
+# and angle-bracket forms: `#include foo.stan`, `#include "foo.stan"`,
+# `#include <foo.stan>`. Does not walk transitive includes -- for cache
+# staleness purposes the gain is marginal and the parsing cost adds up.
+included_files <- function(stan_file) {
+  lines <- readLines(stan_file, warn = FALSE)
+  raw <- regmatches(lines, regexpr("(?<=#include\\s)\\S+", lines, perl = TRUE))
+  if (!length(raw)) return(character())
+  file.path(dirname(stan_file), gsub('["<>]', "", raw))
+}
+
+# Returns TRUE iff (a) artifact exists, (b) artifact mtime >= every
+# dependency mtime (stan_file plus its #include'd files), (c) sidecar
+# exists and matches the expected version + flags. Any miss returns FALSE
+# so the caller proceeds to compile.
 in_place_hit <- function(stan_file, bs_version, stanc_args, compile_args) {
   artifact <- expected_artifact_path(stan_file)
-  info <- file.info(c(artifact, stan_file))
-  if (is.na(info$mtime[1L]) || info$mtime[1L] < info$mtime[2L]) return(FALSE)
+  deps <- c(stan_file, included_files(stan_file))
+  info <- file.info(c(artifact, deps))
+  if (is.na(info$mtime[1L])) return(FALSE)
+  newest_dep <- suppressWarnings(max(info$mtime[-1L], na.rm = TRUE))
+  if (!is.finite(newest_dep) || info$mtime[1L] < newest_dep) return(FALSE)
   meta <- read_cache_meta(stan_file)
   !is.null(meta) &&
     identical(meta$bs_version, bs_version) &&

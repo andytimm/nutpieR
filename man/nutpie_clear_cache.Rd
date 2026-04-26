@@ -14,5 +14,6 @@ Removes the entire \code{R_user_dir("nutpieR", "cache")} tree, where
 \code{nutpie_compile_model(code = ...)} stores its compiled artifacts. Inline
 models will be recompiled on next use. Models compiled from a \code{stan_file}
 are not affected -- those live next to the \code{.stan}; remove the
-corresponding \verb{<basename>_model.so} directly to invalidate.
+corresponding \verb{<basename>_model.so} (and \code{.cache_meta} sidecar) directly
+to invalidate.
 }
