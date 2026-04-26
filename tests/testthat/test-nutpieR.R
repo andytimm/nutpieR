@@ -362,6 +362,28 @@ test_that("store_divergences = FALSE drops all-null divergence list columns", {
   diag <- nutpie_diagnostics(draws)
   expect_false("divergence_start" %in% names(diag))
   expect_false("mass_matrix_inv" %in% names(diag))
+  expect_false("unconstrained_draw" %in% names(diag))
+  expect_false("gradient" %in% names(diag))
+})
+
+test_that("store_unconstrained / store_gradient surface their list columns", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+
+  draws <- nutpie_sample(test_models$bernoulli,
+    data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
+    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+    store_unconstrained = TRUE, store_gradient = TRUE
+  )
+
+  diag <- nutpie_diagnostics(draws)
+  expect_true("unconstrained_draw" %in% names(diag))
+  expect_true("gradient" %in% names(diag))
+  expect_type(diag$unconstrained_draw, "list")
+  expect_type(diag$gradient, "list")
+  expect_equal(length(diag$unconstrained_draw), 50)
+  # Bernoulli has 1 unconstrained parameter
+  expect_equal(length(diag$unconstrained_draw[[1]]), 1)
+  expect_equal(length(diag$gradient[[1]]), 1)
 })
 
 test_that("store_mass_matrix adds mass_matrix_inv field", {

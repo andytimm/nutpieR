@@ -331,6 +331,8 @@ fn run_sampler<S: Settings>(
 /// @param num_cores Number of CPU cores to use for parallel sampling.
 /// @param store_divergences Whether to store detailed divergence information.
 /// @param store_mass_matrix Whether to store the mass matrix at each draw.
+/// @param store_unconstrained Whether to store the unconstrained position at each draw.
+/// @param store_gradient Whether to store the gradient at each draw.
 /// @param low_rank Whether to use low-rank modified mass matrix adaptation.
 /// @param mass_matrix_gamma Regularisation parameter for low-rank mass matrix (default 1e-5).
 /// @param eigval_cutoff Eigenvalue cutoff for low-rank mass matrix (default 2.0).
@@ -353,6 +355,8 @@ fn sample_stan(
     num_cores: i32,
     store_divergences: bool,
     store_mass_matrix: bool,
+    store_unconstrained: bool,
+    store_gradient: bool,
     low_rank: bool,
     mass_matrix_gamma: f64,
     eigval_cutoff: f64,
@@ -396,6 +400,8 @@ fn sample_stan(
             $settings.maxdepth = max_treedepth as u64;
             $settings.adapt_options.step_size_settings.target_accept = target_accept;
             $settings.store_divergences = store_divergences;
+            $settings.store_unconstrained = store_unconstrained;
+            $settings.store_gradient = store_gradient;
             $settings.adapt_options.mass_matrix_options.store_mass_matrix = store_mass_matrix;
         }};
     }
@@ -414,8 +420,24 @@ fn sample_stan(
 
     let draws_robj = build_draws_matrix(&results, ndim, num_tune, n_draws_per_chain, &param_names)?;
 
-    // Extract post-warmup diagnostics (schema-driven)
-    let diagnostics = extract_diagnostics(&results, num_tune, n_draws_per_chain)?;
+    // Diagnostic columns to suppress at the R boundary. nuts-rs 0.17.4
+    // populates `unconstrained_draw` and `gradient` unconditionally
+    // regardless of `store_unconstrained` / `store_gradient` (the flags
+    // exist but are not read in `chain.rs::extract_stats`). To match the
+    // documented R-side semantics — and to avoid surfacing one
+    // `ndim_unc`-wide list-of-vectors per draw by default — drop those
+    // columns here unless the user opts in. When nuts-rs starts honouring
+    // the flags, the columns will already be all-null and our existing
+    // `any_non_null` filter will drop them.
+    let mut drop_cols: Vec<&str> = Vec::new();
+    if !store_unconstrained {
+        drop_cols.push("unconstrained_draw");
+    }
+    if !store_gradient {
+        drop_cols.push("gradient");
+    }
+
+    let diagnostics = extract_diagnostics(&results, num_tune, n_draws_per_chain, &drop_cols)?;
 
     let warmup_draws_robj: Robj = if save_warmup {
         build_draws_matrix(&results, ndim, 0, num_tune, &param_names)?
@@ -423,7 +445,7 @@ fn sample_stan(
         ().into_robj()
     };
     let warmup_diagnostics_robj: Robj = if save_warmup {
-        extract_diagnostics(&results, 0, num_tune)?.into_robj()
+        extract_diagnostics(&results, 0, num_tune, &drop_cols)?.into_robj()
     } else {
         ().into_robj()
     };
@@ -628,6 +650,7 @@ fn extract_diagnostics(
     results: &[ArrowTrace],
     skip: usize,
     n_draws: usize,
+    drop_cols: &[&str],
 ) -> Result<List> {
     if results.is_empty() {
         return Ok(List::from_values(Vec::<Robj>::new()));
@@ -639,6 +662,10 @@ fn extract_diagnostics(
 
     for (idx, field) in schema.fields().iter().enumerate() {
         let name = field.name();
+
+        if drop_cols.iter().any(|c| c == name) {
+            continue;
+        }
 
         let cols: Vec<&dyn Array> = results
             .iter()

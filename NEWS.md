@@ -2,11 +2,16 @@
 
 * Memory-efficiency pass on the R/Rust boundary. No API changes for typical
   users. Highlights:
-  - `unconstrained_draw` and `gradient` diagnostics columns are no longer
-    returned by default. They were nearly as large as the draws matrix on
-    wide models. Opt in via `store_unconstrained = TRUE` /
-    `store_gradient = TRUE` (mirrors the existing `store_divergences` /
-    `store_mass_matrix` flags).
+  - New `store_unconstrained` and `store_gradient` flags on `nutpie_sample()`
+    control whether the per-draw unconstrained position / gradient columns
+    are returned in diagnostics. Default is `FALSE`. Each is an
+    `ndim_unc`-wide list-of-vectors — one entry per draw — and on wide
+    models they each rival the draws matrix in size. Previously they were
+    always materialized into R; opt in only when you need them.
+    (Note: nuts-rs 0.17.4 itself ignores these flags and always allocates
+    the columns internally; we filter at the R boundary. When nuts-rs
+    starts honouring the flags upstream, the gating will move deeper for
+    free.)
   - Draws matrix is now written directly into R-allocated memory in Rust,
     eliminating a full intermediate copy during result conversion.
   - `pars` / `include` filtering now happens in Rust before the draws matrix

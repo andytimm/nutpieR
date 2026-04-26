@@ -65,6 +65,13 @@
 #'   list columns to diagnostics.
 #' @param store_mass_matrix If `TRUE`, store the inverse mass matrix diagonal
 #'   at each draw. Adds a list column to diagnostics.
+#' @param store_unconstrained If `TRUE`, store the unconstrained position at
+#'   each draw as a list column on diagnostics (`unconstrained_draw`). Adds
+#'   one `ndim_unc`-length numeric vector per draw — for high-dimensional
+#'   models this can rival the draws matrix in size. Default `FALSE`.
+#' @param store_gradient If `TRUE`, store the log-density gradient at each
+#'   draw as a list column on diagnostics (`gradient`). Same size profile as
+#'   `store_unconstrained`. Default `FALSE`.
 #' @param pars An optional character vector of block-level parameter names
 #'   (e.g. `"beta"`, `"sigma"`). When supplied, only these parameters (or
 #'   all parameters *except* these, depending on `include`) are returned in the
@@ -100,6 +107,8 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           pars = NULL, include = TRUE,
                           store_divergences = FALSE,
                           store_mass_matrix = FALSE,
+                          store_unconstrained = FALSE,
+                          store_gradient = FALSE,
                           low_rank_modified_mass_matrix = FALSE,
                           mass_matrix_gamma = 1e-5,
                           mass_matrix_eigval_cutoff = 2.0) {
@@ -136,6 +145,8 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     cores,
     isTRUE(store_divergences),
     isTRUE(store_mass_matrix),
+    isTRUE(store_unconstrained),
+    isTRUE(store_gradient),
     isTRUE(low_rank_modified_mass_matrix),
     as.double(mass_matrix_gamma),
     as.double(mass_matrix_eigval_cutoff)
