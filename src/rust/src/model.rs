@@ -52,14 +52,10 @@ fn add_tbb_to_path() {
             .join("lib")
             .join("tbb");
         if tbb_dir.exists() {
-            if let Ok(current_path) = std::env::var("PATH") {
-                let tbb_str = tbb_dir.to_string_lossy();
-                if !current_path.contains(&*tbb_str) {
-                    std::env::set_var(
-                        "PATH",
-                        format!("{};{}", tbb_str, current_path),
-                    );
-                }
+            let Ok(current_path) = std::env::var("PATH") else { return };
+            let tbb_str = tbb_dir.to_string_lossy();
+            if !current_path.contains(&*tbb_str) {
+                std::env::set_var("PATH", format!("{};{}", tbb_str, current_path));
             }
             TBB_FOUND.store(true, Ordering::Release);
             return;
