@@ -364,6 +364,36 @@ fn sample_stan(
     eigval_cutoff: f64,
     keep_indices: Robj,
 ) -> Result<List> {
+    // Defensive guards before unsigned casts. The R wrapper validates these
+    // already; we re-check here so direct callers (or malformed inputs that
+    // somehow slip past the R layer) can't turn negative ints into huge
+    // u64/usize allocations.
+    for (val, name) in [
+        (num_draws, "num_draws"),
+        (num_chains, "num_chains"),
+        (max_treedepth, "max_treedepth"),
+        (num_cores, "num_cores"),
+    ] {
+        if val <= 0 {
+            return Err(Error::Other(format!(
+                "{} must be >= 1, got {}",
+                name, val
+            )));
+        }
+    }
+    if num_warmup < 0 {
+        return Err(Error::Other(format!(
+            "num_warmup must be >= 0, got {}",
+            num_warmup
+        )));
+    }
+    if !(target_accept > 0.0 && target_accept < 1.0) {
+        return Err(Error::Other(format!(
+            "target_accept must be in (0, 1), got {}",
+            target_accept
+        )));
+    }
+
     let init_positions_raw: Option<Vec<Vec<f64>>> = if init_positions.is_null() {
         None
     } else {

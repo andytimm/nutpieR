@@ -41,6 +41,32 @@ test_that("resolve_data rejects invalid input", {
   expect_error(nutpieR:::resolve_data(123))
 })
 
+test_that("nutpie_sample rejects malformed sampler counts before unsigned cast", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  data <- list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1))
+
+  expect_error(
+    nutpie_sample(test_models$bernoulli, data = data, num_draws = -1),
+    "num_draws"
+  )
+  expect_error(
+    nutpie_sample(test_models$bernoulli, data = data, num_chains = NA_integer_),
+    "num_chains"
+  )
+  expect_error(
+    nutpie_sample(test_models$bernoulli, data = data, num_warmup = 1.5),
+    "num_warmup"
+  )
+  expect_error(
+    nutpie_sample(test_models$bernoulli, data = data, num_chains = c(1L, 2L)),
+    "num_chains"
+  )
+  expect_error(
+    nutpie_sample(test_models$bernoulli, data = data, target_accept = 1.5),
+    "target_accept"
+  )
+})
+
 test_that("nutpie_compile_model returns nutpie_model", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
   expect_s3_class(test_models$bernoulli, "nutpie_model")

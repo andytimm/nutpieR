@@ -117,14 +117,20 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   if (is.null(seed)) {
     seed <- sample.int(.Machine$integer.max, 1L)
   }
-  num_draws <- as.integer(num_draws)
-  num_warmup <- as.integer(num_warmup)
-  num_chains <- as.integer(num_chains)
+  num_draws <- check_count(num_draws, "num_draws", min = 1L)
+  num_warmup <- check_count(num_warmup, "num_warmup", min = 0L)
+  num_chains <- check_count(num_chains, "num_chains", min = 1L)
+  max_treedepth <- check_count(max_treedepth, "max_treedepth", min = 1L)
+  if (!is.numeric(target_accept) || length(target_accept) != 1L ||
+      !is.finite(target_accept) || target_accept <= 0 || target_accept >= 1) {
+    stop("`target_accept` must be a single finite value in (0, 1).",
+         call. = FALSE)
+  }
 
   if (is.null(cores)) {
     cores <- min(num_chains, parallel::detectCores())
   }
-  cores <- as.integer(cores)
+  cores <- check_count(cores, "cores", min = 1L)
 
   handle <- bs_open(lib_path, data_json, as.integer(seed))
   init_resolved <- resolve_init(init, init_mean, handle, num_chains,
@@ -178,6 +184,26 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   }
 
   draws
+}
+
+check_count <- function(x, name, min = 0L) {
+  if (length(x) != 1L) {
+    stop(sprintf("`%s` must be a single integer; got length %d.",
+                 name, length(x)), call. = FALSE)
+  }
+  if (!is.numeric(x) || !is.finite(x)) {
+    stop(sprintf("`%s` must be a finite integer.", name), call. = FALSE)
+  }
+  if (x != as.integer(x)) {
+    stop(sprintf("`%s` must be a whole number; got %s.", name, format(x)),
+         call. = FALSE)
+  }
+  x <- as.integer(x)
+  if (x < min) {
+    stop(sprintf("`%s` must be >= %d; got %d.", name, min, x),
+         call. = FALSE)
+  }
+  x
 }
 
 resolve_model <- function(model) {
