@@ -465,6 +465,11 @@ fn sample_stan(
 
 /// Build a draws matrix from Arrow traces.
 /// `skip` is the number of initial rows to skip, `n_draws` is how many to extract.
+///
+/// Writes directly into an R-allocated `Doubles` (column-major) and stamps
+/// the `dim` / `dimnames` attributes — no intermediate Rust `Vec`. On a
+/// 1040-param × 4-chain × 1000-draw model that's ~33MB of transient
+/// duplication eliminated.
 fn build_draws_matrix(
     results: &[ArrowTrace],
     ndim: usize,
@@ -474,7 +479,9 @@ fn build_draws_matrix(
 ) -> Result<Robj> {
     let n_chains = results.len();
     let total_rows = n_draws * n_chains;
-    let mut data = vec![0.0f64; total_rows * ndim];
+
+    let mut out = Doubles::new(total_rows * ndim);
+    let dest: &mut [Rfloat] = &mut out;
 
     for (chain_idx, trace) in results.iter().enumerate() {
         let batch = &trace.posterior;
@@ -494,16 +501,18 @@ fn build_draws_matrix(
                 .as_any()
                 .downcast_ref::<arrow::array::Float64Array>()
                 .ok_or_else(|| Error::Other("inner array is not Float64".into()))?;
+            let row_data = values.values();
 
+            let dest_row = chain_idx * n_draws + draw;
             for param in 0..ndim {
-                let row_idx = chain_idx * n_draws + draw;
-                data[row_idx + param * total_rows] = values.value(param);
+                dest[dest_row + param * total_rows] = Rfloat::from(row_data[param]);
             }
         }
     }
 
-    let matrix = RMatrix::new_matrix(total_rows, ndim, |r, c| data[r + c * total_rows]);
-    let mut robj = matrix.into_robj();
+    let mut robj: Robj = out.into();
+    robj.set_attrib("dim", [total_rows as i32, ndim as i32].into_robj())
+        .map_err(r_err)?;
     if !param_names.is_empty() {
         let colnames: Vec<&str> = param_names.iter().map(|s| s.as_str()).collect();
         let dimnames = List::from_values(&[
