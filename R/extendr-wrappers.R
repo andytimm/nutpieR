@@ -37,10 +37,12 @@ compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__
 #' @param low_rank Whether to use low-rank modified mass matrix adaptation.
 #' @param mass_matrix_gamma Regularisation parameter for low-rank mass matrix (default 1e-5).
 #' @param eigval_cutoff Eigenvalue cutoff for low-rank mass matrix (default 2.0).
+#' @param keep_indices Optional 0-indexed integer vector of constrained
+#'   parameter columns to materialize. NULL means keep all.
 #' @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 #'   and optionally warmup_draws and warmup_diagnostics.
 #' @keywords internal
-sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, low_rank, mass_matrix_gamma, eigval_cutoff) .Call(wrap__sample_stan, handle, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, low_rank, mass_matrix_gamma, eigval_cutoff)
+sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, low_rank, mass_matrix_gamma, eigval_cutoff, keep_indices) .Call(wrap__sample_stan, handle, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, low_rank, mass_matrix_gamma, eigval_cutoff, keep_indices)
 
 #' Open a BridgeStan model and return an `ExternalPtr<BSHandle>` that caches
 #' parameter-name metadata. The handle may be used by any of the `bs_*`

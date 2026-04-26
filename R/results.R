@@ -19,24 +19,23 @@ matrix_to_draws_array <- function(flat_matrix, n_draws, n_chains) {
   posterior::as_draws_array(arr)
 }
 
-#' Filter draws to selected parameters
+#' Resolve `pars` / `include` to 0-indexed column indices
 #'
-#' Subsets a draws object to include or exclude block-level parameters.
-#' Block names like `"beta"` match both scalar `beta` and indexed
-#' `beta[1]`, `beta[2]`, etc.
+#' Operates on bridgestan dot-indexed full names ("beta.1.2"), so the
+#' returned indices line up with the Arrow `value` column ordering — no
+#' R-side reshuffling needed. Returns `NULL` when no filtering is
+#' requested, signalling "keep everything" to the Rust side.
 #'
-#' @param draws A `posterior::draws_array`.
+#' @param full_names Character vector of bridgestan dot-indexed names.
 #' @param pars Character vector of block-level parameter names, or `NULL`.
 #' @param include Logical; if `TRUE`, `pars` is a whitelist; if `FALSE`,
 #'   a blacklist.
-#' @return Filtered `posterior::draws_array`.
+#' @return 0-indexed integer vector of columns to keep, or `NULL`.
 #' @noRd
-filter_pars <- function(draws, pars, include) {
-  if (is.null(pars)) return(draws)
+resolve_keep_indices <- function(full_names, pars, include) {
+  if (is.null(pars)) return(NULL)
 
-  all_vars <- posterior::variables(draws)
-  block_names <- unique(sub("\\[.*", "", all_vars))
-
+  block_names <- unique(sub("\\..*", "", full_names))
   bad <- setdiff(pars, block_names)
   if (length(bad) > 0) {
     stop("Unknown parameter(s): ", paste(bad, collapse = ", "),
@@ -44,16 +43,16 @@ filter_pars <- function(draws, pars, include) {
          call. = FALSE)
   }
 
-  # Match "par" exactly (scalar) or "par[..." (indexed)
-  pat <- paste0("^(", paste(escape_regex(pars), collapse = "|"), ")(\\[|$)")
-  matched <- grepl(pat, all_vars)
+  # Match "par" exactly (scalar) or "par.<digits>..." (indexed).
+  pat <- paste0("^(", paste(escape_regex(pars), collapse = "|"), ")(\\.|$)")
+  matched <- grepl(pat, full_names)
 
   keep <- if (include) matched else !matched
   if (!any(keep)) {
     stop("Parameter selection would remove all variables.", call. = FALSE)
   }
 
-  posterior::subset_draws(draws, variable = all_vars[keep])
+  as.integer(which(keep) - 1L)
 }
 
 #' Escape special regex characters in a string

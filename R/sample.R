@@ -130,6 +130,8 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   init_resolved <- resolve_init(init, init_mean, handle, num_chains,
                                 seed = seed)
 
+  keep_indices <- resolve_keep_indices(bs_full_names(handle), pars, include)
+
   raw <- sample_stan(
     handle,
     num_draws,
@@ -149,10 +151,10 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     isTRUE(store_gradient),
     isTRUE(low_rank_modified_mass_matrix),
     as.double(mass_matrix_gamma),
-    as.double(mass_matrix_eigval_cutoff)
+    as.double(mass_matrix_eigval_cutoff),
+    keep_indices
   )
   draws <- matrix_to_draws_array(raw$draws, num_draws, num_chains)
-  draws <- filter_pars(draws, pars, include)
   attr(draws, "diagnostics") <- raw$diagnostics
   attr(draws, "num_chains") <- num_chains
   attr(draws, "num_warmup") <- num_warmup
@@ -160,7 +162,6 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
 
   if (isTRUE(save_warmup) && !is.null(raw$warmup_draws)) {
     warmup <- matrix_to_draws_array(raw$warmup_draws, num_warmup, num_chains)
-    warmup <- filter_pars(warmup, pars, include)
     attr(draws, "warmup_draws") <- warmup
     attr(draws, "warmup_diagnostics") <- raw$warmup_diagnostics
   }

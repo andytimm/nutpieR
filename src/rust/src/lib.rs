@@ -336,6 +336,8 @@ fn run_sampler<S: Settings>(
 /// @param low_rank Whether to use low-rank modified mass matrix adaptation.
 /// @param mass_matrix_gamma Regularisation parameter for low-rank mass matrix (default 1e-5).
 /// @param eigval_cutoff Eigenvalue cutoff for low-rank mass matrix (default 2.0).
+/// @param keep_indices Optional 0-indexed integer vector of constrained
+///   parameter columns to materialize. NULL means keep all.
 /// @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 ///   and optionally warmup_draws and warmup_diagnostics.
 /// @keywords internal
@@ -360,6 +362,7 @@ fn sample_stan(
     low_rank: bool,
     mass_matrix_gamma: f64,
     eigval_cutoff: f64,
+    keep_indices: Robj,
 ) -> Result<List> {
     let init_positions_raw: Option<Vec<Vec<f64>>> = if init_positions.is_null() {
         None
@@ -385,7 +388,30 @@ fn sample_stan(
         .map_err(r_err)?;
 
     let ndim = stan_model.num_constrained();
-    let param_names: Vec<String> = stan_model.constrained_param_names().to_vec();
+    let all_param_names: &[String] = stan_model.constrained_param_names();
+
+    // Resolve keep_indices: NULL → keep all, else use as-supplied. Indices
+    // are 0-based and must be within [0, ndim).
+    let keep_cols: Vec<usize> = if keep_indices.is_null() {
+        (0..ndim).collect()
+    } else {
+        let v = keep_indices
+            .as_integer_vector()
+            .ok_or_else(|| Error::Other("keep_indices must be NULL or an integer vector".into()))?;
+        let mut out = Vec::with_capacity(v.len());
+        for &idx in v.iter() {
+            if idx < 0 || (idx as usize) >= ndim {
+                return Err(Error::Other(format!(
+                    "keep_indices contains out-of-range value {} (ndim={})",
+                    idx, ndim
+                )));
+            }
+            out.push(idx as usize);
+        }
+        out
+    };
+    let kept_param_names: Vec<String> =
+        keep_cols.iter().map(|&i| all_param_names[i].clone()).collect();
     let expand_error_count = stan_model.expand_error_count_handle();
 
     let num_tune = num_warmup as usize;
@@ -418,7 +444,13 @@ fn sample_stan(
         run_sampler(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
     };
 
-    let draws_robj = build_draws_matrix(&results, ndim, num_tune, n_draws_per_chain, &param_names)?;
+    let draws_robj = build_draws_matrix(
+        &results,
+        &keep_cols,
+        num_tune,
+        n_draws_per_chain,
+        &kept_param_names,
+    )?;
 
     // Diagnostic columns to suppress at the R boundary. nuts-rs 0.17.4
     // populates `unconstrained_draw` and `gradient` unconditionally
@@ -440,7 +472,7 @@ fn sample_stan(
     let diagnostics = extract_diagnostics(&results, num_tune, n_draws_per_chain, &drop_cols)?;
 
     let warmup_draws_robj: Robj = if save_warmup {
-        build_draws_matrix(&results, ndim, 0, num_tune, &param_names)?
+        build_draws_matrix(&results, &keep_cols, 0, num_tune, &kept_param_names)?
     } else {
         ().into_robj()
     };
@@ -464,23 +496,28 @@ fn sample_stan(
 }
 
 /// Build a draws matrix from Arrow traces.
-/// `skip` is the number of initial rows to skip, `n_draws` is how many to extract.
 ///
-/// Writes directly into an R-allocated `Doubles` (column-major) and stamps
-/// the `dim` / `dimnames` attributes — no intermediate Rust `Vec`. On a
-/// 1040-param × 4-chain × 1000-draw model that's ~33MB of transient
-/// duplication eliminated.
+/// Materializes only the columns listed in `keep_cols` (0-indexed, against
+/// the full constrained parameter dimension), writing directly into an
+/// R-allocated `Doubles` in column-major order. On wide models with
+/// large transformed-parameter / generated-quantities blocks this avoids
+/// allocating columns the user is going to drop anyway.
+///
+/// `skip` is the number of initial Arrow rows to skip, `n_draws` is how
+/// many to extract. `param_names` must already be filtered to match
+/// `keep_cols`.
 fn build_draws_matrix(
     results: &[ArrowTrace],
-    ndim: usize,
+    keep_cols: &[usize],
     skip: usize,
     n_draws: usize,
     param_names: &[String],
 ) -> Result<Robj> {
     let n_chains = results.len();
     let total_rows = n_draws * n_chains;
+    let n_kept = keep_cols.len();
 
-    let mut out = Doubles::new(total_rows * ndim);
+    let mut out = Doubles::new(total_rows * n_kept);
     let dest: &mut [Rfloat] = &mut out;
 
     for (chain_idx, trace) in results.iter().enumerate() {
@@ -504,14 +541,14 @@ fn build_draws_matrix(
             let row_data = values.values();
 
             let dest_row = chain_idx * n_draws + draw;
-            for param in 0..ndim {
-                dest[dest_row + param * total_rows] = Rfloat::from(row_data[param]);
+            for (out_col, &src_col) in keep_cols.iter().enumerate() {
+                dest[dest_row + out_col * total_rows] = Rfloat::from(row_data[src_col]);
             }
         }
     }
 
     let mut robj: Robj = out.into();
-    robj.set_attrib("dim", [total_rows as i32, ndim as i32].into_robj())
+    robj.set_attrib("dim", [total_rows as i32, n_kept as i32].into_robj())
         .map_err(r_err)?;
     if !param_names.is_empty() {
         let colnames: Vec<&str> = param_names.iter().map(|s| s.as_str()).collect();
