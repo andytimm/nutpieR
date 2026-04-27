@@ -18,15 +18,21 @@ use std::time::{Duration, Instant};
 
 mod model;
 
-/// Convert any Display error to an extendr Error.
+/// Convert any Display error to an extendr Error. Uses anyhow's alternate
+/// Display format (`{:#}`) to preserve cause chains; a no-op for plain
+/// `Display` impls that don't override the alternate flag.
 fn r_err(e: impl std::fmt::Display) -> Error {
-    Error::Other(e.to_string())
+    Error::Other(format!("{e:#}"))
 }
 
-/// Convert an anyhow error to an extendr Error, preserving the full cause
-/// chain via anyhow's alternate Display format (`{:#}`).
-fn r_err_anyhow(e: anyhow::Error) -> Error {
-    Error::Other(format!("{e:#}"))
+/// Validate a seed argument and convert to `u32`. Mirrors the R-side
+/// `check_count(seed, max = .Machine$integer.max)` so direct callers
+/// can't bypass it.
+fn check_seed(seed: i32) -> Result<u32> {
+    if seed < 0 {
+        return Err(Error::Other(format!("seed must be >= 0, got {}", seed)));
+    }
+    Ok(seed as u32)
 }
 
 /// Unwrap an extendr `Result` at the FFI boundary, throwing a clean R error
@@ -36,8 +42,8 @@ fn r_err_anyhow(e: anyhow::Error) -> Error {
 /// SAFETY note: `throw_r_error` longjmps and skips Rust destructors. Callers
 /// must only invoke this from the outer `#[extendr]` boundary, after any
 /// owned Rust state in the caller has been dropped — i.e. by delegating to
-/// an `_impl` helper that returns `Result<T>` and calling `or_throw` on the
-/// returned `Result`.
+/// an `_impl` helper (or an immediately-invoked closure) that returns
+/// `Result<T>` and calling `or_throw` on the returned `Result`.
 fn or_throw<T>(r: Result<T>) -> T {
     match r {
         Ok(v) => v,
@@ -136,7 +142,7 @@ fn run_sampler<S: Settings>(
 
     let mut sampler_opt = Some(
         Sampler::new(stan_model, settings, ArrowConfig::new(), num_cores as usize, callback)
-            .map_err(r_err_anyhow)?,
+            .map_err(r_err)?,
     );
 
     let start = Instant::now();
@@ -196,7 +202,7 @@ fn run_sampler<S: Settings>(
                     }
                 }
             }
-            SamplerWaitResult::Err(e, _) => return Err(r_err_anyhow(e)),
+            SamplerWaitResult::Err(e, _) => return Err(r_err(e)),
         }
     };
 
@@ -267,57 +273,7 @@ fn sample_stan(
     include_tp: bool,
     include_gq: bool,
 ) -> List {
-    or_throw(sample_stan_impl(
-        handle,
-        num_draws,
-        num_warmup,
-        num_chains,
-        seed,
-        max_treedepth,
-        target_accept,
-        refresh,
-        init_positions,
-        jitter,
-        save_warmup,
-        num_cores,
-        store_divergences,
-        store_mass_matrix,
-        store_unconstrained,
-        store_gradient,
-        low_rank,
-        mass_matrix_gamma,
-        eigval_cutoff,
-        keep_indices,
-        include_tp,
-        include_gq,
-    ))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn sample_stan_impl(
-    handle: ExternalPtr<model::BSHandle>,
-    num_draws: i32,
-    num_warmup: i32,
-    num_chains: i32,
-    seed: i32,
-    max_treedepth: i32,
-    target_accept: f64,
-    refresh: i32,
-    init_positions: Robj,
-    jitter: bool,
-    save_warmup: bool,
-    num_cores: i32,
-    store_divergences: bool,
-    store_mass_matrix: bool,
-    store_unconstrained: bool,
-    store_gradient: bool,
-    low_rank: bool,
-    mass_matrix_gamma: f64,
-    eigval_cutoff: f64,
-    keep_indices: Robj,
-    include_tp: bool,
-    include_gq: bool,
-) -> Result<List> {
+    or_throw((|| -> Result<List> {
     // Defensive guards before unsigned casts. The R wrapper validates these
     // already; we re-check here so direct callers (or malformed inputs that
     // somehow slip past the R layer) can't turn negative ints into huge
@@ -341,12 +297,7 @@ fn sample_stan_impl(
             num_warmup
         )));
     }
-    if seed < 0 {
-        return Err(Error::Other(format!(
-            "seed must be >= 0, got {}",
-            seed
-        )));
-    }
+    check_seed(seed)?;
     if !(target_accept > 0.0 && target_accept < 1.0) {
         return Err(Error::Other(format!(
             "target_accept must be in (0, 1), got {}",
@@ -376,7 +327,7 @@ fn sample_stan_impl(
     let stan_model = model::StanModel::new(&handle)
         .with_init_positions(init_positions_raw, jitter)
         .and_then(|m| m.with_constrain_flags(&handle, include_tp, include_gq))
-        .map_err(r_err_anyhow)?;
+        .map_err(r_err)?;
 
     let ndim = stan_model.num_constrained();
     let all_param_names: &[String] = stan_model.constrained_param_names();
@@ -484,6 +435,7 @@ fn sample_stan_impl(
         warmup_diagnostics = warmup_diagnostics_robj,
         expand_errors = n_expand_errors
     ))
+    })())
 }
 
 /// Build a draws matrix from Arrow traces.
@@ -743,13 +695,12 @@ fn extract_diagnostics(
 /// @noRd
 #[extendr]
 fn bs_open(lib_path: &str, data_json: &str, seed: i32) -> Robj {
-    if seed < 0 {
-        throw_r_error(format!("seed must be >= 0, got {}", seed));
-    }
-    match model::BSHandle::open(std::path::Path::new(lib_path), data_json, seed as u32) {
-        Ok(handle) => ExternalPtr::new(handle).into_robj(),
-        Err(e) => throw_r_error(format!("{e:#}")),
-    }
+    or_throw((|| -> Result<Robj> {
+        let seed_u32 = check_seed(seed)?;
+        let handle = model::BSHandle::open(std::path::Path::new(lib_path), data_json, seed_u32)
+            .map_err(r_err)?;
+        Ok(ExternalPtr::new(handle).into_robj())
+    })())
 }
 
 /// Block-level parameter names (no transformed parameters / generated
@@ -848,9 +799,7 @@ fn bs_param_constrain_impl(
     theta_unc: Vec<f64>,
     seed: i32,
 ) -> Result<Vec<f64>> {
-    if seed < 0 {
-        return Err(Error::Other(format!("seed must be >= 0, got {}", seed)));
-    }
+    let seed_u32 = check_seed(seed)?;
     if theta_unc.len() != handle.ndim_unc {
         return Err(Error::Other(format!(
             "theta_unc length {} does not match unconstrained parameter count {}",
@@ -859,7 +808,7 @@ fn bs_param_constrain_impl(
         )));
     }
     let mut out = vec![0.0f64; handle.ndim_full];
-    let mut rng = handle.model.new_rng(seed as u32).map_err(r_err)?;
+    let mut rng = handle.model.new_rng(seed_u32).map_err(r_err)?;
     handle
         .model
         .param_constrain(&theta_unc, true, true, &mut out, Some(&mut rng))

@@ -210,8 +210,10 @@ check_count <- function(x, name, min = 0L, max = NULL) {
   if (!is.numeric(x) || !is.finite(x)) {
     stop(sprintf("`%s` must be a finite integer.", name), call. = FALSE)
   }
-  # Bounds-check on the numeric value before integer cast — values outside
-  # `c(min, max)` would warn-and-NA in `as.integer()` if max > .Machine$integer.max.
+  # Bounds-check before the integer cast: values outside the i32 range
+  # coerce to `NA` via `as.integer()`, which would otherwise produce a
+  # confusing "missing value where TRUE/FALSE needed" error from the
+  # whole-number check below.
   if (x < min) {
     stop(sprintf("`%s` must be >= %d; got %s.", name, min, format(x)),
          call. = FALSE)

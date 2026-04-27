@@ -57,27 +57,14 @@ test_that("check_count enforces optional max", {
 
 test_that("nutpie_sample rejects malformed seed", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-  expect_error(
-    nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
-                  seed = NA_integer_, num_draws = 10, num_chains = 1,
-                  refresh = 0),
-    "seed"
-  )
-  expect_error(
-    nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
-                  seed = -1L, num_draws = 10, num_chains = 1, refresh = 0),
-    "seed"
-  )
-  expect_error(
-    nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
-                  seed = 1.5, num_draws = 10, num_chains = 1, refresh = 0),
-    "seed"
-  )
-  expect_error(
-    nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
-                  seed = 2^32, num_draws = 10, num_chains = 1, refresh = 0),
-    "seed"
-  )
+  for (bad in list(NA_integer_, -1L, 1.5, 2^32)) {
+    expect_error(
+      nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                    seed = bad, num_draws = 10, num_chains = 1,
+                    refresh = 0),
+      "seed"
+    )
+  }
 })
 
 test_that("nutpie_sample rejects malformed target_accept", {
