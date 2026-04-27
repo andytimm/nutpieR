@@ -47,6 +47,26 @@ test_that("check_count rejects malformed counts", {
   expect_error(nutpieR:::check_count(c(1L, 2L), "num_chains"), "num_chains")
 })
 
+test_that("check_count enforces optional max", {
+  expect_error(
+    nutpieR:::check_count(10L, "seed", min = 0L, max = 5L),
+    "must be <= 5"
+  )
+  expect_equal(nutpieR:::check_count(5L, "seed", min = 0L, max = 5L), 5L)
+})
+
+test_that("nutpie_sample rejects malformed seed", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  for (bad in list(NA_integer_, -1L, 1.5, 2^32)) {
+    expect_error(
+      nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                    seed = bad, num_draws = 10, num_chains = 1,
+                    refresh = 0),
+      "seed"
+    )
+  }
+})
+
 test_that("nutpie_sample rejects malformed target_accept", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
   expect_error(
@@ -54,6 +74,34 @@ test_that("nutpie_sample rejects malformed target_accept", {
                   target_accept = 1.5),
     "target_accept"
   )
+})
+
+test_that("cores defaults to 1 when detectCores returns NA", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  testthat::local_mocked_bindings(
+    detectCores = function(...) NA_integer_,
+    .package = "parallel"
+  )
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                         num_draws = 50, num_warmup = 50, num_chains = 1,
+                         seed = 1L, refresh = 0)
+  expect_s3_class(draws, "draws_array")
+})
+
+test_that("low_rank bumps default num_warmup to 800", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                         num_draws = 50, num_chains = 1, seed = 1L,
+                         refresh = 0,
+                         low_rank_modified_mass_matrix = TRUE)
+  expect_equal(attr(draws, "num_warmup"), 800L)
+
+  # explicit value still wins
+  draws2 <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                          num_draws = 50, num_warmup = 200L, num_chains = 1,
+                          seed = 1L, refresh = 0,
+                          low_rank_modified_mass_matrix = TRUE)
+  expect_equal(attr(draws2, "num_warmup"), 200L)
 })
 
 # --- resolve_constrain_flags_impl unit tests (no handle) ---------------------

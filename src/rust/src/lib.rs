@@ -18,15 +18,43 @@ use std::time::{Duration, Instant};
 
 mod model;
 
-/// Convert any Display error to an extendr Error.
+/// Convert any Display error to an extendr Error. Uses anyhow's alternate
+/// Display format (`{:#}`) to preserve cause chains; a no-op for plain
+/// `Display` impls that don't override the alternate flag.
 fn r_err(e: impl std::fmt::Display) -> Error {
-    Error::Other(e.to_string())
+    Error::Other(format!("{e:#}"))
+}
+
+/// Validate a seed argument and convert to `u32`. Mirrors the R-side
+/// `check_count(seed, max = .Machine$integer.max)` so direct callers
+/// can't bypass it.
+fn check_seed(seed: i32) -> Result<u32> {
+    if seed < 0 {
+        return Err(Error::Other(format!("seed must be >= 0, got {}", seed)));
+    }
+    Ok(seed as u32)
+}
+
+/// Unwrap an extendr `Result` at the FFI boundary, throwing a clean R error
+/// on `Err` instead of going through extendr's panic-based conversion (which
+/// prints `thread '<unnamed>' panicked...` to stderr before R catches it).
+///
+/// SAFETY note: `throw_r_error` longjmps and skips Rust destructors. Callers
+/// must only invoke this from the outer `#[extendr]` boundary, after any
+/// owned Rust state in the caller has been dropped — i.e. by delegating to
+/// an `_impl` helper (or an immediately-invoked closure) that returns
+/// `Result<T>` and calling `or_throw` on the returned `Result`.
+fn or_throw<T>(r: Result<T>) -> T {
+    match r {
+        Ok(v) => v,
+        Err(e) => throw_r_error(e.to_string()),
+    }
 }
 
 /// Return the linked BridgeStan crate version, e.g. "2.7.0". Used by the
 /// inline-code compile cache key so a BridgeStan version bump invalidates
 /// cached entries automatically.
-/// @keywords internal
+/// @noRd
 #[extendr]
 fn bridgestan_version() -> String {
     bridgestan::VERSION.to_string()
@@ -38,9 +66,17 @@ fn bridgestan_version() -> String {
 /// @param stanc_args Character vector of extra arguments for stanc compiler.
 /// @param compile_args Character vector of extra arguments for make.
 /// @return Path to the compiled shared library.
-/// @keywords internal
+/// @noRd
 #[extendr]
-fn compile_stan_model(stan_file: &str, stanc_args: Strings, compile_args: Strings) -> Result<String> {
+fn compile_stan_model(stan_file: &str, stanc_args: Strings, compile_args: Strings) -> String {
+    or_throw(compile_stan_model_impl(stan_file, stanc_args, compile_args))
+}
+
+fn compile_stan_model_impl(
+    stan_file: &str,
+    stanc_args: Strings,
+    compile_args: Strings,
+) -> Result<String> {
     let bs_path = bridgestan::download_bridgestan_src().map_err(r_err)?;
     let stan_path = PathBuf::from(stan_file);
 
@@ -49,8 +85,8 @@ fn compile_stan_model(stan_file: &str, stanc_args: Strings, compile_args: String
     let compile_vec: Vec<String> = compile_args.iter().map(|s| s.to_string()).collect();
     let compile_refs: Vec<&str> = compile_vec.iter().map(String::as_str).collect();
 
-    let lib_path =
-        bridgestan::compile_model(&bs_path, &stan_path, &stanc_refs, &compile_refs).map_err(r_err)?;
+    let lib_path = bridgestan::compile_model(&bs_path, &stan_path, &stanc_refs, &compile_refs)
+        .map_err(r_err)?;
     Ok(lib_path.to_string_lossy().into_owned())
 }
 
@@ -211,7 +247,7 @@ fn run_sampler<S: Settings>(
 ///   when `TRUE`, since GQ may reference TP.
 /// @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 ///   and optionally warmup_draws and warmup_diagnostics.
-/// @keywords internal
+/// @noRd
 #[extendr]
 fn sample_stan(
     handle: ExternalPtr<model::BSHandle>,
@@ -236,7 +272,8 @@ fn sample_stan(
     keep_indices: Robj,
     include_tp: bool,
     include_gq: bool,
-) -> Result<List> {
+) -> List {
+    or_throw((|| -> Result<List> {
     // Defensive guards before unsigned casts. The R wrapper validates these
     // already; we re-check here so direct callers (or malformed inputs that
     // somehow slip past the R layer) can't turn negative ints into huge
@@ -260,6 +297,7 @@ fn sample_stan(
             num_warmup
         )));
     }
+    check_seed(seed)?;
     if !(target_accept > 0.0 && target_accept < 1.0) {
         return Err(Error::Other(format!(
             "target_accept must be in (0, 1), got {}",
@@ -397,6 +435,7 @@ fn sample_stan(
         warmup_diagnostics = warmup_diagnostics_robj,
         expand_errors = n_expand_errors
     ))
+    })())
 }
 
 /// Build a draws matrix from Arrow traces.
@@ -653,18 +692,20 @@ fn extract_diagnostics(
 /// Open a BridgeStan model and return an `ExternalPtr<BSHandle>` that caches
 /// parameter-name metadata. The handle may be used by any of the `bs_*`
 /// accessor functions without re-opening the shared library.
-/// @keywords internal
+/// @noRd
 #[extendr]
 fn bs_open(lib_path: &str, data_json: &str, seed: i32) -> Robj {
-    match model::BSHandle::open(std::path::Path::new(lib_path), data_json, seed as u32) {
-        Ok(handle) => ExternalPtr::new(handle).into_robj(),
-        Err(e) => throw_r_error(e.to_string()),
-    }
+    or_throw((|| -> Result<Robj> {
+        let seed_u32 = check_seed(seed)?;
+        let handle = model::BSHandle::open(std::path::Path::new(lib_path), data_json, seed_u32)
+            .map_err(r_err)?;
+        Ok(ExternalPtr::new(handle).into_robj())
+    })())
 }
 
 /// Block-level parameter names (no transformed parameters / generated
 /// quantities), dot-indexed. Length equals `bs_ndim_block()`.
-/// @keywords internal
+/// @noRd
 #[extendr]
 fn bs_block_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
     handle.block_names.clone()
@@ -674,7 +715,7 @@ fn bs_block_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
 /// dot-indexed. Length equals `param_num(true, false)`. Used by R-side
 /// `pars` / `include` resolution to partition names into block / TP / GQ
 /// without an extra round-trip into bridgestan.
-/// @keywords internal
+/// @noRd
 #[extendr]
 fn bs_block_tp_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
     handle.block_tp_names.clone()
@@ -682,28 +723,28 @@ fn bs_block_tp_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
 
 /// Full constrained parameter names (block + transformed parameters +
 /// generated quantities), dot-indexed.
-/// @keywords internal
+/// @noRd
 #[extendr]
 fn bs_full_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
     handle.full_names.clone()
 }
 
 /// Unconstrained parameter names, dot-indexed. Length equals `bs_ndim_unc()`.
-/// @keywords internal
+/// @noRd
 #[extendr]
 fn bs_unc_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
     handle.unc_names.clone()
 }
 
 /// Number of unconstrained parameters.
-/// @keywords internal
+/// @noRd
 #[extendr]
 fn bs_ndim_unc(handle: ExternalPtr<model::BSHandle>) -> i32 {
     handle.ndim_unc as i32
 }
 
 /// Number of block-level constrained parameters (no TP, no GQ).
-/// @keywords internal
+/// @noRd
 #[extendr]
 fn bs_ndim_block(handle: ExternalPtr<model::BSHandle>) -> i32 {
     handle.ndim_block as i32
@@ -712,9 +753,16 @@ fn bs_ndim_block(handle: ExternalPtr<model::BSHandle>) -> i32 {
 /// Map a flat block-level constrained vector (length `bs_ndim_block()`,
 /// BridgeStan column-major / last-index-major order) to the unconstrained
 /// space. No JSON parsing.
-/// @keywords internal
+/// @noRd
 #[extendr]
 fn bs_param_unconstrain(
+    handle: ExternalPtr<model::BSHandle>,
+    theta: Vec<f64>,
+) -> Vec<f64> {
+    or_throw(bs_param_unconstrain_impl(handle, theta))
+}
+
+fn bs_param_unconstrain_impl(
     handle: ExternalPtr<model::BSHandle>,
     theta: Vec<f64>,
 ) -> Result<Vec<f64>> {
@@ -736,13 +784,22 @@ fn bs_param_unconstrain(
 /// Map an unconstrained position to the full constrained scale (including
 /// transformed parameters and generated quantities) using an already-opened
 /// handle.
-/// @keywords internal
+/// @noRd
 #[extendr]
 fn bs_param_constrain(
     handle: ExternalPtr<model::BSHandle>,
     theta_unc: Vec<f64>,
     seed: i32,
+) -> Vec<f64> {
+    or_throw(bs_param_constrain_impl(handle, theta_unc, seed))
+}
+
+fn bs_param_constrain_impl(
+    handle: ExternalPtr<model::BSHandle>,
+    theta_unc: Vec<f64>,
+    seed: i32,
 ) -> Result<Vec<f64>> {
+    let seed_u32 = check_seed(seed)?;
     if theta_unc.len() != handle.ndim_unc {
         return Err(Error::Other(format!(
             "theta_unc length {} does not match unconstrained parameter count {}",
@@ -751,7 +808,7 @@ fn bs_param_constrain(
         )));
     }
     let mut out = vec![0.0f64; handle.ndim_full];
-    let mut rng = handle.model.new_rng(seed as u32).map_err(r_err)?;
+    let mut rng = handle.model.new_rng(seed_u32).map_err(r_err)?;
     handle
         .model
         .param_constrain(&theta_unc, true, true, &mut out, Some(&mut rng))
@@ -763,9 +820,16 @@ fn bs_param_constrain(
 /// (no transformed parameters, no generated quantities). No RNG is used and
 /// no GQ code runs, so this cannot fail on GQ constraint violations — the
 /// right primitive for resolving partial-init random fills.
-/// @keywords internal
+/// @noRd
 #[extendr]
 fn bs_param_constrain_block(
+    handle: ExternalPtr<model::BSHandle>,
+    theta_unc: Vec<f64>,
+) -> Vec<f64> {
+    or_throw(bs_param_constrain_block_impl(handle, theta_unc))
+}
+
+fn bs_param_constrain_block_impl(
     handle: ExternalPtr<model::BSHandle>,
     theta_unc: Vec<f64>,
 ) -> Result<Vec<f64>> {

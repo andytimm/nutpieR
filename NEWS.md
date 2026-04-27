@@ -1,3 +1,15 @@
+# nutpieR 1.6.0
+
+* `nutpie_sample()` validates `seed`: `NA`, negative, fractional, and values
+  above `.Machine$integer.max` now error instead of silently producing a
+  non-reproducible seed.
+* Default `num_warmup` is 800 (was 400) when
+  `low_rank_modified_mass_matrix = TRUE`. Explicit values still win.
+* `cores = NULL` falls back to 1 when `parallel::detectCores()` returns `NA`.
+* Cleaner error output on FFI failures (no more `thread '<unnamed>'
+  panicked` noise on stderr). **Error message text has changed for some
+  failure paths.**
+
 # nutpieR 1.5.0
 
 * `nutpie_compile_model()` caches compiled artifacts. `stan_file` mode

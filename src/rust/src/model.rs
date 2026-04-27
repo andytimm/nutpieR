@@ -4,12 +4,33 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Find the TBB DLL directory in the BridgeStan source tree and add it to PATH.
 /// Stan models compiled with STAN_THREADS=true need tbb.dll at load time.
+///
+/// Successful scans are cached for the rest of the process via `TBB_FOUND`;
+/// once a TBB directory has been added to `PATH`, subsequent `bs_open()`
+/// calls fast-path through a single atomic load.
+///
+/// Failed scans are NOT cached: the BridgeStan sources may not have been
+/// downloaded yet on the first call (e.g. a non-threaded model is opened
+/// before `nutpie_compile_model()` runs), so a later call must be free
+/// to retry. `SCAN_LOCK` serialises concurrent retries so the
+/// `set_var("PATH", ...)` write isn't racing.
 fn add_tbb_to_path() {
+    static TBB_FOUND: AtomicBool = AtomicBool::new(false);
+    static SCAN_LOCK: Mutex<()> = Mutex::new(());
+
+    if TBB_FOUND.load(Ordering::Acquire) {
+        return;
+    }
+    let _guard = SCAN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if TBB_FOUND.load(Ordering::Acquire) {
+        return;
+    }
+
     // Try USERPROFILE first (Windows), then HOME (Unix), then dirs::home_dir()
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
@@ -17,28 +38,27 @@ fn add_tbb_to_path() {
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir());
 
-    if let Some(home) = home {
-        // Search for any bridgestan-* directory (not hardcoded version)
-        let bs_base = home.join(".bridgestan");
-        if let Ok(entries) = std::fs::read_dir(&bs_base) {
-            for entry in entries.flatten() {
-                let tbb_dir = entry
-                    .path()
-                    .join("stan")
-                    .join("lib")
-                    .join("stan_math")
-                    .join("lib")
-                    .join("tbb");
-                if tbb_dir.exists() {
-                    if let Ok(current_path) = std::env::var("PATH") {
-                        let tbb_str = tbb_dir.to_string_lossy();
-                        if !current_path.contains(&*tbb_str) {
-                            std::env::set_var("PATH", format!("{};{}", tbb_str, current_path));
-                        }
-                    }
-                    return;
-                }
+    let Some(home) = home else { return };
+    // Search for any bridgestan-* directory (not hardcoded version)
+    let bs_base = home.join(".bridgestan");
+    let Ok(entries) = std::fs::read_dir(&bs_base) else { return };
+
+    for entry in entries.flatten() {
+        let tbb_dir = entry
+            .path()
+            .join("stan")
+            .join("lib")
+            .join("stan_math")
+            .join("lib")
+            .join("tbb");
+        if tbb_dir.exists() {
+            let Ok(current_path) = std::env::var("PATH") else { return };
+            let tbb_str = tbb_dir.to_string_lossy();
+            if !current_path.contains(&*tbb_str) {
+                std::env::set_var("PATH", format!("{};{}", tbb_str, current_path));
             }
+            TBB_FOUND.store(true, Ordering::Release);
+            return;
         }
     }
 }

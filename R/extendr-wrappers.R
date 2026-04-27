@@ -3,7 +3,7 @@
 #' Return the linked BridgeStan crate version, e.g. "2.7.0". Used by the
 #' inline-code compile cache key so a BridgeStan version bump invalidates
 #' cached entries automatically.
-#' @keywords internal
+#' @noRd
 bridgestan_version <- function() .Call(wrap__bridgestan_version)
 
 #' Compile a Stan model to a shared library using BridgeStan.
@@ -12,7 +12,7 @@ bridgestan_version <- function() .Call(wrap__bridgestan_version)
 #' @param stanc_args Character vector of extra arguments for stanc compiler.
 #' @param compile_args Character vector of extra arguments for make.
 #' @return Path to the compiled shared library.
-#' @keywords internal
+#' @noRd
 compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__compile_stan_model, stan_file, stanc_args, compile_args)
 
 #' @param handle An `ExternalPtr<BSHandle>` from `bs_open()`.
@@ -48,61 +48,61 @@ compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__
 #'   when `TRUE`, since GQ may reference TP.
 #' @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 #'   and optionally warmup_draws and warmup_diagnostics.
-#' @keywords internal
+#' @noRd
 sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, low_rank, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq) .Call(wrap__sample_stan, handle, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, low_rank, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq)
 
 #' Open a BridgeStan model and return an `ExternalPtr<BSHandle>` that caches
 #' parameter-name metadata. The handle may be used by any of the `bs_*`
 #' accessor functions without re-opening the shared library.
-#' @keywords internal
+#' @noRd
 bs_open <- function(lib_path, data_json, seed) .Call(wrap__bs_open, lib_path, data_json, seed)
 
 #' Block-level parameter names (no transformed parameters / generated
 #' quantities), dot-indexed. Length equals `bs_ndim_block()`.
-#' @keywords internal
+#' @noRd
 bs_block_names <- function(handle) .Call(wrap__bs_block_names, handle)
 
 #' Block-level + transformed-parameter names (no generated quantities),
 #' dot-indexed. Length equals `param_num(true, false)`. Used by R-side
 #' `pars` / `include` resolution to partition names into block / TP / GQ
 #' without an extra round-trip into bridgestan.
-#' @keywords internal
+#' @noRd
 bs_block_tp_names <- function(handle) .Call(wrap__bs_block_tp_names, handle)
 
 #' Full constrained parameter names (block + transformed parameters +
 #' generated quantities), dot-indexed.
-#' @keywords internal
+#' @noRd
 bs_full_names <- function(handle) .Call(wrap__bs_full_names, handle)
 
 #' Unconstrained parameter names, dot-indexed. Length equals `bs_ndim_unc()`.
-#' @keywords internal
+#' @noRd
 bs_unc_names <- function(handle) .Call(wrap__bs_unc_names, handle)
 
 #' Number of unconstrained parameters.
-#' @keywords internal
+#' @noRd
 bs_ndim_unc <- function(handle) .Call(wrap__bs_ndim_unc, handle)
 
 #' Number of block-level constrained parameters (no TP, no GQ).
-#' @keywords internal
+#' @noRd
 bs_ndim_block <- function(handle) .Call(wrap__bs_ndim_block, handle)
 
 #' Map a flat block-level constrained vector (length `bs_ndim_block()`,
 #' BridgeStan column-major / last-index-major order) to the unconstrained
 #' space. No JSON parsing.
-#' @keywords internal
+#' @noRd
 bs_param_unconstrain <- function(handle, theta) .Call(wrap__bs_param_unconstrain, handle, theta)
 
 #' Map an unconstrained position to the full constrained scale (including
 #' transformed parameters and generated quantities) using an already-opened
 #' handle.
-#' @keywords internal
+#' @noRd
 bs_param_constrain <- function(handle, theta_unc, seed) .Call(wrap__bs_param_constrain, handle, theta_unc, seed)
 
 #' Map an unconstrained position to the block-level constrained scale only
 #' (no transformed parameters, no generated quantities). No RNG is used and
 #' no GQ code runs, so this cannot fail on GQ constraint violations — the
 #' right primitive for resolving partial-init random fills.
-#' @keywords internal
+#' @noRd
 bs_param_constrain_block <- function(handle, theta_unc) .Call(wrap__bs_param_constrain_block, handle, theta_unc)
 
 
