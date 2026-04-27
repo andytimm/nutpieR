@@ -111,47 +111,6 @@ When enabled, the sampler defaults to 800 warmup draws (vs 400 for diagonal) to
 allow the low-rank structure to stabilize. Pass `num_warmup` explicitly to
 override.
 
-## Advanced usage
-
-### Selecting a parameter subset
-
-```r
-# Whitelist: keep only `beta` and `sigma` (and any indexed forms)
-draws <- nutpie_sample(model, data = dat, pars = c("beta", "sigma"))
-
-# Blacklist: drop generated quantities by name
-draws <- nutpie_sample(model, data = dat,
-                       pars = c("y_rep", "log_lik"), include = FALSE)
-```
-
-When the kept set excludes the entire transformed-parameter or
-generated-quantities blocks, those slices are skipped at sample time. See
-`?nutpie_sample` for details.
-
-### Custom starting points
-
-```r
-# Same constrained start for every chain (partial inits get random fills)
-draws <- nutpie_sample(model, data = dat, init = list(mu = 0, sigma = 1))
-
-# Per-chain function (called once per chain id)
-draws <- nutpie_sample(model, data = dat, num_chains = 4,
-                       init = function(chain_id) list(mu = chain_id - 2.5))
-
-# Uniform(-x, x) on the unconstrained scale
-draws <- nutpie_sample(model, data = dat, init = 0.5)
-```
-
-### Inspecting parameter names
-
-```r
-# Block parameters (the keys you pass to `init`)
-nutpie_param_names(model, data = dat)
-
-# Full constrained output names (block + TP + GQ)
-nutpie_param_names(model, data = dat, which = "full")
-```
-
 ## How it works
 
 nutpieR compiles Stan models via the BridgeStan Rust crate and samples using the nuts-rs NUTS sampler. During sampling, Rust calls the compiled Stan shared library directly through BridgeStan's C ABI -- R is not involved in the sampling loop. Each chain runs on its own thread via rayon.

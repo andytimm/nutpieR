@@ -23,6 +23,8 @@
   theoretical race on the process-wide `PATH` set.
 * Internal `#[extendr]` shims are now tagged `@noRd` and no longer
   generate `man/*.Rd` pages.
+* README: dropped the "zero-copy" framing of the Arrow → R transfer in
+  favour of the more accurate "single copy into R-allocated memory".
 
 # nutpieR 1.5.0
 
