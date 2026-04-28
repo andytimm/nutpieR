@@ -9,8 +9,12 @@ R is not in the hot loop -- parallel chains run entirely in Rust.
 Precompiled binaries are available from R-universe (no Rust toolchain needed):
 
 ```r
-install.packages("nutpieR", repos = "https://andytimm.r-universe.dev")
+install.packages("nutpieR",
+  repos = c("https://andytimm.r-universe.dev", "https://cloud.r-project.org"))
 ```
+
+(CRAN is included so the imports — `digest`, `jsonlite`, `posterior` — resolve;
+the andytimm.r-universe.dev repo only hosts `nutpieR` itself.)
 
 Or install from source (requires a [Rust toolchain](https://rustup.rs/)):
 
