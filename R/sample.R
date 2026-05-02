@@ -14,8 +14,18 @@
 #' @param num_chains Number of parallel chains.
 #' @param seed Random seed for reproducibility.
 #' @param max_treedepth Maximum tree depth for NUTS. The number of leapfrog
-#'   steps per draw is at most `2^max_treedepth`.
+#'   steps per draw is at most `2^max_treedepth`. Default `NULL` keeps the
+#'   nuts-rs default (currently 10).
+#' @param mindepth Minimum tree depth for NUTS. The number of leapfrog steps
+#'   per draw is at least `2^mindepth`. Default `NULL` keeps the nuts-rs
+#'   default (currently 0).
 #' @param target_accept Target acceptance probability for step size adaptation.
+#'   Default `NULL` keeps the nuts-rs default (currently 0.8).
+#' @param max_energy_error Energy-error threshold above which a leapfrog step
+#'   is treated as a divergence. Default `NULL` keeps the nuts-rs default.
+#' @param extra_doublings Number of additional tree doublings allowed after a
+#'   turning point is reached. Default `NULL` keeps the nuts-rs default
+#'   (currently 0).
 #' @param refresh How often to print progress updates, in draws per chain.
 #'   Set to `0` to suppress progress output. Default is `100`.
 #' @param init Initial values for each chain. Single entry point that
@@ -83,25 +93,39 @@
 #' @param include Logical (default `TRUE`). If `TRUE`, `pars` specifies the
 #'   parameters to *keep* (whitelist). If `FALSE`, `pars` specifies parameters
 #'   to *exclude* (blacklist). Ignored when `pars` is `NULL`.
-#' @param low_rank_modified_mass_matrix If `TRUE`, use low-rank modified mass
-#'   matrix adaptation. This can improve sampling efficiency for models with
-#'   correlated parameters by capturing posterior correlations in the mass
-#'   matrix. Default is `FALSE` (diagonal mass matrix).
+#' @param adaptation Mass matrix adaptation strategy. One of:
+#'   \describe{
+#'     \item{`"diag"` (default)}{Diagonal mass matrix (the standard NUTS
+#'       choice).}
+#'     \item{`"low_rank"` / `"low-rank"`}{Low-rank modified mass matrix
+#'       adaptation. Captures posterior correlations and can improve
+#'       efficiency on models with strongly correlated parameters.}
+#'   }
+#'   Matches the Python nutpie `adaptation=` API. Additional strategies
+#'   (`"draw_diag"`, `"flow"`) may be added in future releases.
+#' @param low_rank_modified_mass_matrix Deprecated. If `TRUE`, equivalent to
+#'   `adaptation = "low_rank"`. Will be removed in a future release.
 #' @param mass_matrix_gamma Regularisation parameter for low-rank mass matrix
-#'   adaptation. Only used when `low_rank_modified_mass_matrix = TRUE`.
-#'   Default is `1e-5`.
+#'   adaptation. Only used when `adaptation = "low_rank"`; ignored otherwise.
+#'   Default `NULL` keeps the nuts-rs default (currently `1e-5`).
 #' @param mass_matrix_eigval_cutoff Eigenvalue cutoff for low-rank mass matrix.
 #'   Eigenvalues outside `(1/cutoff, cutoff)` are ignored. Only used when
-#'   `low_rank_modified_mass_matrix = TRUE`. Default is `2.0`.
+#'   `adaptation = "low_rank"`; ignored otherwise. Default `NULL` keeps the
+#'   nuts-rs default (currently `2.0`).
 #' @return A `posterior::draws_array` with dimensions
 #'   `(num_draws, num_chains, n_params)`. Sampler diagnostics are attached
 #'   as an attribute and can be retrieved with [nutpie_diagnostics()].
 #'   The attributes `"num_warmup"` and `"num_draws"` record the sampling
-#'   configuration (accessible via `attr(draws, "num_warmup")` etc.).
+#'   configuration (accessible via `attr(draws, "num_warmup")` etc.). The
+#'   `"sampler_config"` attribute is a JSON string capturing the *effective*
+#'   `nuts-rs` settings used (including any defaults that were left
+#'   unspecified by the caller); parse with [jsonlite::fromJSON()].
 #' @export
 nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           num_warmup = 400L, num_chains = 4L, seed = NULL,
-                          max_treedepth = 10L, target_accept = 0.8,
+                          max_treedepth = NULL, mindepth = NULL,
+                          target_accept = NULL, max_energy_error = NULL,
+                          extra_doublings = NULL,
                           refresh = 100L,
                           init = NULL,
                           init_mean = NULL,
@@ -111,9 +135,10 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           store_mass_matrix = FALSE,
                           store_unconstrained = FALSE,
                           store_gradient = FALSE,
+                          adaptation = c("diag", "low_rank", "low-rank"),
                           low_rank_modified_mass_matrix = FALSE,
-                          mass_matrix_gamma = 1e-5,
-                          mass_matrix_eigval_cutoff = 2.0) {
+                          mass_matrix_gamma = NULL,
+                          mass_matrix_eigval_cutoff = NULL) {
   lib_path <- resolve_model(model)
   data_json <- resolve_data(data)
   if (is.null(seed)) {
@@ -121,21 +146,20 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   } else {
     seed <- check_count(seed, "seed", min = 0L, max = .Machine$integer.max)
   }
-  # Low-rank mass matrix needs more warmup for the off-diagonal structure to
-  # stabilise. Bump the default to 800 (matches Python nutpie); explicit
-  # user-supplied values win.
-  if (missing(num_warmup) && isTRUE(low_rank_modified_mass_matrix)) {
-    num_warmup <- 800L
+  adaptation <- match.arg(adaptation)
+  if (identical(adaptation, "low-rank")) adaptation <- "low_rank"
+  if (isTRUE(low_rank_modified_mass_matrix)) {
+    warning(
+      "`low_rank_modified_mass_matrix` is deprecated; use ",
+      "`adaptation = \"low_rank\"` instead. ",
+      "`low_rank_modified_mass_matrix` will be removed in a future version.",
+      call. = FALSE
+    )
+    adaptation <- "low_rank"
   }
   num_draws <- check_count(num_draws, "num_draws", min = 1L)
   num_warmup <- check_count(num_warmup, "num_warmup", min = 0L)
   num_chains <- check_count(num_chains, "num_chains", min = 1L)
-  max_treedepth <- check_count(max_treedepth, "max_treedepth", min = 1L)
-  if (!is.numeric(target_accept) || length(target_accept) != 1L ||
-      !is.finite(target_accept) || target_accept <= 0 || target_accept >= 1) {
-    stop("`target_accept` must be a single finite value in (0, 1).",
-         call. = FALSE)
-  }
 
   if (is.null(cores)) {
     cores <- min(num_chains, parallel::detectCores())
@@ -158,8 +182,6 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     num_warmup,
     num_chains,
     as.integer(seed),
-    as.integer(max_treedepth),
-    as.double(target_accept),
     as.integer(refresh),
     init_resolved$positions,
     isTRUE(init_resolved$jitter),
@@ -169,9 +191,14 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     isTRUE(store_mass_matrix),
     isTRUE(store_unconstrained),
     isTRUE(store_gradient),
-    isTRUE(low_rank_modified_mass_matrix),
-    as.double(mass_matrix_gamma),
-    as.double(mass_matrix_eigval_cutoff),
+    adaptation,
+    opt_double(max_treedepth, "max_treedepth"),
+    opt_double(mindepth, "mindepth"),
+    opt_double(target_accept, "target_accept"),
+    opt_double(max_energy_error, "max_energy_error"),
+    opt_double(extra_doublings, "extra_doublings"),
+    opt_double(mass_matrix_gamma, "mass_matrix_gamma"),
+    opt_double(mass_matrix_eigval_cutoff, "mass_matrix_eigval_cutoff"),
     keep_indices,
     isTRUE(flags$include_tp),
     isTRUE(flags$include_gq)
@@ -181,6 +208,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   attr(draws, "num_chains") <- num_chains
   attr(draws, "num_warmup") <- num_warmup
   attr(draws, "num_draws") <- num_draws
+  attr(draws, "sampler_config") <- raw$sampler_config
 
   if (isTRUE(save_warmup) && !is.null(raw$warmup_draws)) {
     warmup <- matrix_to_draws_array(raw$warmup_draws, num_warmup, num_chains)
@@ -200,6 +228,15 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   }
 
   draws
+}
+
+opt_double <- function(x, name) {
+  if (is.null(x)) return(NULL)
+  if (!is.numeric(x) || length(x) != 1L || !is.finite(x)) {
+    stop(sprintf("`%s` must be NULL or a single finite number.", name),
+         call. = FALSE)
+  }
+  as.double(x)
 }
 
 check_count <- function(x, name, min = 0L, max = NULL) {

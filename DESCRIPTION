@@ -1,6 +1,6 @@
 Package: nutpieR
 Title: R Bindings for the Nutpie NUTS Sampler
-Version: 1.6.0
+Version: 1.7.0
 Authors@R:
     person("Andy", "Timm", role = c("aut", "cre"),
            email = "timmandrew1@gmail.com")

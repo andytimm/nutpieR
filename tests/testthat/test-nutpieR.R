@@ -88,20 +88,46 @@ test_that("cores defaults to 1 when detectCores returns NA", {
   expect_s3_class(draws, "draws_array")
 })
 
-test_that("low_rank bumps default num_warmup to 800", {
+test_that("low_rank_modified_mass_matrix is deprecated but still works", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  expect_warning(
+    draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                           num_draws = 50, num_warmup = 50, num_chains = 1,
+                           seed = 1L, refresh = 0,
+                           low_rank_modified_mass_matrix = TRUE),
+    "deprecated"
+  )
+  expect_s3_class(draws, "draws_array")
+  cfg <- jsonlite::fromJSON(attr(draws, "sampler_config"))
+  # low_rank settings have a `mass_matrix_update_freq` of 20 (vs. 1 for diag).
+  expect_equal(cfg$adapt_options$mass_matrix_update_freq, 20)
+})
+
+test_that("adaptation = 'low_rank' matches the deprecated flag's behaviour", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  draws_new <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                             num_draws = 100, num_warmup = 100, num_chains = 1,
+                             seed = 1L, refresh = 0,
+                             adaptation = "low_rank")
+  expect_warning(
+    draws_old <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                               num_draws = 100, num_warmup = 100,
+                               num_chains = 1, seed = 1L, refresh = 0,
+                               low_rank_modified_mass_matrix = TRUE),
+    "deprecated"
+  )
+  # Same seed + same path should yield identical draws.
+  expect_equal(as.numeric(draws_new), as.numeric(draws_old))
+})
+
+test_that("adaptation = 'low-rank' is accepted as an alias", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
   draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
-                         num_draws = 50, num_chains = 1, seed = 1L,
-                         refresh = 0,
-                         low_rank_modified_mass_matrix = TRUE)
-  expect_equal(attr(draws, "num_warmup"), 800L)
-
-  # explicit value still wins
-  draws2 <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
-                          num_draws = 50, num_warmup = 200L, num_chains = 1,
-                          seed = 1L, refresh = 0,
-                          low_rank_modified_mass_matrix = TRUE)
-  expect_equal(attr(draws2, "num_warmup"), 200L)
+                         num_draws = 50, num_warmup = 50, num_chains = 1,
+                         seed = 1L, refresh = 0, adaptation = "low-rank")
+  expect_s3_class(draws, "draws_array")
+  cfg <- jsonlite::fromJSON(attr(draws, "sampler_config"))
+  expect_equal(cfg$adapt_options$mass_matrix_update_freq, 20)
 })
 
 # --- resolve_constrain_flags_impl unit tests (no handle) ---------------------
@@ -384,8 +410,9 @@ test_that("bernoulli pars = 'theta' exercises the (FALSE, FALSE) flag path", {
 test_that("store_unconstrained / gradient / mass_matrix surface their columns", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
+  num_draws <- 50
   draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
-    num_draws = 50, num_chains = 1, seed = 42, refresh = 0,
+    num_draws = num_draws, num_chains = 1, seed = 42, refresh = 0,
     store_unconstrained = TRUE, store_gradient = TRUE, store_mass_matrix = TRUE
   )
   diag <- nutpie_diagnostics(draws)
@@ -393,19 +420,14 @@ test_that("store_unconstrained / gradient / mass_matrix surface their columns", 
   expect_true("unconstrained_draw" %in% names(diag))
   expect_true("gradient" %in% names(diag))
   expect_true("mass_matrix_inv" %in% names(diag))
-  expect_type(diag$unconstrained_draw, "list")
-  expect_type(diag$gradient, "list")
-  expect_type(diag$mass_matrix_inv, "list")
 
-  # Bernoulli has 1 unconstrained parameter
-  expect_equal(length(diag$unconstrained_draw[[1]]), 1L)
-  expect_equal(length(diag$gradient[[1]]), 1L)
-
-  # mass_matrix_inv typically populates after warmup; some entries must be
-  # numeric vectors
-  non_null <- Filter(Negate(is.null), diag$mass_matrix_inv)
-  expect_true(length(non_null) > 0L)
-  expect_type(non_null[[1]], "double")
+  # Bernoulli has 1 unconstrained parameter, so each list-of-vectors column
+  # collapses to a (num_draws, 1) numeric matrix via the uniform-width path.
+  for (col in c("unconstrained_draw", "gradient", "mass_matrix_inv")) {
+    expect_true(is.matrix(diag[[col]]), info = col)
+    expect_type(diag[[col]], "double")
+    expect_equal(dim(diag[[col]]), c(num_draws, 1L), info = col)
+  }
 })
 
 # --- store_divergences detail (conditional) ----------------------------------
@@ -433,7 +455,7 @@ test_that("store_divergences exposes divergence detail when divergences occur", 
 
 # --- low-rank mass matrix ----------------------------------------------------
 
-test_that("low_rank_modified_mass_matrix produces valid draws", {
+test_that("adaptation = 'low_rank' produces valid draws", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
   # store_mass_matrix is requested too: low-rank's mass matrix has a
@@ -442,7 +464,7 @@ test_that("low_rank_modified_mass_matrix produces valid draws", {
   # logp populated.
   draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
     num_draws = 100, num_chains = 2, seed = 42, refresh = 0,
-    low_rank_modified_mass_matrix = TRUE, store_mass_matrix = TRUE
+    adaptation = "low_rank", store_mass_matrix = TRUE
   )
   expect_s3_class(draws, "draws_array")
   expect_equal(posterior::niterations(draws), 100)
@@ -469,6 +491,57 @@ test_that("sampling with bad data gives R error, not crash", {
     nutpie_sample(test_models$bernoulli, data = '{"bad": "json format"}',
                   num_draws = 10, num_chains = 1, seed = 42, refresh = 0)
   )
+})
+
+# --- sampler_config attribute ------------------------------------------------
+
+test_that("sampler_config is parseable JSON capturing effective settings", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                         num_draws = 50, num_warmup = 50, num_chains = 1,
+                         seed = 1L, refresh = 0, target_accept = 0.9,
+                         max_treedepth = 8L, extra_doublings = 2L)
+  cfg_str <- attr(draws, "sampler_config")
+  expect_type(cfg_str, "character")
+  expect_true(nzchar(cfg_str))
+  cfg <- jsonlite::fromJSON(cfg_str)
+  expect_equal(cfg$num_tune, 50)
+  expect_equal(cfg$num_draws, 50)
+  expect_equal(cfg$maxdepth, 8)
+  expect_equal(cfg$extra_doublings, 2)
+  expect_equal(cfg$adapt_options$step_size_settings$target_accept, 0.9)
+})
+
+test_that("unspecified target_accept / max_treedepth use nuts-rs defaults", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                         num_draws = 50, num_warmup = 50, num_chains = 1,
+                         seed = 1L, refresh = 0)
+  expect_s3_class(draws, "draws_array")
+  cfg <- jsonlite::fromJSON(attr(draws, "sampler_config"))
+  # nuts-rs DiagGradNutsSettings defaults: maxdepth = 10, target_accept = 0.8.
+  expect_equal(cfg$maxdepth, 10)
+  expect_equal(cfg$adapt_options$step_size_settings$target_accept, 0.8)
+})
+
+# --- mass_matrix_inv shape ---------------------------------------------------
+
+test_that("store_mass_matrix surfaces mass_matrix_inv as a numeric matrix", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+  num_draws <- 60
+  num_chains <- 2
+  draws <- nutpie_sample(test_models$normal, data = normal_data(),
+                         num_draws = num_draws, num_warmup = 80,
+                         num_chains = num_chains, seed = 1L, refresh = 0,
+                         store_mass_matrix = TRUE)
+  diag <- nutpie_diagnostics(draws)
+  mm <- diag$mass_matrix_inv
+  expect_true(is.matrix(mm))
+  expect_type(mm, "double")
+  ndim_unc <- length(nutpie_param_names(test_models$normal,
+                                        data = normal_data(),
+                                        which = "unconstrained"))
+  expect_equal(dim(mm), c(num_draws * num_chains, ndim_unc))
 })
 
 # --- diagnostics on a non-nutpie object --------------------------------------

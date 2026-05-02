@@ -20,8 +20,6 @@ compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__
 #' @param num_warmup Number of warmup (tuning) draws per chain.
 #' @param num_chains Number of parallel chains.
 #' @param seed Random seed.
-#' @param max_treedepth Maximum tree depth for NUTS.
-#' @param target_accept Target acceptance probability for step size adaptation.
 #' @param refresh Print progress every `refresh` draws per chain (0 = no progress).
 #' @param init_positions Optional list of numeric vectors (one per chain, or length 1 = broadcast).
 #' @param jitter If TRUE, apply ±0.5 uniform jitter per coordinate.
@@ -31,9 +29,17 @@ compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__
 #' @param store_mass_matrix Whether to store the mass matrix at each draw.
 #' @param store_unconstrained Whether to store the unconstrained position at each draw.
 #' @param store_gradient Whether to store the gradient at each draw.
-#' @param low_rank Whether to use low-rank modified mass matrix adaptation.
-#' @param mass_matrix_gamma Regularisation parameter for low-rank mass matrix (default 1e-5).
-#' @param eigval_cutoff Eigenvalue cutoff for low-rank mass matrix (default 2.0).
+#' @param adaptation One of "diag", "low_rank", or "low-rank".
+#' @param max_treedepth Optional maximum tree depth for NUTS. NULL keeps the
+#'   nuts-rs default.
+#' @param mindepth Optional minimum tree depth for NUTS.
+#' @param target_accept Optional target acceptance probability.
+#' @param max_energy_error Optional energy-error divergence threshold.
+#' @param extra_doublings Optional number of extra tree doublings after a
+#'   turning point is reached.
+#' @param mass_matrix_gamma Optional regularisation parameter for low-rank
+#'   mass matrix.
+#' @param eigval_cutoff Optional eigenvalue cutoff for low-rank mass matrix.
 #' @param keep_indices Optional 0-indexed integer vector of constrained
 #'   parameter columns to materialize. NULL means keep all. Indices are
 #'   resolved against the post-flag column layout selected by
@@ -47,9 +53,9 @@ compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__
 #'   (including any `*_rng` calls) entirely. Must imply `include_tp = TRUE`
 #'   when `TRUE`, since GQ may reference TP.
 #' @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
-#'   and optionally warmup_draws and warmup_diagnostics.
+#'   sampler_config (JSON), and optionally warmup_draws and warmup_diagnostics.
 #' @noRd
-sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, low_rank, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq) .Call(wrap__sample_stan, handle, num_draws, num_warmup, num_chains, seed, max_treedepth, target_accept, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, low_rank, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq)
+sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq) .Call(wrap__sample_stan, handle, num_draws, num_warmup, num_chains, seed, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq)
 
 #' Open a BridgeStan model and return an `ExternalPtr<BSHandle>` that caches
 #' parameter-name metadata. The handle may be used by any of the `bs_*`

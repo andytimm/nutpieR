@@ -8,7 +8,7 @@ use arrow::datatypes::DataType;
 use extendr_api::prelude::*;
 use extendr_api::error::Result;
 use nuts_rs::{
-    ArrowConfig, ArrowTrace, ChainProgress, DiagGradNutsSettings, LowRankNutsSettings,
+    ArrowConfig, ArrowTrace, ChainProgress, DiagNutsSettings, LowRankNutsSettings,
     ProgressCallback, Sampler, SamplerWaitResult, Settings,
 };
 use std::path::PathBuf;
@@ -219,8 +219,6 @@ fn run_sampler<S: Settings>(
 /// @param num_warmup Number of warmup (tuning) draws per chain.
 /// @param num_chains Number of parallel chains.
 /// @param seed Random seed.
-/// @param max_treedepth Maximum tree depth for NUTS.
-/// @param target_accept Target acceptance probability for step size adaptation.
 /// @param refresh Print progress every `refresh` draws per chain (0 = no progress).
 /// @param init_positions Optional list of numeric vectors (one per chain, or length 1 = broadcast).
 /// @param jitter If TRUE, apply ±0.5 uniform jitter per coordinate.
@@ -230,9 +228,18 @@ fn run_sampler<S: Settings>(
 /// @param store_mass_matrix Whether to store the mass matrix at each draw.
 /// @param store_unconstrained Whether to store the unconstrained position at each draw.
 /// @param store_gradient Whether to store the gradient at each draw.
-/// @param low_rank Whether to use low-rank modified mass matrix adaptation.
-/// @param mass_matrix_gamma Regularisation parameter for low-rank mass matrix (default 1e-5).
-/// @param eigval_cutoff Eigenvalue cutoff for low-rank mass matrix (default 2.0).
+/// @param adaptation One of "diag" or "low_rank". The R wrapper accepts
+///   "low-rank" as a Python-style alias and normalises it before calling.
+/// @param max_treedepth Optional maximum tree depth for NUTS. NULL keeps the
+///   nuts-rs default.
+/// @param mindepth Optional minimum tree depth for NUTS.
+/// @param target_accept Optional target acceptance probability.
+/// @param max_energy_error Optional energy-error divergence threshold.
+/// @param extra_doublings Optional number of extra tree doublings after a
+///   turning point is reached.
+/// @param mass_matrix_gamma Optional regularisation parameter for low-rank
+///   mass matrix.
+/// @param eigval_cutoff Optional eigenvalue cutoff for low-rank mass matrix.
 /// @param keep_indices Optional 0-indexed integer vector of constrained
 ///   parameter columns to materialize. NULL means keep all. Indices are
 ///   resolved against the post-flag column layout selected by
@@ -246,7 +253,7 @@ fn run_sampler<S: Settings>(
 ///   (including any `*_rng` calls) entirely. Must imply `include_tp = TRUE`
 ///   when `TRUE`, since GQ may reference TP.
 /// @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
-///   and optionally warmup_draws and warmup_diagnostics.
+///   sampler_config (JSON), and optionally warmup_draws and warmup_diagnostics.
 /// @noRd
 #[extendr]
 fn sample_stan(
@@ -255,8 +262,6 @@ fn sample_stan(
     num_warmup: i32,
     num_chains: i32,
     seed: i32,
-    max_treedepth: i32,
-    target_accept: f64,
     refresh: i32,
     init_positions: Robj,
     jitter: bool,
@@ -266,9 +271,14 @@ fn sample_stan(
     store_mass_matrix: bool,
     store_unconstrained: bool,
     store_gradient: bool,
-    low_rank: bool,
-    mass_matrix_gamma: f64,
-    eigval_cutoff: f64,
+    adaptation: &str,
+    max_treedepth: Robj,
+    mindepth: Robj,
+    target_accept: Robj,
+    max_energy_error: Robj,
+    extra_doublings: Robj,
+    mass_matrix_gamma: Robj,
+    eigval_cutoff: Robj,
     keep_indices: Robj,
     include_tp: bool,
     include_gq: bool,
@@ -281,7 +291,6 @@ fn sample_stan(
     for (val, name) in [
         (num_draws, "num_draws"),
         (num_chains, "num_chains"),
-        (max_treedepth, "max_treedepth"),
         (num_cores, "num_cores"),
     ] {
         if val <= 0 {
@@ -298,12 +307,13 @@ fn sample_stan(
         )));
     }
     check_seed(seed)?;
-    if !(target_accept > 0.0 && target_accept < 1.0) {
-        return Err(Error::Other(format!(
-            "target_accept must be in (0, 1), got {}",
-            target_accept
-        )));
-    }
+
+    let max_treedepth_opt = opt_count(&max_treedepth, "max_treedepth", 1)?;
+    let mindepth_opt = opt_count(&mindepth, "mindepth", 0)?;
+    let target_accept_opt =
+        opt_finite_in_open_unit(&target_accept, "target_accept")?;
+    let max_energy_error_opt = opt_finite_positive_f64(&max_energy_error, "max_energy_error")?;
+    let extra_doublings_opt = opt_count(&extra_doublings, "extra_doublings", 0)?;
 
     let init_positions_raw: Option<Vec<Vec<f64>>> = if init_positions.is_null() {
         None
@@ -365,8 +375,21 @@ fn sample_stan(
             $settings.num_draws = num_draws as u64;
             $settings.num_chains = num_chains as usize;
             $settings.seed = seed as u64;
-            $settings.maxdepth = max_treedepth as u64;
-            $settings.adapt_options.step_size_settings.target_accept = target_accept;
+            if let Some(v) = max_treedepth_opt {
+                $settings.maxdepth = v as u64;
+            }
+            if let Some(v) = mindepth_opt {
+                $settings.mindepth = v as u64;
+            }
+            if let Some(v) = target_accept_opt {
+                $settings.adapt_options.step_size_settings.target_accept = v;
+            }
+            if let Some(v) = max_energy_error_opt {
+                $settings.max_energy_error = v;
+            }
+            if let Some(v) = extra_doublings_opt {
+                $settings.extra_doublings = v as u64;
+            }
             $settings.store_divergences = store_divergences;
             $settings.store_unconstrained = store_unconstrained;
             $settings.store_gradient = store_gradient;
@@ -374,16 +397,29 @@ fn sample_stan(
         }};
     }
 
-    let results = if low_rank {
-        let mut settings = LowRankNutsSettings::default();
-        configure_settings!(settings);
-        settings.adapt_options.mass_matrix_options.gamma = mass_matrix_gamma;
-        settings.adapt_options.mass_matrix_options.eigval_cutoff = eigval_cutoff;
-        run_sampler(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
-    } else {
-        let mut settings = DiagGradNutsSettings::default();
-        configure_settings!(settings);
-        run_sampler(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
+    let (results, sampler_config_json) = match adaptation {
+        "low_rank" => {
+            let mut settings = LowRankNutsSettings::default();
+            configure_settings!(settings);
+            if let Some(v) = opt_finite_positive_f64(&mass_matrix_gamma, "mass_matrix_gamma")? {
+                settings.adapt_options.mass_matrix_options.gamma = v;
+            }
+            if let Some(v) = opt_finite_positive_f64(&eigval_cutoff, "eigval_cutoff")? {
+                settings.adapt_options.mass_matrix_options.eigval_cutoff = v;
+            }
+            run_with_settings(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
+        }
+        "diag" => {
+            let mut settings = DiagNutsSettings::default();
+            configure_settings!(settings);
+            run_with_settings(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
+        }
+        other => {
+            return Err(Error::Other(format!(
+                "adaptation must be one of \"diag\" or \"low_rank\", got \"{}\"",
+                other
+            )));
+        }
     };
 
     let draws_robj = build_draws_matrix(
@@ -433,9 +469,79 @@ fn sample_stan(
         diagnostics = diagnostics,
         warmup_draws = warmup_draws_robj,
         warmup_diagnostics = warmup_diagnostics_robj,
-        expand_errors = n_expand_errors
+        expand_errors = n_expand_errors,
+        sampler_config = sampler_config_json
     ))
     })())
+}
+
+/// Optional finite scalar (`NULL` -> None, REAL scalar -> Some). Caller does
+/// any range checks. Mirrors the R-side `check_count` so direct FFI callers
+/// can't bypass validation.
+fn opt_finite_f64(robj: &Robj, name: &str) -> Result<Option<f64>> {
+    if robj.is_null() {
+        return Ok(None);
+    }
+    let v: f64 = robj
+        .as_real()
+        .ok_or_else(|| Error::Other(format!("`{}` must be NULL or a single numeric.", name)))?;
+    if !v.is_finite() {
+        return Err(Error::Other(format!("`{}` must be a finite number.", name)));
+    }
+    Ok(Some(v))
+}
+
+fn opt_finite_positive_f64(robj: &Robj, name: &str) -> Result<Option<f64>> {
+    let v = opt_finite_f64(robj, name)?;
+    if let Some(x) = v {
+        if !(x > 0.0) {
+            return Err(Error::Other(format!("`{}` must be > 0, got {}.", name, x)));
+        }
+    }
+    Ok(v)
+}
+
+fn opt_finite_in_open_unit(robj: &Robj, name: &str) -> Result<Option<f64>> {
+    let v = opt_finite_f64(robj, name)?;
+    if let Some(x) = v {
+        if !(x > 0.0 && x < 1.0) {
+            return Err(Error::Other(format!("`{}` must be in (0, 1), got {}.", name, x)));
+        }
+    }
+    Ok(v)
+}
+
+fn opt_count(robj: &Robj, name: &str, min: i32) -> Result<Option<i32>> {
+    let Some(v) = opt_finite_f64(robj, name)? else { return Ok(None); };
+    if v.fract() != 0.0 {
+        return Err(Error::Other(format!("`{}` must be a whole number, got {}.", name, v)));
+    }
+    if v < min as f64 || v > i32::MAX as f64 {
+        return Err(Error::Other(format!(
+            "`{}` must be in [{}, {}], got {}.",
+            name, min, i32::MAX, v
+        )));
+    }
+    Ok(Some(v as i32))
+}
+
+/// Run the sampler with `settings` and return the traces alongside a JSON
+/// snapshot of the effective settings (surfaced via `attr(draws, "sampler_config")`).
+fn run_with_settings<S: Settings + serde::Serialize>(
+    stan_model: model::StanModel,
+    settings: S,
+    num_chains: i32,
+    num_draws: i32,
+    num_warmup: i32,
+    num_cores: i32,
+    refresh: i32,
+) -> Result<(Vec<ArrowTrace>, String)> {
+    let json = serde_json::to_string(&settings)
+        .map_err(|e| Error::Other(format!("failed to serialize sampler settings: {}", e)))?;
+    let traces = run_sampler(
+        stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh,
+    )?;
+    Ok((traces, json))
 }
 
 /// Build a draws matrix from Arrow traces.
@@ -518,6 +624,7 @@ fn column_to_robj(
     dtype: &DataType,
     skip: usize,
     n_draws: usize,
+    carry_forward: bool,
 ) -> Option<Robj> {
     let total = cols.len() * n_draws;
 
@@ -602,18 +709,111 @@ fn column_to_robj(
         DataType::Int32 => build_int_or_double!(Int32Array, |v: i32| v > i32::MIN),
         DataType::UInt32 => build_int_or_double!(UInt32Array, |v: u32| v <= i32::MAX as u32),
         DataType::LargeList(inner) if matches!(inner.data_type(), DataType::Float64) => {
+            // Uniform-width rows (mass_matrix_inv / _eigvals / _stds — all
+            // ndim_unc wide) collapse to a 2-D matrix; mixed widths fall
+            // back to a list-of-vectors.
+            let arrs: Vec<&LargeListArray> = cols
+                .iter()
+                .map(|c| c.as_any().downcast_ref::<LargeListArray>())
+                .collect::<Option<Vec<_>>>()?;
+
+            let mut uniform_len: Option<usize> = None;
+            let mut mixed = false;
+            let scan_start = if carry_forward { 0 } else { skip };
+            let scan_end = skip + n_draws;
+            'outer: for arr in &arrs {
+                for row in scan_start..scan_end {
+                    if arr.is_null(row) {
+                        continue;
+                    }
+                    let len = arr.value_length(row) as usize;
+                    match uniform_len {
+                        None => uniform_len = Some(len),
+                        Some(prev) if prev == len => {}
+                        Some(_) => {
+                            mixed = true;
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+
+            if !mixed {
+                if let Some(inner_len) = uniform_len {
+                    if inner_len > 0 {
+                        let mut out = Doubles::new(total * inner_len);
+                        let dest: &mut [Rfloat] = &mut out;
+                        for (chain_idx, arr) in arrs.iter().enumerate() {
+                            let inner_values = arr
+                                .values()
+                                .as_any()
+                                .downcast_ref::<Float64Array>()?
+                                .values();
+                            let offsets = arr.value_offsets();
+                            // Carry the most recent non-null row's offset
+                            // forward; `inner_values` outlives the loop, so
+                            // a usize is enough — no per-row Vec clone.
+                            let mut last_start: Option<usize> = if carry_forward {
+                                (0..skip).rev().find(|&r| !arr.is_null(r))
+                                    .map(|r| offsets[r] as usize)
+                            } else {
+                                None
+                            };
+                            for k in 0..n_draws {
+                                let row = skip + k;
+                                let dest_row = chain_idx * n_draws + k;
+                                let src_start = if arr.is_null(row) {
+                                    last_start
+                                } else {
+                                    let s = offsets[row] as usize;
+                                    if carry_forward {
+                                        last_start = Some(s);
+                                    }
+                                    Some(s)
+                                };
+                                match src_start {
+                                    Some(start) => {
+                                        let src = &inner_values[start..start + inner_len];
+                                        for (col, &val) in src.iter().enumerate() {
+                                            dest[dest_row + col * total] = Rfloat::from(val);
+                                        }
+                                    }
+                                    None => {
+                                        for col in 0..inner_len {
+                                            dest[dest_row + col * total] = Rfloat::na();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let mut robj: Robj = out.into();
+                        robj.set_attrib(
+                            "dim",
+                            [total as i32, inner_len as i32].into_robj(),
+                        )
+                        .ok()?;
+                        return Some(robj);
+                    }
+                }
+            }
+
             let mut out: Vec<Robj> = Vec::with_capacity(total);
-            for c in cols {
-                let list_arr = c.as_any().downcast_ref::<LargeListArray>()?;
+            for arr in &arrs {
+                let inner_values = arr
+                    .values()
+                    .as_any()
+                    .downcast_ref::<Float64Array>()?
+                    .values();
+                let offsets = arr.value_offsets();
                 for k in 0..n_draws {
                     let row = skip + k;
-                    if list_arr.is_null(row) {
+                    if arr.is_null(row) {
                         out.push(().into_robj());
                         continue;
                     }
-                    let inner_arr = list_arr.value(row);
-                    let values = inner_arr.as_any().downcast_ref::<Float64Array>()?;
-                    let slice: &[f64] = values.values();
+                    let start = offsets[row] as usize;
+                    let end = offsets[row + 1] as usize;
+                    let slice = &inner_values[start..end];
                     if slice.is_empty() {
                         out.push(().into_robj());
                     } else {
@@ -661,16 +861,25 @@ fn extract_diagnostics(
             .map(|t| t.sample_stats.column(idx).as_ref())
             .collect();
 
-        // Drop columns that are entirely null in the requested window
-        // (e.g. mass_matrix_inv / divergence_* when their flags are off).
+        // The mass-matrix snapshots only land on update rows; treat them
+        // as piecewise-constant and carry the most recent value forward
+        // through the NA gaps. Other columns get the default null-is-NA
+        // behaviour. Explicit list, not a prefix match, so a future
+        // upstream `mass_matrix_*` column doesn't silently inherit
+        // carry-forward semantics it may not warrant.
+        let carry_forward = matches!(
+            name.as_str(),
+            "mass_matrix_inv" | "mass_matrix_eigvals" | "mass_matrix_stds"
+        );
+        let non_null_start = if carry_forward { 0 } else { skip };
         let any_non_null = cols.iter().any(|c| {
-            (skip..skip + n_draws).any(|row| row < c.len() && !c.is_null(row))
+            (non_null_start..skip + n_draws).any(|row| row < c.len() && !c.is_null(row))
         });
         if !any_non_null {
             continue;
         }
 
-        match column_to_robj(&cols, field.data_type(), skip, n_draws) {
+        match column_to_robj(&cols, field.data_type(), skip, n_draws, carry_forward) {
             Some(robj) => {
                 names.push(name.clone());
                 values.push(robj);

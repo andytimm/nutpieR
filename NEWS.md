@@ -1,3 +1,30 @@
+# nutpieR 1.7.0
+
+* New `adaptation =` argument on `nutpie_sample()` selects the mass-matrix
+  strategy: `"diag"` (default) or `"low_rank"` / `"low-rank"`. Matches Python
+  nutpie's API.
+* `low_rank_modified_mass_matrix` is soft-deprecated; pass
+  `adaptation = "low_rank"` instead.
+* New optional `mindepth`, `max_energy_error`, and `extra_doublings`
+  arguments expose the matching `nuts-rs` settings.
+* `target_accept`, `max_treedepth`, `mass_matrix_gamma`, and
+  `mass_matrix_eigval_cutoff` now default to `NULL` and pass through to
+  `nuts-rs`'s defaults when unspecified, instead of overwriting them with
+  R-side defaults. Same goes for the previously-bumped 800-warmup default
+  for low-rank.
+* `attr(draws, "sampler_config")` returns the *effective* sampler settings
+  as a JSON string. Parse with `jsonlite::fromJSON()` to inspect what the
+  sampler actually ran with (including any nuts-rs defaults).
+* When `store_mass_matrix = TRUE`, `nutpie_diagnostics(draws)$mass_matrix_inv`
+  (and the matching `unconstrained_draw` / `gradient` columns when stored)
+  are now numeric matrices with shape `(n_draws * n_chains, ndim_unc)`,
+  not lists of vectors. Variable-width list columns still fall back to the
+  list representation.
+* `mass_matrix_inv` / `mass_matrix_eigvals` / `mass_matrix_stds` rows that
+  fall on a non-update draw now carry the most-recent recorded value
+  forward instead of surfacing `NA` — the inverse mass matrix is
+  piecewise-constant between adapter updates.
+
 # nutpieR 1.6.0
 
 * `nutpie_sample()` validates `seed`: `NA`, negative, fractional, and values
