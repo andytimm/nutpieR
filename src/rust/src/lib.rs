@@ -309,8 +309,6 @@ fn sample_stan(
     let target_accept_opt =
         opt_finite_in_open_unit(&target_accept, "target_accept")?;
     let max_energy_error_opt = opt_finite_positive_f64(&max_energy_error, "max_energy_error")?;
-    let mass_matrix_gamma_opt = opt_finite_positive_f64(&mass_matrix_gamma, "mass_matrix_gamma")?;
-    let eigval_cutoff_opt = opt_finite_positive_f64(&eigval_cutoff, "eigval_cutoff")?;
 
     let init_positions_raw: Option<Vec<Vec<f64>>> = if init_positions.is_null() {
         None
@@ -395,10 +393,10 @@ fn sample_stan(
         "low_rank" => {
             let mut settings = LowRankNutsSettings::default();
             configure_settings!(settings);
-            if let Some(v) = mass_matrix_gamma_opt {
+            if let Some(v) = opt_finite_positive_f64(&mass_matrix_gamma, "mass_matrix_gamma")? {
                 settings.adapt_options.mass_matrix_options.gamma = v;
             }
-            if let Some(v) = eigval_cutoff_opt {
+            if let Some(v) = opt_finite_positive_f64(&eigval_cutoff, "eigval_cutoff")? {
                 settings.adapt_options.mass_matrix_options.eigval_cutoff = v;
             }
             run_with_settings(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?

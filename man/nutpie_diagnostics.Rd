@@ -16,11 +16,16 @@ Commonly available scalar fields: \code{diverging}, \code{tuning}, \code{maxdept
 (integer when fits in \code{i32}, else numeric); \code{logp}, \code{energy},
 \code{energy_error}, \code{step_size}, \code{step_size_bar}, \code{mean_tree_accept},
 \code{mean_tree_accept_sym} (numeric).
-List-valued fields (one entry per draw, \code{NULL} when not recorded):
-\code{unconstrained_draw}, \code{gradient}. With \code{store_mass_matrix = TRUE}:
-\code{mass_matrix_inv}. With \code{store_divergences = TRUE}: \code{divergence_start},
-\code{divergence_end}, \code{divergence_momentum}, \code{divergence_start_gradient}
-(only present when at least one draw diverged).
+Wide fields (one row per draw, \code{NA} for unrecorded rows): when
+\code{store_unconstrained = TRUE}, \code{unconstrained_draw}; when
+\code{store_gradient = TRUE}, \code{gradient}; when \code{store_mass_matrix = TRUE},
+\code{mass_matrix_inv} (and any \verb{mass_matrix_*} columns nuts-rs reports).
+These surface as \verb{(n_draws * n_chains, ndim_unc)} numeric matrices when
+every recorded row has the same width; mixed-width columns fall back
+to a list of numeric vectors (one per draw, \code{NULL} when not recorded).
+With \code{store_divergences = TRUE}: \code{divergence_start}, \code{divergence_end},
+\code{divergence_momentum}, \code{divergence_start_gradient} (lists, only
+present when at least one draw diverged).
 }
 \description{
 Diagnostics are extracted directly from the nuts-rs sample-stats schema, so

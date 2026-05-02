@@ -15,11 +15,16 @@
 #'   (integer when fits in `i32`, else numeric); `logp`, `energy`,
 #'   `energy_error`, `step_size`, `step_size_bar`, `mean_tree_accept`,
 #'   `mean_tree_accept_sym` (numeric).
-#'   List-valued fields (one entry per draw, `NULL` when not recorded):
-#'   `unconstrained_draw`, `gradient`. With `store_mass_matrix = TRUE`:
-#'   `mass_matrix_inv`. With `store_divergences = TRUE`: `divergence_start`,
-#'   `divergence_end`, `divergence_momentum`, `divergence_start_gradient`
-#'   (only present when at least one draw diverged).
+#'   Wide fields (one row per draw, `NA` for unrecorded rows): when
+#'   `store_unconstrained = TRUE`, `unconstrained_draw`; when
+#'   `store_gradient = TRUE`, `gradient`; when `store_mass_matrix = TRUE`,
+#'   `mass_matrix_inv` (and any `mass_matrix_*` columns nuts-rs reports).
+#'   These surface as `(n_draws * n_chains, ndim_unc)` numeric matrices when
+#'   every recorded row has the same width; mixed-width columns fall back
+#'   to a list of numeric vectors (one per draw, `NULL` when not recorded).
+#'   With `store_divergences = TRUE`: `divergence_start`, `divergence_end`,
+#'   `divergence_momentum`, `divergence_start_gradient` (lists, only
+#'   present when at least one draw diverged).
 #' @export
 nutpie_diagnostics <- function(draws) {
   diag <- attr(draws, "diagnostics")
