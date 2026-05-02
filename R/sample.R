@@ -187,12 +187,12 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     isTRUE(store_unconstrained),
     isTRUE(store_gradient),
     adaptation,
-    opt_double(max_treedepth),
-    opt_double(mindepth),
-    opt_double(target_accept),
-    opt_double(max_energy_error),
-    opt_double(mass_matrix_gamma),
-    opt_double(mass_matrix_eigval_cutoff),
+    opt_double(max_treedepth, "max_treedepth"),
+    opt_double(mindepth, "mindepth"),
+    opt_double(target_accept, "target_accept"),
+    opt_double(max_energy_error, "max_energy_error"),
+    opt_double(mass_matrix_gamma, "mass_matrix_gamma"),
+    opt_double(mass_matrix_eigval_cutoff, "mass_matrix_eigval_cutoff"),
     keep_indices,
     isTRUE(flags$include_tp),
     isTRUE(flags$include_gq)
@@ -224,7 +224,14 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   draws
 }
 
-opt_double <- function(x) if (is.null(x)) NULL else as.double(x)
+opt_double <- function(x, name) {
+  if (is.null(x)) return(NULL)
+  if (!is.numeric(x) || length(x) != 1L || !is.finite(x)) {
+    stop(sprintf("`%s` must be NULL or a single finite number.", name),
+         call. = FALSE)
+  }
+  as.double(x)
+}
 
 check_count <- function(x, name, min = 0L, max = NULL) {
   if (length(x) != 1L) {

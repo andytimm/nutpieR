@@ -304,46 +304,13 @@ fn sample_stan(
     }
     check_seed(seed)?;
 
-    // Optional config knobs. NULL on the R side leaves the nuts-rs default
-    // in place — we don't second-guess upstream tuning choices.
     let max_treedepth_opt = opt_count(&max_treedepth, "max_treedepth", 1)?;
     let mindepth_opt = opt_count(&mindepth, "mindepth", 0)?;
-    let target_accept_opt = opt_finite_f64(&target_accept, "target_accept")?;
-    if let Some(v) = target_accept_opt {
-        if !(v > 0.0 && v < 1.0) {
-            return Err(Error::Other(format!(
-                "target_accept must be in (0, 1), got {}",
-                v
-            )));
-        }
-    }
-    let max_energy_error_opt = opt_finite_f64(&max_energy_error, "max_energy_error")?;
-    if let Some(v) = max_energy_error_opt {
-        if !(v > 0.0) {
-            return Err(Error::Other(format!(
-                "max_energy_error must be > 0, got {}",
-                v
-            )));
-        }
-    }
-    let mass_matrix_gamma_opt = opt_finite_f64(&mass_matrix_gamma, "mass_matrix_gamma")?;
-    if let Some(v) = mass_matrix_gamma_opt {
-        if !(v > 0.0) {
-            return Err(Error::Other(format!(
-                "mass_matrix_gamma must be > 0, got {}",
-                v
-            )));
-        }
-    }
-    let eigval_cutoff_opt = opt_finite_f64(&eigval_cutoff, "eigval_cutoff")?;
-    if let Some(v) = eigval_cutoff_opt {
-        if !(v > 0.0) {
-            return Err(Error::Other(format!(
-                "eigval_cutoff must be > 0, got {}",
-                v
-            )));
-        }
-    }
+    let target_accept_opt =
+        opt_finite_in_open_unit(&target_accept, "target_accept")?;
+    let max_energy_error_opt = opt_finite_positive_f64(&max_energy_error, "max_energy_error")?;
+    let mass_matrix_gamma_opt = opt_finite_positive_f64(&mass_matrix_gamma, "mass_matrix_gamma")?;
+    let eigval_cutoff_opt = opt_finite_positive_f64(&eigval_cutoff, "eigval_cutoff")?;
 
     let init_positions_raw: Option<Vec<Vec<f64>>> = if init_positions.is_null() {
         None
@@ -434,18 +401,12 @@ fn sample_stan(
             if let Some(v) = eigval_cutoff_opt {
                 settings.adapt_options.mass_matrix_options.eigval_cutoff = v;
             }
-            let json = serde_json::to_string(&settings)
-                .map_err(|e| Error::Other(format!("failed to serialize sampler settings: {}", e)))?;
-            let r = run_sampler(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?;
-            (r, json)
+            run_with_settings(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
         }
         "diag" => {
             let mut settings = DiagGradNutsSettings::default();
             configure_settings!(settings);
-            let json = serde_json::to_string(&settings)
-                .map_err(|e| Error::Other(format!("failed to serialize sampler settings: {}", e)))?;
-            let r = run_sampler(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?;
-            (r, json)
+            run_with_settings(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
         }
         other => {
             return Err(Error::Other(format!(
@@ -508,40 +469,9 @@ fn sample_stan(
     })())
 }
 
-/// Coerce an optional R scalar (`NULL`, integer, or numeric) to `Option<i32>`.
-/// Validates finiteness, integral-ness, and a `>= min` bound. Used by the
-/// FFI for sampler config knobs that should only override the nuts-rs
-/// default when the R caller explicitly passes a value.
-fn opt_count(robj: &Robj, name: &str, min: i32) -> Result<Option<i32>> {
-    if robj.is_null() {
-        return Ok(None);
-    }
-    let v: f64 = robj
-        .as_real()
-        .ok_or_else(|| Error::Other(format!("`{}` must be NULL or a single numeric.", name)))?;
-    if !v.is_finite() {
-        return Err(Error::Other(format!("`{}` must be a finite integer.", name)));
-    }
-    if v.fract() != 0.0 {
-        return Err(Error::Other(format!(
-            "`{}` must be a whole number, got {}.",
-            name, v
-        )));
-    }
-    if v < min as f64 || v > i32::MAX as f64 {
-        return Err(Error::Other(format!(
-            "`{}` must be in [{}, {}], got {}.",
-            name,
-            min,
-            i32::MAX,
-            v
-        )));
-    }
-    Ok(Some(v as i32))
-}
-
-/// Coerce an optional R scalar (`NULL` or numeric) to `Option<f64>`.
-/// Validates finiteness only — caller does range checks.
+/// Optional finite scalar (`NULL` -> None, REAL scalar -> Some). Caller does
+/// any range checks. Mirrors the R-side `check_count` so direct FFI callers
+/// can't bypass validation.
 fn opt_finite_f64(robj: &Robj, name: &str) -> Result<Option<f64>> {
     if robj.is_null() {
         return Ok(None);
@@ -553,6 +483,59 @@ fn opt_finite_f64(robj: &Robj, name: &str) -> Result<Option<f64>> {
         return Err(Error::Other(format!("`{}` must be a finite number.", name)));
     }
     Ok(Some(v))
+}
+
+fn opt_finite_positive_f64(robj: &Robj, name: &str) -> Result<Option<f64>> {
+    let v = opt_finite_f64(robj, name)?;
+    if let Some(x) = v {
+        if !(x > 0.0) {
+            return Err(Error::Other(format!("`{}` must be > 0, got {}.", name, x)));
+        }
+    }
+    Ok(v)
+}
+
+fn opt_finite_in_open_unit(robj: &Robj, name: &str) -> Result<Option<f64>> {
+    let v = opt_finite_f64(robj, name)?;
+    if let Some(x) = v {
+        if !(x > 0.0 && x < 1.0) {
+            return Err(Error::Other(format!("`{}` must be in (0, 1), got {}.", name, x)));
+        }
+    }
+    Ok(v)
+}
+
+fn opt_count(robj: &Robj, name: &str, min: i32) -> Result<Option<i32>> {
+    let Some(v) = opt_finite_f64(robj, name)? else { return Ok(None); };
+    if v.fract() != 0.0 {
+        return Err(Error::Other(format!("`{}` must be a whole number, got {}.", name, v)));
+    }
+    if v < min as f64 || v > i32::MAX as f64 {
+        return Err(Error::Other(format!(
+            "`{}` must be in [{}, {}], got {}.",
+            name, min, i32::MAX, v
+        )));
+    }
+    Ok(Some(v as i32))
+}
+
+/// Run the sampler with `settings` and return the traces alongside a JSON
+/// snapshot of the effective settings (surfaced via `attr(draws, "sampler_config")`).
+fn run_with_settings<S: Settings + serde::Serialize>(
+    stan_model: model::StanModel,
+    settings: S,
+    num_chains: i32,
+    num_draws: i32,
+    num_warmup: i32,
+    num_cores: i32,
+    refresh: i32,
+) -> Result<(Vec<ArrowTrace>, String)> {
+    let json = serde_json::to_string(&settings)
+        .map_err(|e| Error::Other(format!("failed to serialize sampler settings: {}", e)))?;
+    let traces = run_sampler(
+        stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh,
+    )?;
+    Ok((traces, json))
 }
 
 /// Build a draws matrix from Arrow traces.
@@ -719,12 +702,9 @@ fn column_to_robj(
         DataType::Int32 => build_int_or_double!(Int32Array, |v: i32| v > i32::MIN),
         DataType::UInt32 => build_int_or_double!(UInt32Array, |v: u32| v <= i32::MAX as u32),
         DataType::LargeList(inner) if matches!(inner.data_type(), DataType::Float64) => {
-            // First pass: collect downcasted handles, check whether every
-            // non-null row in the requested window has the same inner length.
-            // If so (e.g. `mass_matrix_inv`, `mass_matrix_eigvals`,
-            // `mass_matrix_stds`, all `ndim_unc` wide), surface a 2-D
-            // `(total, inner_len)` matrix instead of a list-of-vectors —
-            // much friendlier downstream.
+            // Uniform-width rows (mass_matrix_inv / _eigvals / _stds — all
+            // ndim_unc wide) collapse to a 2-D matrix; mixed widths fall
+            // back to a list-of-vectors.
             let arrs: Vec<&LargeListArray> = cols
                 .iter()
                 .map(|c| c.as_any().downcast_ref::<LargeListArray>())
@@ -738,9 +718,7 @@ fn column_to_robj(
                     if arr.is_null(row) {
                         continue;
                     }
-                    let inner_arr = arr.value(row);
-                    let values = inner_arr.as_any().downcast_ref::<Float64Array>()?;
-                    let len = values.values().len();
+                    let len = arr.value_length(row) as usize;
                     match uniform_len {
                         None => uniform_len = Some(len),
                         Some(prev) if prev == len => {}
@@ -755,12 +733,15 @@ fn column_to_robj(
             if !mixed {
                 if let Some(inner_len) = uniform_len {
                     if inner_len > 0 {
-                        // Column-major fill: rows of the matrix are draws,
-                        // columns are inner positions. Null rows are filled
-                        // with NA.
                         let mut out = Doubles::new(total * inner_len);
                         let dest: &mut [Rfloat] = &mut out;
                         for (chain_idx, arr) in arrs.iter().enumerate() {
+                            let inner_values = arr
+                                .values()
+                                .as_any()
+                                .downcast_ref::<Float64Array>()?
+                                .values();
+                            let offsets = arr.value_offsets();
                             for k in 0..n_draws {
                                 let row = skip + k;
                                 let dest_row = chain_idx * n_draws + k;
@@ -770,11 +751,9 @@ fn column_to_robj(
                                     }
                                     continue;
                                 }
-                                let inner_arr = arr.value(row);
-                                let values =
-                                    inner_arr.as_any().downcast_ref::<Float64Array>()?;
-                                let slice: &[f64] = values.values();
-                                for (col, &val) in slice.iter().enumerate() {
+                                let start = offsets[row] as usize;
+                                let row_slice = &inner_values[start..start + inner_len];
+                                for (col, &val) in row_slice.iter().enumerate() {
                                     dest[dest_row + col * total] = Rfloat::from(val);
                                 }
                             }
@@ -790,18 +769,23 @@ fn column_to_robj(
                 }
             }
 
-            // Fallback: variable-width or all-empty rows -> list of vectors.
             let mut out: Vec<Robj> = Vec::with_capacity(total);
             for arr in &arrs {
+                let inner_values = arr
+                    .values()
+                    .as_any()
+                    .downcast_ref::<Float64Array>()?
+                    .values();
+                let offsets = arr.value_offsets();
                 for k in 0..n_draws {
                     let row = skip + k;
                     if arr.is_null(row) {
                         out.push(().into_robj());
                         continue;
                     }
-                    let inner_arr = arr.value(row);
-                    let values = inner_arr.as_any().downcast_ref::<Float64Array>()?;
-                    let slice: &[f64] = values.values();
+                    let start = offsets[row] as usize;
+                    let end = offsets[row + 1] as usize;
+                    let slice = &inner_values[start..end];
                     if slice.is_empty() {
                         out.push(().into_robj());
                     } else {
