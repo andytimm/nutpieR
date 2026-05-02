@@ -35,6 +35,8 @@ compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__
 #' @param mindepth Optional minimum tree depth for NUTS.
 #' @param target_accept Optional target acceptance probability.
 #' @param max_energy_error Optional energy-error divergence threshold.
+#' @param extra_doublings Optional number of extra tree doublings after a
+#'   turning point is reached.
 #' @param mass_matrix_gamma Optional regularisation parameter for low-rank
 #'   mass matrix.
 #' @param eigval_cutoff Optional eigenvalue cutoff for low-rank mass matrix.
@@ -53,7 +55,7 @@ compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__
 #' @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 #'   sampler_config (JSON), and optionally warmup_draws and warmup_diagnostics.
 #' @noRd
-sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq) .Call(wrap__sample_stan, handle, num_draws, num_warmup, num_chains, seed, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq)
+sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq) .Call(wrap__sample_stan, handle, num_draws, num_warmup, num_chains, seed, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq)
 
 #' Open a BridgeStan model and return an `ExternalPtr<BSHandle>` that caches
 #' parameter-name metadata. The handle may be used by any of the `bs_*`

@@ -15,6 +15,7 @@ nutpie_sample(
   mindepth = NULL,
   target_accept = NULL,
   max_energy_error = NULL,
+  extra_doublings = NULL,
   refresh = 100L,
   init = NULL,
   init_mean = NULL,
@@ -65,6 +66,10 @@ Default \code{NULL} keeps the nuts-rs default (currently 0.8).}
 
 \item{max_energy_error}{Energy-error threshold above which a leapfrog step
 is treated as a divergence. Default \code{NULL} keeps the nuts-rs default.}
+
+\item{extra_doublings}{Number of additional tree doublings allowed after a
+turning point is reached. Default \code{NULL} keeps the nuts-rs default
+(currently 0).}
 
 \item{refresh}{How often to print progress updates, in draws per chain.
 Set to \code{0} to suppress progress output. Default is \code{100}.}

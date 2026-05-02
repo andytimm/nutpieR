@@ -99,8 +99,8 @@ test_that("low_rank_modified_mass_matrix is deprecated but still works", {
   )
   expect_s3_class(draws, "draws_array")
   cfg <- jsonlite::fromJSON(attr(draws, "sampler_config"))
-  # low_rank settings have a `mass_matrix_update_freq` of 10 (vs. 1 for diag).
-  expect_equal(cfg$adapt_options$mass_matrix_update_freq, 10)
+  # low_rank settings have a `mass_matrix_update_freq` of 20 (vs. 1 for diag).
+  expect_equal(cfg$adapt_options$mass_matrix_update_freq, 20)
 })
 
 test_that("adaptation = 'low_rank' matches the deprecated flag's behaviour", {
@@ -489,8 +489,8 @@ test_that("sampler_config is parseable JSON capturing effective settings", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
   draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
                          num_draws = 50, num_warmup = 50, num_chains = 1,
-                         seed = 1L, refresh = 0,
-                         target_accept = 0.9, max_treedepth = 8L)
+                         seed = 1L, refresh = 0, target_accept = 0.9,
+                         max_treedepth = 8L, extra_doublings = 2L)
   cfg_str <- attr(draws, "sampler_config")
   expect_type(cfg_str, "character")
   expect_true(nzchar(cfg_str))
@@ -498,6 +498,7 @@ test_that("sampler_config is parseable JSON capturing effective settings", {
   expect_equal(cfg$num_tune, 50)
   expect_equal(cfg$num_draws, 50)
   expect_equal(cfg$maxdepth, 8)
+  expect_equal(cfg$extra_doublings, 2)
   expect_equal(cfg$adapt_options$step_size_settings$target_accept, 0.9)
 })
 

@@ -11,11 +11,11 @@ name = 'nutpieR'
 
 [dependencies]
 extendr-api = '0.9.0'
-nuts-rs = { version = '0.17', features = ['arrow'] }
+nuts-rs = { version = '0.18', features = ['arrow'] }
 anyhow = '1'
 thiserror = '2'
 rand = '0.10'
-arrow = { version = '57', default-features = false }
+arrow = { version = '58', default-features = false }
 bridgestan = { version = '2.7', features = ['download-bridgestan-src'] }
 dirs = '6'
 serde = '1'

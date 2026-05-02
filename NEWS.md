@@ -4,8 +4,8 @@
   strategy: `"diag"` (default) or `"low_rank"`. Matches Python nutpie's API.
 * `low_rank_modified_mass_matrix` is soft-deprecated; pass
   `adaptation = "low_rank"` instead.
-* New optional `mindepth` and `max_energy_error` arguments expose the
-  matching `nuts-rs` settings.
+* New optional `mindepth`, `max_energy_error`, and `extra_doublings`
+  arguments expose the matching `nuts-rs` settings.
 * `target_accept`, `max_treedepth`, `mass_matrix_gamma`, and
   `mass_matrix_eigval_cutoff` now default to `NULL` and pass through to
   `nuts-rs`'s defaults when unspecified, instead of overwriting them with

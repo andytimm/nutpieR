@@ -23,6 +23,9 @@
 #'   Default `NULL` keeps the nuts-rs default (currently 0.8).
 #' @param max_energy_error Energy-error threshold above which a leapfrog step
 #'   is treated as a divergence. Default `NULL` keeps the nuts-rs default.
+#' @param extra_doublings Number of additional tree doublings allowed after a
+#'   turning point is reached. Default `NULL` keeps the nuts-rs default
+#'   (currently 0).
 #' @param refresh How often to print progress updates, in draws per chain.
 #'   Set to `0` to suppress progress output. Default is `100`.
 #' @param init Initial values for each chain. Single entry point that
@@ -122,6 +125,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           num_warmup = 400L, num_chains = 4L, seed = NULL,
                           max_treedepth = NULL, mindepth = NULL,
                           target_accept = NULL, max_energy_error = NULL,
+                          extra_doublings = NULL,
                           refresh = 100L,
                           init = NULL,
                           init_mean = NULL,
@@ -191,6 +195,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     opt_double(mindepth, "mindepth"),
     opt_double(target_accept, "target_accept"),
     opt_double(max_energy_error, "max_energy_error"),
+    opt_double(extra_doublings, "extra_doublings"),
     opt_double(mass_matrix_gamma, "mass_matrix_gamma"),
     opt_double(mass_matrix_eigval_cutoff, "mass_matrix_eigval_cutoff"),
     keep_indices,

@@ -8,7 +8,7 @@ use arrow::datatypes::DataType;
 use extendr_api::prelude::*;
 use extendr_api::error::Result;
 use nuts_rs::{
-    ArrowConfig, ArrowTrace, ChainProgress, DiagGradNutsSettings, LowRankNutsSettings,
+    ArrowConfig, ArrowTrace, ChainProgress, DiagNutsSettings, LowRankNutsSettings,
     ProgressCallback, Sampler, SamplerWaitResult, Settings,
 };
 use std::path::PathBuf;
@@ -80,9 +80,17 @@ fn compile_stan_model_impl(
     let bs_path = bridgestan::download_bridgestan_src().map_err(r_err)?;
     let stan_path = PathBuf::from(stan_file);
 
-    let stanc_vec: Vec<String> = stanc_args.iter().map(|s| s.to_string()).collect();
+    let stanc_vec: Vec<String> = if stanc_args.len() == 0 {
+        Vec::new()
+    } else {
+        stanc_args.iter().map(|s| s.to_string()).collect()
+    };
     let stanc_refs: Vec<&str> = stanc_vec.iter().map(String::as_str).collect();
-    let compile_vec: Vec<String> = compile_args.iter().map(|s| s.to_string()).collect();
+    let compile_vec: Vec<String> = if compile_args.len() == 0 {
+        Vec::new()
+    } else {
+        compile_args.iter().map(|s| s.to_string()).collect()
+    };
     let compile_refs: Vec<&str> = compile_vec.iter().map(String::as_str).collect();
 
     let lib_path = bridgestan::compile_model(&bs_path, &stan_path, &stanc_refs, &compile_refs)
@@ -234,6 +242,8 @@ fn run_sampler<S: Settings>(
 /// @param mindepth Optional minimum tree depth for NUTS.
 /// @param target_accept Optional target acceptance probability.
 /// @param max_energy_error Optional energy-error divergence threshold.
+/// @param extra_doublings Optional number of extra tree doublings after a
+///   turning point is reached.
 /// @param mass_matrix_gamma Optional regularisation parameter for low-rank
 ///   mass matrix.
 /// @param eigval_cutoff Optional eigenvalue cutoff for low-rank mass matrix.
@@ -273,6 +283,7 @@ fn sample_stan(
     mindepth: Robj,
     target_accept: Robj,
     max_energy_error: Robj,
+    extra_doublings: Robj,
     mass_matrix_gamma: Robj,
     eigval_cutoff: Robj,
     keep_indices: Robj,
@@ -309,6 +320,7 @@ fn sample_stan(
     let target_accept_opt =
         opt_finite_in_open_unit(&target_accept, "target_accept")?;
     let max_energy_error_opt = opt_finite_positive_f64(&max_energy_error, "max_energy_error")?;
+    let extra_doublings_opt = opt_count(&extra_doublings, "extra_doublings", 0)?;
 
     let init_positions_raw: Option<Vec<Vec<f64>>> = if init_positions.is_null() {
         None
@@ -382,6 +394,9 @@ fn sample_stan(
             if let Some(v) = max_energy_error_opt {
                 $settings.max_energy_error = v;
             }
+            if let Some(v) = extra_doublings_opt {
+                $settings.extra_doublings = v as u64;
+            }
             $settings.store_divergences = store_divergences;
             $settings.store_unconstrained = store_unconstrained;
             $settings.store_gradient = store_gradient;
@@ -402,7 +417,7 @@ fn sample_stan(
             run_with_settings(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
         }
         "diag" => {
-            let mut settings = DiagGradNutsSettings::default();
+            let mut settings = DiagNutsSettings::default();
             configure_settings!(settings);
             run_with_settings(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
         }
@@ -616,6 +631,7 @@ fn column_to_robj(
     dtype: &DataType,
     skip: usize,
     n_draws: usize,
+    carry_forward: bool,
 ) -> Option<Robj> {
     let total = cols.len() * n_draws;
 
@@ -710,9 +726,10 @@ fn column_to_robj(
 
             let mut uniform_len: Option<usize> = None;
             let mut mixed = false;
+            let scan_start = if carry_forward { 0 } else { skip };
+            let scan_end = skip + n_draws;
             'outer: for arr in &arrs {
-                for k in 0..n_draws {
-                    let row = skip + k;
+                for row in scan_start..scan_end {
                     if arr.is_null(row) {
                         continue;
                     }
@@ -740,19 +757,36 @@ fn column_to_robj(
                                 .downcast_ref::<Float64Array>()?
                                 .values();
                             let offsets = arr.value_offsets();
+                            let mut last: Option<Vec<f64>> = None;
+                            if carry_forward && skip > 0 {
+                                for row in 0..skip {
+                                    if !arr.is_null(row) {
+                                        let start = offsets[row] as usize;
+                                        last = Some(inner_values[start..start + inner_len].to_vec());
+                                    }
+                                }
+                            }
                             for k in 0..n_draws {
                                 let row = skip + k;
                                 let dest_row = chain_idx * n_draws + k;
-                                if arr.is_null(row) {
-                                    for col in 0..inner_len {
-                                        dest[dest_row + col * total] = Rfloat::na();
+                                let row_values: Option<&[f64]> = if arr.is_null(row) {
+                                    last.as_deref()
+                                } else {
+                                    let start = offsets[row] as usize;
+                                    last = Some(inner_values[start..start + inner_len].to_vec());
+                                    last.as_deref()
+                                };
+                                match row_values {
+                                    Some(vals) => {
+                                        for (col, &val) in vals.iter().enumerate() {
+                                            dest[dest_row + col * total] = Rfloat::from(val);
+                                        }
                                     }
-                                    continue;
-                                }
-                                let start = offsets[row] as usize;
-                                let row_slice = &inner_values[start..start + inner_len];
-                                for (col, &val) in row_slice.iter().enumerate() {
-                                    dest[dest_row + col * total] = Rfloat::from(val);
+                                    None => {
+                                        for col in 0..inner_len {
+                                            dest[dest_row + col * total] = Rfloat::na();
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -833,14 +867,16 @@ fn extract_diagnostics(
 
         // Drop columns that are entirely null in the requested window
         // (e.g. mass_matrix_inv / divergence_* when their flags are off).
+        let carry_forward = name.starts_with("mass_matrix");
+        let non_null_start = if carry_forward { 0 } else { skip };
         let any_non_null = cols.iter().any(|c| {
-            (skip..skip + n_draws).any(|row| row < c.len() && !c.is_null(row))
+            (non_null_start..skip + n_draws).any(|row| row < c.len() && !c.is_null(row))
         });
         if !any_non_null {
             continue;
         }
 
-        match column_to_robj(&cols, field.data_type(), skip, n_draws) {
+        match column_to_robj(&cols, field.data_type(), skip, n_draws, carry_forward) {
             Some(robj) => {
                 names.push(name.clone());
                 values.push(robj);
