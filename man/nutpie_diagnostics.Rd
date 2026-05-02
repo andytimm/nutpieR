@@ -16,10 +16,13 @@ Commonly available scalar fields: \code{diverging}, \code{tuning}, \code{maxdept
 (integer when fits in \code{i32}, else numeric); \code{logp}, \code{energy},
 \code{energy_error}, \code{step_size}, \code{step_size_bar}, \code{mean_tree_accept},
 \code{mean_tree_accept_sym} (numeric).
-Wide fields (one row per draw, \code{NA} for unrecorded rows): when
-\code{store_unconstrained = TRUE}, \code{unconstrained_draw}; when
-\code{store_gradient = TRUE}, \code{gradient}; when \code{store_mass_matrix = TRUE},
-\code{mass_matrix_inv} (and any \verb{mass_matrix_*} columns nuts-rs reports).
+Wide fields (one row per draw): when \code{store_unconstrained = TRUE},
+\code{unconstrained_draw} (\code{NA} rows where unrecorded); when
+\code{store_gradient = TRUE}, \code{gradient} (\code{NA} rows where unrecorded); when
+\code{store_mass_matrix = TRUE}, \code{mass_matrix_inv} (and \code{mass_matrix_eigvals}
+/ \code{mass_matrix_stds} when reported), with the most recently recorded
+value carried forward into draws between updates — the inverse mass
+matrix is piecewise-constant between adapter steps, not undefined.
 These surface as \verb{(n_draws * n_chains, ndim_unc)} numeric matrices when
 every recorded row has the same width; mixed-width columns fall back
 to a list of numeric vectors (one per draw, \code{NULL} when not recorded).

@@ -15,10 +15,13 @@
 #'   (integer when fits in `i32`, else numeric); `logp`, `energy`,
 #'   `energy_error`, `step_size`, `step_size_bar`, `mean_tree_accept`,
 #'   `mean_tree_accept_sym` (numeric).
-#'   Wide fields (one row per draw, `NA` for unrecorded rows): when
-#'   `store_unconstrained = TRUE`, `unconstrained_draw`; when
-#'   `store_gradient = TRUE`, `gradient`; when `store_mass_matrix = TRUE`,
-#'   `mass_matrix_inv` (and any `mass_matrix_*` columns nuts-rs reports).
+#'   Wide fields (one row per draw): when `store_unconstrained = TRUE`,
+#'   `unconstrained_draw` (`NA` rows where unrecorded); when
+#'   `store_gradient = TRUE`, `gradient` (`NA` rows where unrecorded); when
+#'   `store_mass_matrix = TRUE`, `mass_matrix_inv` (and `mass_matrix_eigvals`
+#'   / `mass_matrix_stds` when reported), with the most recently recorded
+#'   value carried forward into draws between updates — the inverse mass
+#'   matrix is piecewise-constant between adapter steps, not undefined.
 #'   These surface as `(n_draws * n_chains, ndim_unc)` numeric matrices when
 #'   every recorded row has the same width; mixed-width columns fall back
 #'   to a list of numeric vectors (one per draw, `NULL` when not recorded).

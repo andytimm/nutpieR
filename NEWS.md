@@ -20,6 +20,10 @@
   are now numeric matrices with shape `(n_draws * n_chains, ndim_unc)`,
   not lists of vectors. Variable-width list columns still fall back to the
   list representation.
+* `mass_matrix_inv` / `mass_matrix_eigvals` / `mass_matrix_stds` rows that
+  fall on a non-update draw now carry the most-recent recorded value
+  forward instead of surfacing `NA` — the inverse mass matrix is
+  piecewise-constant between adapter updates.
 
 # nutpieR 1.6.0
 

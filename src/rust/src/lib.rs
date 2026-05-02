@@ -80,17 +80,9 @@ fn compile_stan_model_impl(
     let bs_path = bridgestan::download_bridgestan_src().map_err(r_err)?;
     let stan_path = PathBuf::from(stan_file);
 
-    let stanc_vec: Vec<String> = if stanc_args.len() == 0 {
-        Vec::new()
-    } else {
-        stanc_args.iter().map(|s| s.to_string()).collect()
-    };
+    let stanc_vec: Vec<String> = stanc_args.iter().map(|s| s.to_string()).collect();
     let stanc_refs: Vec<&str> = stanc_vec.iter().map(String::as_str).collect();
-    let compile_vec: Vec<String> = if compile_args.len() == 0 {
-        Vec::new()
-    } else {
-        compile_args.iter().map(|s| s.to_string()).collect()
-    };
+    let compile_vec: Vec<String> = compile_args.iter().map(|s| s.to_string()).collect();
     let compile_refs: Vec<&str> = compile_vec.iter().map(String::as_str).collect();
 
     let lib_path = bridgestan::compile_model(&bs_path, &stan_path, &stanc_refs, &compile_refs)
@@ -236,7 +228,8 @@ fn run_sampler<S: Settings>(
 /// @param store_mass_matrix Whether to store the mass matrix at each draw.
 /// @param store_unconstrained Whether to store the unconstrained position at each draw.
 /// @param store_gradient Whether to store the gradient at each draw.
-/// @param adaptation One of "diag", "low_rank", or "low-rank".
+/// @param adaptation One of "diag" or "low_rank". The R wrapper accepts
+///   "low-rank" as a Python-style alias and normalises it before calling.
 /// @param max_treedepth Optional maximum tree depth for NUTS. NULL keeps the
 ///   nuts-rs default.
 /// @param mindepth Optional minimum tree depth for NUTS.
@@ -405,7 +398,7 @@ fn sample_stan(
     }
 
     let (results, sampler_config_json) = match adaptation {
-        "low_rank" | "low-rank" => {
+        "low_rank" => {
             let mut settings = LowRankNutsSettings::default();
             configure_settings!(settings);
             if let Some(v) = opt_finite_positive_f64(&mass_matrix_gamma, "mass_matrix_gamma")? {
@@ -423,7 +416,7 @@ fn sample_stan(
         }
         other => {
             return Err(Error::Other(format!(
-                "adaptation must be one of \"diag\", \"low_rank\", or \"low-rank\", got \"{}\"",
+                "adaptation must be one of \"diag\" or \"low_rank\", got \"{}\"",
                 other
             )));
         }
@@ -757,28 +750,31 @@ fn column_to_robj(
                                 .downcast_ref::<Float64Array>()?
                                 .values();
                             let offsets = arr.value_offsets();
-                            let mut last: Option<Vec<f64>> = None;
-                            if carry_forward && skip > 0 {
-                                for row in 0..skip {
-                                    if !arr.is_null(row) {
-                                        let start = offsets[row] as usize;
-                                        last = Some(inner_values[start..start + inner_len].to_vec());
-                                    }
-                                }
-                            }
+                            // Carry the most recent non-null row's offset
+                            // forward; `inner_values` outlives the loop, so
+                            // a usize is enough — no per-row Vec clone.
+                            let mut last_start: Option<usize> = if carry_forward {
+                                (0..skip).rev().find(|&r| !arr.is_null(r))
+                                    .map(|r| offsets[r] as usize)
+                            } else {
+                                None
+                            };
                             for k in 0..n_draws {
                                 let row = skip + k;
                                 let dest_row = chain_idx * n_draws + k;
-                                let row_values: Option<&[f64]> = if arr.is_null(row) {
-                                    last.as_deref()
+                                let src_start = if arr.is_null(row) {
+                                    last_start
                                 } else {
-                                    let start = offsets[row] as usize;
-                                    last = Some(inner_values[start..start + inner_len].to_vec());
-                                    last.as_deref()
+                                    let s = offsets[row] as usize;
+                                    if carry_forward {
+                                        last_start = Some(s);
+                                    }
+                                    Some(s)
                                 };
-                                match row_values {
-                                    Some(vals) => {
-                                        for (col, &val) in vals.iter().enumerate() {
+                                match src_start {
+                                    Some(start) => {
+                                        let src = &inner_values[start..start + inner_len];
+                                        for (col, &val) in src.iter().enumerate() {
                                             dest[dest_row + col * total] = Rfloat::from(val);
                                         }
                                     }
@@ -865,9 +861,16 @@ fn extract_diagnostics(
             .map(|t| t.sample_stats.column(idx).as_ref())
             .collect();
 
-        // Drop columns that are entirely null in the requested window
-        // (e.g. mass_matrix_inv / divergence_* when their flags are off).
-        let carry_forward = name.starts_with("mass_matrix");
+        // The mass-matrix snapshots only land on update rows; treat them
+        // as piecewise-constant and carry the most recent value forward
+        // through the NA gaps. Other columns get the default null-is-NA
+        // behaviour. Explicit list, not a prefix match, so a future
+        // upstream `mass_matrix_*` column doesn't silently inherit
+        // carry-forward semantics it may not warrant.
+        let carry_forward = matches!(
+            name.as_str(),
+            "mass_matrix_inv" | "mass_matrix_eigvals" | "mass_matrix_stds"
+        );
         let non_null_start = if carry_forward { 0 } else { skip };
         let any_non_null = cols.iter().any(|c| {
             (non_null_start..skip + n_draws).any(|row| row < c.len() && !c.is_null(row))
