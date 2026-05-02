@@ -27,7 +27,7 @@ nutpie_sample(
   store_mass_matrix = FALSE,
   store_unconstrained = FALSE,
   store_gradient = FALSE,
-  adaptation = c("diag", "low_rank"),
+  adaptation = c("diag", "low_rank", "low-rank"),
   low_rank_modified_mass_matrix = FALSE,
   mass_matrix_gamma = NULL,
   mass_matrix_eigval_cutoff = NULL
@@ -153,9 +153,9 @@ draw as a list column on diagnostics (\code{gradient}). Same size profile as
 \describe{
 \item{\code{"diag"} (default)}{Diagonal mass matrix (the standard NUTS
 choice).}
-\item{\code{"low_rank"}}{Low-rank modified mass matrix adaptation. Captures
-posterior correlations and can improve efficiency on models with
-strongly correlated parameters.}
+\item{\code{"low_rank"} / \code{"low-rank"}}{Low-rank modified mass matrix
+adaptation. Captures posterior correlations and can improve
+efficiency on models with strongly correlated parameters.}
 }
 Matches the Python nutpie \verb{adaptation=} API. Additional strategies
 (\code{"draw_diag"}, \code{"flow"}) may be added in future releases.}

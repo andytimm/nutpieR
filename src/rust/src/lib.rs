@@ -236,7 +236,7 @@ fn run_sampler<S: Settings>(
 /// @param store_mass_matrix Whether to store the mass matrix at each draw.
 /// @param store_unconstrained Whether to store the unconstrained position at each draw.
 /// @param store_gradient Whether to store the gradient at each draw.
-/// @param adaptation One of "diag" or "low_rank".
+/// @param adaptation One of "diag", "low_rank", or "low-rank".
 /// @param max_treedepth Optional maximum tree depth for NUTS. NULL keeps the
 ///   nuts-rs default.
 /// @param mindepth Optional minimum tree depth for NUTS.
@@ -405,7 +405,7 @@ fn sample_stan(
     }
 
     let (results, sampler_config_json) = match adaptation {
-        "low_rank" => {
+        "low_rank" | "low-rank" => {
             let mut settings = LowRankNutsSettings::default();
             configure_settings!(settings);
             if let Some(v) = opt_finite_positive_f64(&mass_matrix_gamma, "mass_matrix_gamma")? {
@@ -423,7 +423,7 @@ fn sample_stan(
         }
         other => {
             return Err(Error::Other(format!(
-                "adaptation must be one of \"diag\" or \"low_rank\", got \"{}\"",
+                "adaptation must be one of \"diag\", \"low_rank\", or \"low-rank\", got \"{}\"",
                 other
             )));
         }

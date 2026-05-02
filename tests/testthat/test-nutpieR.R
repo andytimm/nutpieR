@@ -120,6 +120,16 @@ test_that("adaptation = 'low_rank' matches the deprecated flag's behaviour", {
   expect_equal(as.numeric(draws_new), as.numeric(draws_old))
 })
 
+test_that("adaptation = 'low-rank' is accepted as an alias", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                         num_draws = 50, num_warmup = 50, num_chains = 1,
+                         seed = 1L, refresh = 0, adaptation = "low-rank")
+  expect_s3_class(draws, "draws_array")
+  cfg <- jsonlite::fromJSON(attr(draws, "sampler_config"))
+  expect_equal(cfg$adapt_options$mass_matrix_update_freq, 20)
+})
+
 # --- resolve_constrain_flags_impl unit tests (no handle) ---------------------
 
 test_that("resolve_constrain_flags short-circuits without touching the handle when pars is NULL", {

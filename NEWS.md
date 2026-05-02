@@ -1,7 +1,8 @@
 # nutpieR 1.7.0
 
 * New `adaptation =` argument on `nutpie_sample()` selects the mass-matrix
-  strategy: `"diag"` (default) or `"low_rank"`. Matches Python nutpie's API.
+  strategy: `"diag"` (default) or `"low_rank"` / `"low-rank"`. Matches Python
+  nutpie's API.
 * `low_rank_modified_mass_matrix` is soft-deprecated; pass
   `adaptation = "low_rank"` instead.
 * New optional `mindepth`, `max_energy_error`, and `extra_doublings`

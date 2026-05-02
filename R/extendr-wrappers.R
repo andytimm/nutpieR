@@ -29,7 +29,7 @@ compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__
 #' @param store_mass_matrix Whether to store the mass matrix at each draw.
 #' @param store_unconstrained Whether to store the unconstrained position at each draw.
 #' @param store_gradient Whether to store the gradient at each draw.
-#' @param adaptation One of "diag" or "low_rank".
+#' @param adaptation One of "diag", "low_rank", or "low-rank".
 #' @param max_treedepth Optional maximum tree depth for NUTS. NULL keeps the
 #'   nuts-rs default.
 #' @param mindepth Optional minimum tree depth for NUTS.

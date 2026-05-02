@@ -97,9 +97,9 @@
 #'   \describe{
 #'     \item{`"diag"` (default)}{Diagonal mass matrix (the standard NUTS
 #'       choice).}
-#'     \item{`"low_rank"`}{Low-rank modified mass matrix adaptation. Captures
-#'       posterior correlations and can improve efficiency on models with
-#'       strongly correlated parameters.}
+#'     \item{`"low_rank"` / `"low-rank"`}{Low-rank modified mass matrix
+#'       adaptation. Captures posterior correlations and can improve
+#'       efficiency on models with strongly correlated parameters.}
 #'   }
 #'   Matches the Python nutpie `adaptation=` API. Additional strategies
 #'   (`"draw_diag"`, `"flow"`) may be added in future releases.
@@ -135,7 +135,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           store_mass_matrix = FALSE,
                           store_unconstrained = FALSE,
                           store_gradient = FALSE,
-                          adaptation = c("diag", "low_rank"),
+                          adaptation = c("diag", "low_rank", "low-rank"),
                           low_rank_modified_mass_matrix = FALSE,
                           mass_matrix_gamma = NULL,
                           mass_matrix_eigval_cutoff = NULL) {
@@ -147,6 +147,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     seed <- check_count(seed, "seed", min = 0L, max = .Machine$integer.max)
   }
   adaptation <- match.arg(adaptation)
+  if (identical(adaptation, "low-rank")) adaptation <- "low_rank"
   if (isTRUE(low_rank_modified_mass_matrix)) {
     warning(
       "`low_rank_modified_mass_matrix` is deprecated; use ",
