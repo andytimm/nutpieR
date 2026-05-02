@@ -18,6 +18,7 @@ rand = '0.10'
 arrow = { version = '57', default-features = false }
 bridgestan = { version = '2.7', features = ['download-bridgestan-src'] }
 dirs = '6'
+serde_json = '1'
 
 [patch.crates-io]
 # Patch bridgestan to add allowlist filters in build.rs.

@@ -11,8 +11,10 @@ nutpie_sample(
   num_warmup = 400L,
   num_chains = 4L,
   seed = NULL,
-  max_treedepth = 10L,
-  target_accept = 0.8,
+  max_treedepth = NULL,
+  mindepth = NULL,
+  target_accept = NULL,
+  max_energy_error = NULL,
   refresh = 100L,
   init = NULL,
   init_mean = NULL,
@@ -24,9 +26,10 @@ nutpie_sample(
   store_mass_matrix = FALSE,
   store_unconstrained = FALSE,
   store_gradient = FALSE,
+  adaptation = c("diag", "low_rank"),
   low_rank_modified_mass_matrix = FALSE,
-  mass_matrix_gamma = 1e-05,
-  mass_matrix_eigval_cutoff = 2
+  mass_matrix_gamma = NULL,
+  mass_matrix_eigval_cutoff = NULL
 )
 }
 \arguments{
@@ -50,9 +53,18 @@ or a path to a compiled shared library.}
 \item{seed}{Random seed for reproducibility.}
 
 \item{max_treedepth}{Maximum tree depth for NUTS. The number of leapfrog
-steps per draw is at most \code{2^max_treedepth}.}
+steps per draw is at most \code{2^max_treedepth}. Default \code{NULL} keeps the
+nuts-rs default (currently 10).}
 
-\item{target_accept}{Target acceptance probability for step size adaptation.}
+\item{mindepth}{Minimum tree depth for NUTS. The number of leapfrog steps
+per draw is at least \code{2^mindepth}. Default \code{NULL} keeps the nuts-rs
+default (currently 0).}
+
+\item{target_accept}{Target acceptance probability for step size adaptation.
+Default \code{NULL} keeps the nuts-rs default (currently 0.8).}
+
+\item{max_energy_error}{Energy-error threshold above which a leapfrog step
+is treated as a divergence. Default \code{NULL} keeps the nuts-rs default.}
 
 \item{refresh}{How often to print progress updates, in draws per chain.
 Set to \code{0} to suppress progress output. Default is \code{100}.}
@@ -132,25 +144,38 @@ models this can rival the draws matrix in size. Default \code{FALSE}.}
 draw as a list column on diagnostics (\code{gradient}). Same size profile as
 \code{store_unconstrained}. Default \code{FALSE}.}
 
-\item{low_rank_modified_mass_matrix}{If \code{TRUE}, use low-rank modified mass
-matrix adaptation. This can improve sampling efficiency for models with
-correlated parameters by capturing posterior correlations in the mass
-matrix. Default is \code{FALSE} (diagonal mass matrix).}
+\item{adaptation}{Mass matrix adaptation strategy. One of:
+\describe{
+\item{\code{"diag"} (default)}{Diagonal mass matrix (the standard NUTS
+choice).}
+\item{\code{"low_rank"}}{Low-rank modified mass matrix adaptation. Captures
+posterior correlations and can improve efficiency on models with
+strongly correlated parameters.}
+}
+Matches the Python nutpie \verb{adaptation=} API. Additional strategies
+(\code{"draw_diag"}, \code{"flow"}) may be added in future releases.}
+
+\item{low_rank_modified_mass_matrix}{Deprecated. If \code{TRUE}, equivalent to
+\code{adaptation = "low_rank"}. Will be removed in a future release.}
 
 \item{mass_matrix_gamma}{Regularisation parameter for low-rank mass matrix
-adaptation. Only used when \code{low_rank_modified_mass_matrix = TRUE}.
-Default is \code{1e-5}.}
+adaptation. Only used when \code{adaptation = "low_rank"}; ignored otherwise.
+Default \code{NULL} keeps the nuts-rs default (currently \code{1e-5}).}
 
 \item{mass_matrix_eigval_cutoff}{Eigenvalue cutoff for low-rank mass matrix.
 Eigenvalues outside \verb{(1/cutoff, cutoff)} are ignored. Only used when
-\code{low_rank_modified_mass_matrix = TRUE}. Default is \code{2.0}.}
+\code{adaptation = "low_rank"}; ignored otherwise. Default \code{NULL} keeps the
+nuts-rs default (currently \code{2.0}).}
 }
 \value{
 A \code{posterior::draws_array} with dimensions
 \verb{(num_draws, num_chains, n_params)}. Sampler diagnostics are attached
 as an attribute and can be retrieved with \code{\link[=nutpie_diagnostics]{nutpie_diagnostics()}}.
 The attributes \code{"num_warmup"} and \code{"num_draws"} record the sampling
-configuration (accessible via \code{attr(draws, "num_warmup")} etc.).
+configuration (accessible via \code{attr(draws, "num_warmup")} etc.). The
+\code{"sampler_config"} attribute is a JSON string capturing the \emph{effective}
+\code{nuts-rs} settings used (including any defaults that were left
+unspecified by the caller); parse with \code{\link[jsonlite:fromJSON]{jsonlite::fromJSON()}}.
 }
 \description{
 Runs the nuts-rs NUTS sampler on a compiled Stan model.

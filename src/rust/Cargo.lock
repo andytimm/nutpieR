@@ -1170,6 +1170,7 @@ dependencies = [
  "extendr-api",
  "nuts-rs",
  "rand",
+ "serde_json",
  "thiserror",
 ]
 

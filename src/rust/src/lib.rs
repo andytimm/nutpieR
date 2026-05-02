@@ -219,8 +219,6 @@ fn run_sampler<S: Settings>(
 /// @param num_warmup Number of warmup (tuning) draws per chain.
 /// @param num_chains Number of parallel chains.
 /// @param seed Random seed.
-/// @param max_treedepth Maximum tree depth for NUTS.
-/// @param target_accept Target acceptance probability for step size adaptation.
 /// @param refresh Print progress every `refresh` draws per chain (0 = no progress).
 /// @param init_positions Optional list of numeric vectors (one per chain, or length 1 = broadcast).
 /// @param jitter If TRUE, apply ±0.5 uniform jitter per coordinate.
@@ -230,9 +228,15 @@ fn run_sampler<S: Settings>(
 /// @param store_mass_matrix Whether to store the mass matrix at each draw.
 /// @param store_unconstrained Whether to store the unconstrained position at each draw.
 /// @param store_gradient Whether to store the gradient at each draw.
-/// @param low_rank Whether to use low-rank modified mass matrix adaptation.
-/// @param mass_matrix_gamma Regularisation parameter for low-rank mass matrix (default 1e-5).
-/// @param eigval_cutoff Eigenvalue cutoff for low-rank mass matrix (default 2.0).
+/// @param adaptation One of "diag" or "low_rank".
+/// @param max_treedepth Optional maximum tree depth for NUTS. NULL keeps the
+///   nuts-rs default.
+/// @param mindepth Optional minimum tree depth for NUTS.
+/// @param target_accept Optional target acceptance probability.
+/// @param max_energy_error Optional energy-error divergence threshold.
+/// @param mass_matrix_gamma Optional regularisation parameter for low-rank
+///   mass matrix.
+/// @param eigval_cutoff Optional eigenvalue cutoff for low-rank mass matrix.
 /// @param keep_indices Optional 0-indexed integer vector of constrained
 ///   parameter columns to materialize. NULL means keep all. Indices are
 ///   resolved against the post-flag column layout selected by
@@ -246,7 +250,7 @@ fn run_sampler<S: Settings>(
 ///   (including any `*_rng` calls) entirely. Must imply `include_tp = TRUE`
 ///   when `TRUE`, since GQ may reference TP.
 /// @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
-///   and optionally warmup_draws and warmup_diagnostics.
+///   sampler_config (JSON), and optionally warmup_draws and warmup_diagnostics.
 /// @noRd
 #[extendr]
 fn sample_stan(
@@ -255,8 +259,6 @@ fn sample_stan(
     num_warmup: i32,
     num_chains: i32,
     seed: i32,
-    max_treedepth: i32,
-    target_accept: f64,
     refresh: i32,
     init_positions: Robj,
     jitter: bool,
@@ -266,9 +268,13 @@ fn sample_stan(
     store_mass_matrix: bool,
     store_unconstrained: bool,
     store_gradient: bool,
-    low_rank: bool,
-    mass_matrix_gamma: f64,
-    eigval_cutoff: f64,
+    adaptation: &str,
+    max_treedepth: Robj,
+    mindepth: Robj,
+    target_accept: Robj,
+    max_energy_error: Robj,
+    mass_matrix_gamma: Robj,
+    eigval_cutoff: Robj,
     keep_indices: Robj,
     include_tp: bool,
     include_gq: bool,
@@ -281,7 +287,6 @@ fn sample_stan(
     for (val, name) in [
         (num_draws, "num_draws"),
         (num_chains, "num_chains"),
-        (max_treedepth, "max_treedepth"),
         (num_cores, "num_cores"),
     ] {
         if val <= 0 {
@@ -298,11 +303,46 @@ fn sample_stan(
         )));
     }
     check_seed(seed)?;
-    if !(target_accept > 0.0 && target_accept < 1.0) {
-        return Err(Error::Other(format!(
-            "target_accept must be in (0, 1), got {}",
-            target_accept
-        )));
+
+    // Optional config knobs. NULL on the R side leaves the nuts-rs default
+    // in place — we don't second-guess upstream tuning choices.
+    let max_treedepth_opt = opt_count(&max_treedepth, "max_treedepth", 1)?;
+    let mindepth_opt = opt_count(&mindepth, "mindepth", 0)?;
+    let target_accept_opt = opt_finite_f64(&target_accept, "target_accept")?;
+    if let Some(v) = target_accept_opt {
+        if !(v > 0.0 && v < 1.0) {
+            return Err(Error::Other(format!(
+                "target_accept must be in (0, 1), got {}",
+                v
+            )));
+        }
+    }
+    let max_energy_error_opt = opt_finite_f64(&max_energy_error, "max_energy_error")?;
+    if let Some(v) = max_energy_error_opt {
+        if !(v > 0.0) {
+            return Err(Error::Other(format!(
+                "max_energy_error must be > 0, got {}",
+                v
+            )));
+        }
+    }
+    let mass_matrix_gamma_opt = opt_finite_f64(&mass_matrix_gamma, "mass_matrix_gamma")?;
+    if let Some(v) = mass_matrix_gamma_opt {
+        if !(v > 0.0) {
+            return Err(Error::Other(format!(
+                "mass_matrix_gamma must be > 0, got {}",
+                v
+            )));
+        }
+    }
+    let eigval_cutoff_opt = opt_finite_f64(&eigval_cutoff, "eigval_cutoff")?;
+    if let Some(v) = eigval_cutoff_opt {
+        if !(v > 0.0) {
+            return Err(Error::Other(format!(
+                "eigval_cutoff must be > 0, got {}",
+                v
+            )));
+        }
     }
 
     let init_positions_raw: Option<Vec<Vec<f64>>> = if init_positions.is_null() {
@@ -365,8 +405,18 @@ fn sample_stan(
             $settings.num_draws = num_draws as u64;
             $settings.num_chains = num_chains as usize;
             $settings.seed = seed as u64;
-            $settings.maxdepth = max_treedepth as u64;
-            $settings.adapt_options.step_size_settings.target_accept = target_accept;
+            if let Some(v) = max_treedepth_opt {
+                $settings.maxdepth = v as u64;
+            }
+            if let Some(v) = mindepth_opt {
+                $settings.mindepth = v as u64;
+            }
+            if let Some(v) = target_accept_opt {
+                $settings.adapt_options.step_size_settings.target_accept = v;
+            }
+            if let Some(v) = max_energy_error_opt {
+                $settings.max_energy_error = v;
+            }
             $settings.store_divergences = store_divergences;
             $settings.store_unconstrained = store_unconstrained;
             $settings.store_gradient = store_gradient;
@@ -374,16 +424,35 @@ fn sample_stan(
         }};
     }
 
-    let results = if low_rank {
-        let mut settings = LowRankNutsSettings::default();
-        configure_settings!(settings);
-        settings.adapt_options.mass_matrix_options.gamma = mass_matrix_gamma;
-        settings.adapt_options.mass_matrix_options.eigval_cutoff = eigval_cutoff;
-        run_sampler(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
-    } else {
-        let mut settings = DiagGradNutsSettings::default();
-        configure_settings!(settings);
-        run_sampler(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
+    let (results, sampler_config_json) = match adaptation {
+        "low_rank" => {
+            let mut settings = LowRankNutsSettings::default();
+            configure_settings!(settings);
+            if let Some(v) = mass_matrix_gamma_opt {
+                settings.adapt_options.mass_matrix_options.gamma = v;
+            }
+            if let Some(v) = eigval_cutoff_opt {
+                settings.adapt_options.mass_matrix_options.eigval_cutoff = v;
+            }
+            let json = serde_json::to_string(&settings)
+                .map_err(|e| Error::Other(format!("failed to serialize sampler settings: {}", e)))?;
+            let r = run_sampler(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?;
+            (r, json)
+        }
+        "diag" => {
+            let mut settings = DiagGradNutsSettings::default();
+            configure_settings!(settings);
+            let json = serde_json::to_string(&settings)
+                .map_err(|e| Error::Other(format!("failed to serialize sampler settings: {}", e)))?;
+            let r = run_sampler(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?;
+            (r, json)
+        }
+        other => {
+            return Err(Error::Other(format!(
+                "adaptation must be one of \"diag\" or \"low_rank\", got \"{}\"",
+                other
+            )));
+        }
     };
 
     let draws_robj = build_draws_matrix(
@@ -433,9 +502,57 @@ fn sample_stan(
         diagnostics = diagnostics,
         warmup_draws = warmup_draws_robj,
         warmup_diagnostics = warmup_diagnostics_robj,
-        expand_errors = n_expand_errors
+        expand_errors = n_expand_errors,
+        sampler_config = sampler_config_json
     ))
     })())
+}
+
+/// Coerce an optional R scalar (`NULL`, integer, or numeric) to `Option<i32>`.
+/// Validates finiteness, integral-ness, and a `>= min` bound. Used by the
+/// FFI for sampler config knobs that should only override the nuts-rs
+/// default when the R caller explicitly passes a value.
+fn opt_count(robj: &Robj, name: &str, min: i32) -> Result<Option<i32>> {
+    if robj.is_null() {
+        return Ok(None);
+    }
+    let v: f64 = robj
+        .as_real()
+        .ok_or_else(|| Error::Other(format!("`{}` must be NULL or a single numeric.", name)))?;
+    if !v.is_finite() {
+        return Err(Error::Other(format!("`{}` must be a finite integer.", name)));
+    }
+    if v.fract() != 0.0 {
+        return Err(Error::Other(format!(
+            "`{}` must be a whole number, got {}.",
+            name, v
+        )));
+    }
+    if v < min as f64 || v > i32::MAX as f64 {
+        return Err(Error::Other(format!(
+            "`{}` must be in [{}, {}], got {}.",
+            name,
+            min,
+            i32::MAX,
+            v
+        )));
+    }
+    Ok(Some(v as i32))
+}
+
+/// Coerce an optional R scalar (`NULL` or numeric) to `Option<f64>`.
+/// Validates finiteness only — caller does range checks.
+fn opt_finite_f64(robj: &Robj, name: &str) -> Result<Option<f64>> {
+    if robj.is_null() {
+        return Ok(None);
+    }
+    let v: f64 = robj
+        .as_real()
+        .ok_or_else(|| Error::Other(format!("`{}` must be NULL or a single numeric.", name)))?;
+    if !v.is_finite() {
+        return Err(Error::Other(format!("`{}` must be a finite number.", name)));
+    }
+    Ok(Some(v))
 }
 
 /// Build a draws matrix from Arrow traces.
@@ -602,16 +719,87 @@ fn column_to_robj(
         DataType::Int32 => build_int_or_double!(Int32Array, |v: i32| v > i32::MIN),
         DataType::UInt32 => build_int_or_double!(UInt32Array, |v: u32| v <= i32::MAX as u32),
         DataType::LargeList(inner) if matches!(inner.data_type(), DataType::Float64) => {
-            let mut out: Vec<Robj> = Vec::with_capacity(total);
-            for c in cols {
-                let list_arr = c.as_any().downcast_ref::<LargeListArray>()?;
+            // First pass: collect downcasted handles, check whether every
+            // non-null row in the requested window has the same inner length.
+            // If so (e.g. `mass_matrix_inv`, `mass_matrix_eigvals`,
+            // `mass_matrix_stds`, all `ndim_unc` wide), surface a 2-D
+            // `(total, inner_len)` matrix instead of a list-of-vectors —
+            // much friendlier downstream.
+            let arrs: Vec<&LargeListArray> = cols
+                .iter()
+                .map(|c| c.as_any().downcast_ref::<LargeListArray>())
+                .collect::<Option<Vec<_>>>()?;
+
+            let mut uniform_len: Option<usize> = None;
+            let mut mixed = false;
+            'outer: for arr in &arrs {
                 for k in 0..n_draws {
                     let row = skip + k;
-                    if list_arr.is_null(row) {
+                    if arr.is_null(row) {
+                        continue;
+                    }
+                    let inner_arr = arr.value(row);
+                    let values = inner_arr.as_any().downcast_ref::<Float64Array>()?;
+                    let len = values.values().len();
+                    match uniform_len {
+                        None => uniform_len = Some(len),
+                        Some(prev) if prev == len => {}
+                        Some(_) => {
+                            mixed = true;
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+
+            if !mixed {
+                if let Some(inner_len) = uniform_len {
+                    if inner_len > 0 {
+                        // Column-major fill: rows of the matrix are draws,
+                        // columns are inner positions. Null rows are filled
+                        // with NA.
+                        let mut out = Doubles::new(total * inner_len);
+                        let dest: &mut [Rfloat] = &mut out;
+                        for (chain_idx, arr) in arrs.iter().enumerate() {
+                            for k in 0..n_draws {
+                                let row = skip + k;
+                                let dest_row = chain_idx * n_draws + k;
+                                if arr.is_null(row) {
+                                    for col in 0..inner_len {
+                                        dest[dest_row + col * total] = Rfloat::na();
+                                    }
+                                    continue;
+                                }
+                                let inner_arr = arr.value(row);
+                                let values =
+                                    inner_arr.as_any().downcast_ref::<Float64Array>()?;
+                                let slice: &[f64] = values.values();
+                                for (col, &val) in slice.iter().enumerate() {
+                                    dest[dest_row + col * total] = Rfloat::from(val);
+                                }
+                            }
+                        }
+                        let mut robj: Robj = out.into();
+                        robj.set_attrib(
+                            "dim",
+                            [total as i32, inner_len as i32].into_robj(),
+                        )
+                        .ok()?;
+                        return Some(robj);
+                    }
+                }
+            }
+
+            // Fallback: variable-width or all-empty rows -> list of vectors.
+            let mut out: Vec<Robj> = Vec::with_capacity(total);
+            for arr in &arrs {
+                for k in 0..n_draws {
+                    let row = skip + k;
+                    if arr.is_null(row) {
                         out.push(().into_robj());
                         continue;
                     }
-                    let inner_arr = list_arr.value(row);
+                    let inner_arr = arr.value(row);
                     let values = inner_arr.as_any().downcast_ref::<Float64Array>()?;
                     let slice: &[f64] = values.values();
                     if slice.is_empty() {
