@@ -17,6 +17,7 @@ nutpie_sample(
   max_energy_error = NULL,
   extra_doublings = NULL,
   refresh = 100L,
+  progress = c("auto", "progressr", "text", "none"),
   init = NULL,
   init_mean = NULL,
   save_warmup = FALSE,
@@ -71,8 +72,28 @@ is treated as a divergence. Default \code{NULL} keeps the nuts-rs default.}
 turning point is reached. Default \code{NULL} keeps the nuts-rs default
 (currently 0).}
 
-\item{refresh}{How often to print progress updates, in draws per chain.
-Set to \code{0} to suppress progress output. Default is \code{100}.}
+\item{refresh}{How often to update progress, in draws per chain.
+Set to \code{0} to suppress progress reporting (overrides \code{progress}). Default
+is \code{100}. Only consulted when \code{progress = "text"} (or \code{"auto"} when
+progressr isn't available); progressr renders on every poll wakeup.}
+
+\item{progress}{How to report sampling progress. One of:
+\describe{
+\item{\code{"auto"} (default)}{Use progressr when running interactively and
+both \code{progressr} and \code{cli} are installed; otherwise fall back to
+\code{"text"}. \code{refresh = 0} always silences output.}
+\item{\code{"progressr"}}{Force progressr signalling. Errors if
+\code{progressr} / \code{cli} aren't installed. If no progressr handler is
+registered for the session, a \code{cli}-styled handler is installed
+globally so a bar appears without wrapping the call in
+\code{progressr::with_progress({...})}.}
+\item{\code{"text"}}{Per-chain text log paced by \code{refresh} (the original
+behaviour).}
+\item{\code{"none"}}{No progress output. Equivalent to \code{refresh = 0}.}
+}
+Override the default progressr handler by calling
+\code{progressr::handlers(...)} or wrapping the call site in
+\code{progressr::with_progress({...})}.}
 
 \item{init}{Initial values for each chain. Single entry point that
 dispatches on the input shape:

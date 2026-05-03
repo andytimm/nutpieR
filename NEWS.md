@@ -1,3 +1,11 @@
+# nutpieR 1.8.0
+
+* Sampling progress now uses `progressr` (with a `cli`-styled handler by
+  default) in interactive sessions; users can override with
+  `progressr::with_progress({...})` and any registered handler. New
+  `progress = "text"` argument restores the previous per-chain text log,
+  and `progress = "none"` silences output.
+
 # nutpieR 1.7.0
 
 * New `adaptation =` argument on `nutpie_sample()` selects the mass-matrix

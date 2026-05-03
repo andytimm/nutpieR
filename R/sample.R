@@ -26,8 +26,27 @@
 #' @param extra_doublings Number of additional tree doublings allowed after a
 #'   turning point is reached. Default `NULL` keeps the nuts-rs default
 #'   (currently 0).
-#' @param refresh How often to print progress updates, in draws per chain.
-#'   Set to `0` to suppress progress output. Default is `100`.
+#' @param refresh How often to update progress, in draws per chain.
+#'   Set to `0` to suppress progress reporting (overrides `progress`). Default
+#'   is `100`. Only consulted when `progress = "text"` (or `"auto"` when
+#'   progressr isn't available); progressr renders on every poll wakeup.
+#' @param progress How to report sampling progress. One of:
+#'   \describe{
+#'     \item{`"auto"` (default)}{Use progressr when running interactively and
+#'       both `progressr` and `cli` are installed; otherwise fall back to
+#'       `"text"`. `refresh = 0` always silences output.}
+#'     \item{`"progressr"`}{Force progressr signalling. Errors if
+#'       `progressr` / `cli` aren't installed. If no progressr handler is
+#'       registered for the session, a `cli`-styled handler is installed
+#'       globally so a bar appears without wrapping the call in
+#'       `progressr::with_progress({...})`.}
+#'     \item{`"text"`}{Per-chain text log paced by `refresh` (the original
+#'       behaviour).}
+#'     \item{`"none"`}{No progress output. Equivalent to `refresh = 0`.}
+#'   }
+#'   Override the default progressr handler by calling
+#'   `progressr::handlers(...)` or wrapping the call site in
+#'   `progressr::with_progress({...})`.
 #' @param init Initial values for each chain. Single entry point that
 #'   dispatches on the input shape:
 #'   \describe{
@@ -127,6 +146,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           target_accept = NULL, max_energy_error = NULL,
                           extra_doublings = NULL,
                           refresh = 100L,
+                          progress = c("auto", "progressr", "text", "none"),
                           init = NULL,
                           init_mean = NULL,
                           save_warmup = FALSE, cores = NULL,
@@ -148,6 +168,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   }
   adaptation <- match.arg(adaptation)
   if (identical(adaptation, "low-rank")) adaptation <- "low_rank"
+  progress <- match.arg(progress)
   if (isTRUE(low_rank_modified_mass_matrix)) {
     warning(
       "`low_rank_modified_mass_matrix` is deprecated; use ",
@@ -176,13 +197,28 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                                                flags$include_gq)
   keep_indices <- resolve_keep_indices(constrain_names, pars, include)
 
+  resolved_progress <- resolve_progress_mode(progress, refresh)
+  progress_callback <- NULL
+  effective_refresh <- switch(
+    resolved_progress,
+    "none" = 0L,
+    "text" = as.integer(refresh),
+    # progressr drives rendering off the closure; the Rust poll cadence is
+    # already 200 ms, so refresh just needs to be > 0 to keep the loop active.
+    "progressr" = 1L
+  )
+  if (identical(resolved_progress, "progressr")) {
+    register_default_progress_handler()
+    progress_callback <- make_progressr_callback(num_chains, num_warmup, num_draws)
+  }
+
   raw <- sample_stan(
     handle,
     num_draws,
     num_warmup,
     num_chains,
     as.integer(seed),
-    as.integer(refresh),
+    effective_refresh,
     init_resolved$positions,
     isTRUE(init_resolved$jitter),
     isTRUE(save_warmup),
@@ -201,7 +237,8 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     opt_double(mass_matrix_eigval_cutoff, "mass_matrix_eigval_cutoff"),
     keep_indices,
     isTRUE(flags$include_tp),
-    isTRUE(flags$include_gq)
+    isTRUE(flags$include_gq),
+    progress_callback
   )
   draws <- matrix_to_draws_array(raw$draws, num_draws, num_chains)
   attr(draws, "diagnostics") <- raw$diagnostics
@@ -228,6 +265,29 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   }
 
   draws
+}
+
+# Resolve the user-facing `progress` arg into the actual reporting mode.
+# `refresh = 0` always wins (it's the documented kill switch). Otherwise:
+#   "auto"      -> "progressr" if interactive + packages installed, else "text"
+#   "progressr" -> "progressr" (errors if packages missing)
+#   "text"      -> "text"
+#   "none"      -> "none"
+resolve_progress_mode <- function(progress, refresh) {
+  if (isTRUE(refresh <= 0L)) return("none")
+  switch(
+    progress,
+    "auto" = if (should_use_progressr()) "progressr" else "text",
+    "progressr" = {
+      if (!requireNamespace("progressr", quietly = TRUE)) {
+        stop("`progress = \"progressr\"` requires the 'progressr' package. ",
+             "Install it or set `progress = \"text\"`.", call. = FALSE)
+      }
+      "progressr"
+    },
+    "text" = "text",
+    "none" = "none"
+  )
 }
 
 opt_double <- function(x, name) {
