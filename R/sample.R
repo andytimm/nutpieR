@@ -26,10 +26,9 @@
 #' @param extra_doublings Number of additional tree doublings allowed after a
 #'   turning point is reached. Default `NULL` keeps the nuts-rs default
 #'   (currently 0).
-#' @param refresh How often to update progress, in draws per chain.
-#'   Set to `0` to suppress progress reporting (overrides `progress`). Default
-#'   is `100`. Only consulted when `progress = "text"` (or `"auto"` when
-#'   progressr isn't available); progressr renders on every poll wakeup.
+#' @param refresh How often to update the per-chain text log, in draws per
+#'   chain. Set to `0` to suppress all progress output (overrides `progress`).
+#'   Ignored when progressr is rendering. Default is `100`.
 #' @param progress How to report sampling progress. One of:
 #'   \describe{
 #'     \item{`"auto"` (default)}{Use progressr when running interactively and
@@ -203,8 +202,6 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     resolved_progress,
     "none" = 0L,
     "text" = as.integer(refresh),
-    # progressr drives rendering off the closure; the Rust poll cadence is
-    # already 200 ms, so refresh just needs to be > 0 to keep the loop active.
     "progressr" = 1L
   )
   if (identical(resolved_progress, "progressr")) {
@@ -267,12 +264,6 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   draws
 }
 
-# Resolve the user-facing `progress` arg into the actual reporting mode.
-# `refresh = 0` always wins (it's the documented kill switch). Otherwise:
-#   "auto"      -> "progressr" if interactive + packages installed, else "text"
-#   "progressr" -> "progressr" (errors if packages missing)
-#   "text"      -> "text"
-#   "none"      -> "none"
 resolve_progress_mode <- function(progress, refresh) {
   if (isTRUE(refresh <= 0L)) return("none")
   switch(

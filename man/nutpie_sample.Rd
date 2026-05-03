@@ -72,10 +72,9 @@ is treated as a divergence. Default \code{NULL} keeps the nuts-rs default.}
 turning point is reached. Default \code{NULL} keeps the nuts-rs default
 (currently 0).}
 
-\item{refresh}{How often to update progress, in draws per chain.
-Set to \code{0} to suppress progress reporting (overrides \code{progress}). Default
-is \code{100}. Only consulted when \code{progress = "text"} (or \code{"auto"} when
-progressr isn't available); progressr renders on every poll wakeup.}
+\item{refresh}{How often to update the per-chain text log, in draws per
+chain. Set to \code{0} to suppress all progress output (overrides \code{progress}).
+Ignored when progressr is rendering. Default is \code{100}.}
 
 \item{progress}{How to report sampling progress. One of:
 \describe{

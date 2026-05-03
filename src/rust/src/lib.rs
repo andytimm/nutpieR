@@ -101,10 +101,6 @@ struct ChainState {
 
 /// Sample from a Stan model using nuts-rs NUTS sampler.
 /// Run the sampler with progress reporting. Generic over Settings type.
-///
-/// `progress_cb`, when supplied, receives a per-chain snapshot list on each
-/// poll wakeup and replaces the built-in per-chain text log. The closure
-/// runs on the main R thread (this function), so no threading hazards.
 fn run_sampler<S: Settings>(
     stan_model: model::StanModel,
     settings: S,
@@ -115,15 +111,16 @@ fn run_sampler<S: Settings>(
     refresh: i32,
     progress_cb: Option<Function>,
 ) -> Result<Vec<ArrowTrace>> {
-    let show_progress = refresh > 0;
     let refresh = refresh.max(0) as usize;
     let use_callback = progress_cb.is_some();
+    let text_log = refresh > 0 && !use_callback;
+    let poll = text_log || use_callback;
 
     let progress_state: Arc<Mutex<Vec<ChainState>>> =
         Arc::new(Mutex::new(Vec::new()));
     let state_clone = progress_state.clone();
 
-    let callback = if show_progress || use_callback {
+    let callback = if poll {
         Some(ProgressCallback {
             callback: Box::new(
                 move |_elapsed: Duration, progress: Box<[ChainProgress]>| {
@@ -152,10 +149,14 @@ fn run_sampler<S: Settings>(
     );
 
     let start = Instant::now();
-    let mut last_reported: Vec<usize> = vec![0; num_chains as usize];
+    let mut last_reported: Vec<usize> = if text_log {
+        vec![0; num_chains as usize]
+    } else {
+        Vec::new()
+    };
     let mut callback_warned = false;
 
-    if show_progress && !use_callback {
+    if text_log {
         rprintln!(
             "Sampling {} chains, {} draws each ({} warmup)...\n",
             num_chains,
@@ -164,13 +165,14 @@ fn run_sampler<S: Settings>(
         );
     }
 
+    let wait_dur = if poll {
+        Duration::from_millis(200)
+    } else {
+        Duration::from_secs(600)
+    };
+
     let results = loop {
         let sampler = sampler_opt.take().unwrap();
-        let wait_dur = if show_progress || use_callback {
-            Duration::from_millis(200)
-        } else {
-            Duration::from_secs(600)
-        };
         match sampler.wait_timeout(wait_dur) {
             SamplerWaitResult::Trace(traces) => break traces,
             SamplerWaitResult::Timeout(s) => {
@@ -194,7 +196,7 @@ fn run_sampler<S: Settings>(
                             callback_warned = true;
                         }
                     }
-                } else if show_progress {
+                } else if text_log {
                     for (i, chain) in state_snapshot.iter().enumerate() {
                         let draws_since = chain.finished_draws.saturating_sub(last_reported[i]);
                         if draws_since >= refresh {
@@ -229,7 +231,7 @@ fn run_sampler<S: Settings>(
         }
     };
 
-    if show_progress && !use_callback {
+    if text_log {
         let elapsed = start.elapsed().as_secs_f64();
         rprintln!("\nSampling complete ({:.1}s)", elapsed);
     }
@@ -237,9 +239,8 @@ fn run_sampler<S: Settings>(
     Ok(results)
 }
 
-/// Build a `List` of per-chain named lists for the R progress callback. Each
-/// element exposes `finished_draws`, `total_draws`, `divergences`, `tuning`,
-/// and `step_size` so the R-side handler can render whatever it wants.
+/// Build a `List` of per-chain named lists for the R progress callback.
+/// Field set must match `make_progressr_callback()` in `R/progress.R`.
 fn build_progress_snapshot(state: &[ChainState]) -> List {
     let entries: Vec<Robj> = state
         .iter()
@@ -366,17 +367,7 @@ fn sample_stan(
     let max_energy_error_opt = opt_finite_positive_f64(&max_energy_error, "max_energy_error")?;
     let extra_doublings_opt = opt_count(&extra_doublings, "extra_doublings", 0)?;
 
-    let progress_cb: Option<Function> = if progress_callback.is_null() {
-        None
-    } else if progress_callback.is_function() {
-        Some(progress_callback.as_function().ok_or_else(|| {
-            Error::Other("progress_callback must be NULL or a function".into())
-        })?)
-    } else {
-        return Err(Error::Other(
-            "progress_callback must be NULL or a function".into(),
-        ));
-    };
+    let progress_cb = opt_function(&progress_callback, "progress_callback")?;
 
     let init_positions_raw: Option<Vec<Vec<f64>>> = if init_positions.is_null() {
         None
@@ -572,6 +563,15 @@ fn opt_finite_in_open_unit(robj: &Robj, name: &str) -> Result<Option<f64>> {
         }
     }
     Ok(v)
+}
+
+fn opt_function(robj: &Robj, name: &str) -> Result<Option<Function>> {
+    if robj.is_null() {
+        return Ok(None);
+    }
+    robj.as_function()
+        .map(Some)
+        .ok_or_else(|| Error::Other(format!("`{}` must be NULL or a function.", name)))
 }
 
 fn opt_count(robj: &Robj, name: &str, min: i32) -> Result<Option<i32>> {
