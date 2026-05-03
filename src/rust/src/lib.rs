@@ -77,6 +77,17 @@ fn compile_stan_model_impl(
     stanc_args: Strings,
     compile_args: Strings,
 ) -> Result<String> {
+    // Mirror the bridgestan crate's own cache-presence guard so the message
+    // only fires on the genuine first-compile path. ~150s silent pause for
+    // a 235 MB fetch was the single most reported dogfood surprise.
+    if let Some(home) = dirs::home_dir() {
+        let cache = home
+            .join(".bridgestan")
+            .join(format!("bridgestan-{}", bridgestan::VERSION));
+        if !cache.exists() {
+            rprintln!("Downloading BridgeStan sources (one-time, ~235 MB)...");
+        }
+    }
     let bs_path = bridgestan::download_bridgestan_src().map_err(r_err)?;
     let stan_path = PathBuf::from(stan_file);
 
