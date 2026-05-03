@@ -147,6 +147,14 @@ fn run_sampler<S: Settings>(
 
     let start = Instant::now();
     let mut last_reported: Vec<usize> = vec![0; num_chains as usize];
+    let mut chain_announced: Vec<bool> = vec![false; num_chains as usize];
+    let announce_finished = |i: usize| {
+        rprintln!(
+            "  Chain {} finished in {:.1}s",
+            i + 1,
+            start.elapsed().as_secs_f64()
+        );
+    };
 
     if show_progress {
         rprintln!(
@@ -198,6 +206,13 @@ fn run_sampler<S: Settings>(
                                 }
                                 last_reported[i] = chain.finished_draws;
                             }
+                            if !chain_announced[i]
+                                && chain.total_draws > 0
+                                && chain.finished_draws >= chain.total_draws
+                            {
+                                announce_finished(i);
+                                chain_announced[i] = true;
+                            }
                         }
                     }
                 }
@@ -207,8 +222,31 @@ fn run_sampler<S: Settings>(
     };
 
     if show_progress {
+        let total_divergences: usize = {
+            let state = progress_state.lock().unwrap();
+            for i in 0..state.len() {
+                if !chain_announced[i] {
+                    announce_finished(i);
+                    chain_announced[i] = true;
+                }
+            }
+            state.iter().map(|c| c.divergences).sum()
+        };
+
         let elapsed = start.elapsed().as_secs_f64();
         rprintln!("\nSampling complete ({:.1}s)", elapsed);
+
+        if total_divergences > 0 {
+            let total_post_warmup = (num_chains as usize) * (num_draws as usize);
+            let pct = 100.0 * total_divergences as f64 / total_post_warmup as f64;
+            rprintln!(
+                "\nWarning: {} of {} transitions ended with a divergence ({:.1}%).",
+                total_divergences,
+                total_post_warmup,
+                pct,
+            );
+            rprintln!("See https://mc-stan.org/misc/warnings for details.");
+        }
     }
 
     Ok(results)
