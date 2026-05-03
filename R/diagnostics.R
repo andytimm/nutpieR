@@ -157,3 +157,56 @@ nutpie_warmup_diagnostics <- function(draws) {
   }
   diag
 }
+
+#' NUTS sampler parameters in bayesplot's long format
+#'
+#' Reshapes the diagnostics from [nutpie_diagnostics()] into the four-column
+#' long-format `data.frame` that bayesplot's NUTS plotting helpers (e.g.
+#' `bayesplot::mcmc_pairs(np = ...)`, `bayesplot::mcmc_nuts_divergence()`)
+#' expect. Names match Stan's CSV convention (`accept_stat__`,
+#' `divergent__`, `treedepth__`, `n_leapfrog__`, `stepsize__`,
+#' `energy__`).
+#'
+#' @param draws A `posterior::draws_array` returned by [nutpie_sample()].
+#' @return A `data.frame` with columns:
+#'   \describe{
+#'     \item{`Chain`}{Integer chain index (1-indexed).}
+#'     \item{`Iteration`}{Integer post-warmup draw index (1-indexed
+#'       within chain, in `1:num_draws`).}
+#'     \item{`Parameter`}{Character; one of `"accept_stat__"`,
+#'       `"divergent__"`, `"treedepth__"`, `"n_leapfrog__"`,
+#'       `"stepsize__"`, `"energy__"`.}
+#'     \item{`Value`}{Numeric value of the corresponding diagnostic.}
+#'   }
+#'   The data frame has `num_draws * num_chains * 6` rows.
+#' @seealso [bayesplot::mcmc_pairs()] for the most common consumer of this
+#'   format. [nutpie_diagnostics()] for the raw diagnostics.
+#' @export
+nutpie_nuts_params <- function(draws) {
+  diag <- nutpie_diagnostics(draws)
+  num_chains <- attr(diag, "num_chains") %||% dim(draws)[[2]] %||% 1L
+  n <- length(diag$diverging %||% diag[[1]])
+  n_per_chain <- n %/% num_chains
+
+  chain <- as.integer(diag$chain %||% rep(seq_len(num_chains), each = n_per_chain))
+  iter  <- as.integer(diag$draw  %||% rep(seq_len(n_per_chain), times = num_chains))
+
+  mk <- function(name, values) {
+    data.frame(
+      Chain = chain,
+      Iteration = iter,
+      Parameter = name,
+      Value = as.numeric(values),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  do.call(rbind, list(
+    mk("accept_stat__", diag$mean_tree_accept),
+    mk("divergent__",   as.integer(diag$diverging)),
+    mk("treedepth__",   diag$depth),
+    mk("n_leapfrog__",  diag$n_steps),
+    mk("stepsize__",    diag$step_size),
+    mk("energy__",      diag$energy)
+  ))
+}
