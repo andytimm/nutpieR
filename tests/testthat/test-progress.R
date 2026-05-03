@@ -78,12 +78,16 @@ test_that("refresh = 0 wins over progress argument", {
   expect_equal(nutpieR:::resolve_progress_mode("text", refresh = 0L), "none")
 })
 
-test_that("a buggy progress callback does not crash the sample", {
+test_that("a failing callback is disabled after the first error", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
   skip_if_not_installed("progressr")
+  call_count <- 0L
   testthat::local_mocked_bindings(
     make_progressr_callback = function(num_chains, num_warmup, num_draws) {
-      function(snapshot) stop("kaboom")
+      function(snapshot) {
+        call_count <<- call_count + 1L
+        stop("kaboom")
+      }
     },
     .package = "nutpieR"
   )
@@ -100,4 +104,5 @@ test_that("a buggy progress callback does not crash the sample", {
     type = "output"
   )
   expect_s3_class(draws, "draws_array")
+  expect_lte(call_count, 1L)
 })

@@ -45,12 +45,24 @@ make_progressr_callback <- function(num_chains, num_warmup, num_draws) {
 #' @noRd
 register_default_progress_handler <- function() {
   if (!requireNamespace("progressr", quietly = TRUE)) return(invisible(FALSE))
-  if (length(progressr::handlers()) > 0L) return(invisible(FALSE))
+  # progressr::handlers() always returns the package-level txtprogressbar
+  # default in a fresh session, so length() > 0 is meaningless. The user's
+  # explicit configuration lives in `options(progressr.handlers = ...)`;
+  # NULL means they haven't customized.
+  if (!is.null(getOption("progressr.handlers"))) return(invisible(FALSE))
   handler <- if (requireNamespace("cli", quietly = TRUE)) {
     progressr::handler_cli()
   } else {
-    "txtprogressbar"
+    progressr::handler_txtprogressbar()
   }
-  progressr::handlers(global = TRUE, handler)
+  progressr::handlers(handler)
+  # Enabling global rendering fails when calling handlers are already on the
+  # stack — which is exactly what `progressr::with_progress({...})` does. In
+  # that case the user has already opted into rendering, so we just leave the
+  # handler list set and let `with_progress` drive it.
+  tryCatch(
+    progressr::handlers(global = TRUE),
+    error = function(e) NULL
+  )
   invisible(TRUE)
 }

@@ -2,7 +2,7 @@
 
 use arrow::array::{
     Array, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array, LargeListArray,
-    UInt32Array, UInt64Array,
+    StringArray, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::DataType;
 use extendr_api::prelude::*;
@@ -112,6 +112,7 @@ fn run_sampler<S: Settings>(
     progress_cb: Option<Function>,
 ) -> Result<Vec<ArrowTrace>> {
     let refresh = refresh.max(0) as usize;
+    let mut progress_cb = progress_cb;
     let use_callback = progress_cb.is_some();
     let text_log = refresh > 0 && !use_callback;
     let poll = text_log || use_callback;
@@ -154,8 +155,6 @@ fn run_sampler<S: Settings>(
     } else {
         Vec::new()
     };
-    let mut callback_warned = false;
-
     if text_log {
         rprintln!(
             "Sampling {} chains, {} draws each ({} warmup)...\n",
@@ -184,19 +183,26 @@ fn run_sampler<S: Settings>(
                 if state_snapshot.is_empty() {
                     continue;
                 }
-                if let Some(ref cb) = progress_cb {
+                let cb_failed = if let Some(ref cb) = progress_cb {
                     let snapshot_list = build_progress_snapshot(&state_snapshot);
                     let pairlist = Pairlist::from_pairs([("", Robj::from(snapshot_list))]);
-                    if let Err(e) = cb.call(pairlist) {
-                        if !callback_warned {
+                    match cb.call(pairlist) {
+                        Ok(_) => false,
+                        Err(e) => {
                             rprintln!(
-                                "nutpieR: progress callback failed ({}); suppressing further callbacks for this run.",
+                                "nutpieR: progress callback failed ({}); disabling further callbacks for this run.",
                                 e
                             );
-                            callback_warned = true;
+                            true
                         }
                     }
-                } else if text_log {
+                } else {
+                    false
+                };
+                if cb_failed {
+                    progress_cb = None;
+                }
+                if text_log {
                     for (i, chain) in state_snapshot.iter().enumerate() {
                         let draws_since = chain.finished_draws.saturating_sub(last_reported[i]);
                         if draws_since >= refresh {
@@ -758,6 +764,21 @@ fn column_to_robj(
                     } else {
                         Rbool::from(arr.value(row))
                     };
+                    i += 1;
+                }
+            }
+            Some(out.into())
+        }
+        DataType::Utf8 => {
+            let mut out = Strings::new_with_na(total);
+            let mut i = 0;
+            for c in cols {
+                let arr = c.as_any().downcast_ref::<StringArray>()?;
+                for k in 0..n_draws {
+                    let row = skip + k;
+                    if !arr.is_null(row) {
+                        out.set_elt(i, Rstr::from(arr.value(row)));
+                    }
                     i += 1;
                 }
             }
