@@ -19,6 +19,13 @@
 #'   `TRUE` maps to `"unconstrained"`, `FALSE` maps to `"full"`. Emits a
 #'   deprecation warning and will be removed in a future version.
 #' @return A character vector of parameter names.
+#' @examples
+#' \dontrun{
+#' model <- nutpie_compile_model(stan_file = "my_model.stan")
+#' nutpie_param_names(model, data = dat)                       # block (default)
+#' nutpie_param_names(model, data = dat, which = "unconstrained")
+#' nutpie_param_names(model, data = dat, which = "full")       # incl. TP + GQ
+#' }
 #' @export
 nutpie_param_names <- function(model, data = NULL,
                                which = c("block", "unconstrained", "full"),
@@ -65,6 +72,11 @@ nutpie_param_names <- function(model, data = NULL,
 #'   Required if the model has a `data` block.
 #' @return A named numeric vector whose names are the unconstrained parameter
 #'   names (in BridgeStan's internal order).
+#' @examples
+#' \dontrun{
+#' model <- nutpie_compile_model(stan_file = "my_model.stan")
+#' nutpie_unconstrain(model, params = list(mu = 0, sigma = 1), data = dat)
+#' }
 #' @export
 nutpie_unconstrain <- function(model, params, data = NULL) {
   if (!is.list(params) || is.null(names(params)) || any(names(params) == "")) {

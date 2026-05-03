@@ -69,6 +69,14 @@ rename_sampler_config <- function(json_str) {
 #'   With `store_divergences = TRUE`: `divergence_start`, `divergence_end`,
 #'   `divergence_momentum`, `divergence_start_gradient` (lists, only
 #'   present when at least one draw diverged).
+#' @examples
+#' \dontrun{
+#' draws <- nutpie_sample(model, data = dat, num_draws = 1000, num_chains = 4)
+#' diag <- nutpie_diagnostics(draws)
+#' diag                               # printed summary
+#' sum(diag$diverging)                # divergence count
+#' max(diag$depth)                    # peak treedepth across all draws
+#' }
 #' @export
 nutpie_diagnostics <- function(draws) {
   diag <- attr(draws, "diagnostics")
@@ -131,6 +139,12 @@ print.nutpie_diagnostics <- function(x, ...) {
 #'   `save_warmup = TRUE`.
 #' @return A `posterior::draws_array` containing the warmup draws, or `NULL`
 #'   if warmup draws were not saved.
+#' @examples
+#' \dontrun{
+#' draws <- nutpie_sample(model, data = dat, save_warmup = TRUE)
+#' warmup <- nutpie_warmup_draws(draws)
+#' posterior::summarize_draws(warmup)
+#' }
 #' @export
 nutpie_warmup_draws <- function(draws) {
   warmup <- attr(draws, "warmup_draws")
@@ -148,6 +162,12 @@ nutpie_warmup_draws <- function(draws) {
 #' @return A named list of diagnostic vectors for the warmup phase. `chain`
 #'   is 1-indexed and `draw` is 1-indexed in `1:num_warmup`; see
 #'   [nutpie_diagnostics()] for the full indexing convention.
+#' @examples
+#' \dontrun{
+#' draws <- nutpie_sample(model, data = dat, save_warmup = TRUE)
+#' wd <- nutpie_warmup_diagnostics(draws)
+#' max(wd$depth)                       # warmup treedepth peak
+#' }
 #' @export
 nutpie_warmup_diagnostics <- function(draws) {
   diag <- attr(draws, "warmup_diagnostics")
@@ -181,6 +201,12 @@ nutpie_warmup_diagnostics <- function(draws) {
 #'   The data frame has `num_draws * num_chains * 6` rows.
 #' @seealso [bayesplot::mcmc_pairs()] for the most common consumer of this
 #'   format. [nutpie_diagnostics()] for the raw diagnostics.
+#' @examples
+#' \dontrun{
+#' draws <- nutpie_sample(model, data = dat, num_chains = 4)
+#' np <- nutpie_nuts_params(draws)
+#' bayesplot::mcmc_pairs(draws, np = np, pars = c("mu", "tau"))
+#' }
 #' @export
 nutpie_nuts_params <- function(draws) {
   diag <- nutpie_diagnostics(draws)

@@ -30,6 +30,13 @@ expect. Names match Stan's CSV convention (\code{accept_stat__},
 \code{divergent__}, \code{treedepth__}, \code{n_leapfrog__}, \code{stepsize__},
 \code{energy__}).
 }
+\examples{
+\dontrun{
+draws <- nutpie_sample(model, data = dat, num_chains = 4)
+np <- nutpie_nuts_params(draws)
+bayesplot::mcmc_pairs(draws, np = np, pars = c("mu", "tau"))
+}
+}
 \seealso{
 \code{\link[bayesplot:MCMC-scatterplots]{bayesplot::mcmc_pairs()}} for the most common consumer of this
 format. \code{\link[=nutpie_diagnostics]{nutpie_diagnostics()}} for the raw diagnostics.

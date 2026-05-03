@@ -46,6 +46,18 @@
 #'   flags all match. When `FALSE`, force a fresh compile.
 #' @return An object of class `"nutpie_model"` containing the path to the
 #'   compiled shared library.
+#' @examples
+#' \dontrun{
+#' # From a .stan file (cached next to the file)
+#' model <- nutpie_compile_model(stan_file = "my_model.stan")
+#'
+#' # From an inline code string (cached under nutpie_cache_dir())
+#' model <- nutpie_compile_model(code = "
+#'   data { int<lower=0> N; array[N] int<lower=0,upper=1> y; }
+#'   parameters { real<lower=0,upper=1> theta; }
+#'   model { theta ~ beta(1, 1); y ~ bernoulli(theta); }
+#' ")
+#' }
 #' @export
 nutpie_compile_model <- function(stan_file = NULL, code = NULL,
                                  stanc_args = character(),

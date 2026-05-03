@@ -18,3 +18,10 @@ is 1-indexed and \code{draw} is 1-indexed in \code{1:num_warmup}; see
 \description{
 Extract warmup diagnostics from nutpie output
 }
+\examples{
+\dontrun{
+draws <- nutpie_sample(model, data = dat, save_warmup = TRUE)
+wd <- nutpie_warmup_diagnostics(draws)
+max(wd$depth)                       # warmup treedepth peak
+}
+}

@@ -126,6 +126,25 @@
 #'   *effective* `nuts-rs` settings used (including any defaults that were
 #'   left unspecified by the caller, and exposing `num_warmup` to match the
 #'   function argument name); parse with [jsonlite::fromJSON()].
+#' @examples
+#' \dontrun{
+#' model <- nutpie_compile_model(code = "
+#'   data { int<lower=0> N; array[N] int<lower=0,upper=1> y; }
+#'   parameters { real<lower=0,upper=1> theta; }
+#'   model { theta ~ beta(1, 1); y ~ bernoulli(theta); }
+#' ")
+#'
+#' draws <- nutpie_sample(
+#'   model,
+#'   data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
+#'   num_draws = 1000, num_chains = 4, seed = 604
+#' )
+#'
+#' dim(draws)                       # (num_draws, num_chains, n_params)
+#' posterior::variables(draws)
+#' posterior::summarize_draws(draws)
+#' nutpie_diagnostics(draws)
+#' }
 #' @export
 nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           num_warmup = 400L, num_chains = 4L, seed = NULL,

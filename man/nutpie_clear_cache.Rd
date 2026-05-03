@@ -17,3 +17,6 @@ are not affected -- those live next to the \code{.stan}; remove the
 corresponding \verb{<basename>_model.so} (and \code{.cache_meta} sidecar) directly
 to invalidate.
 }
+\examples{
+nutpie_clear_cache()
+}

@@ -48,3 +48,12 @@ diagnostics (returned via \code{\link[=nutpie_warmup_diagnostics]{nutpie_warmup_
 joins cleanly against draws indexed by \verb{(chain, iteration)}.
 }
 
+\examples{
+\dontrun{
+draws <- nutpie_sample(model, data = dat, num_draws = 1000, num_chains = 4)
+diag <- nutpie_diagnostics(draws)
+diag                               # printed summary
+sum(diag$diverging)                # divergence count
+max(diag$depth)                    # peak treedepth across all draws
+}
+}

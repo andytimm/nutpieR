@@ -265,6 +265,8 @@ compile_inline <- function(code, stanc_args, compile_args, verbose, use_cache) {
 #' to invalidate.
 #'
 #' @return Invisibly `NULL`.
+#' @examples
+#' nutpie_clear_cache()
 #' @export
 nutpie_clear_cache <- function() {
   for (d in c(tools::R_user_dir("nutpieR", "cache"),
@@ -282,6 +284,8 @@ nutpie_clear_cache <- function() {
 #' troubleshooting, or `unlink()`-ing a single entry.
 #'
 #' @return A character string with the path to the cache root.
+#' @examples
+#' nutpie_cache_dir()
 #' @export
 nutpie_cache_dir <- function() {
   inline_cache_dir()

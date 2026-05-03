@@ -17,3 +17,10 @@ if warmup draws were not saved.
 \description{
 Extract warmup draws from nutpie output
 }
+\examples{
+\dontrun{
+draws <- nutpie_sample(model, data = dat, save_warmup = TRUE)
+warmup <- nutpie_warmup_draws(draws)
+posterior::summarize_draws(warmup)
+}
+}
