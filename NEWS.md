@@ -1,4 +1,4 @@
-# nutpieR 1.8.0
+# nutpieR 1.7.3
 
 * `nutpie_diagnostics()` and `nutpie_warmup_diagnostics()` now return
   1-indexed `chain` and 1-indexed phase-relative `draw`, matching
