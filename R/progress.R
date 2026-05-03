@@ -1,4 +1,14 @@
 #' @noRd
+in_with_progress <- function() {
+  if (!requireNamespace("progressr", quietly = TRUE)) return(FALSE)
+  target <- progressr::with_progress
+  for (i in seq_len(sys.nframe())) {
+    if (identical(sys.function(i), target)) return(TRUE)
+  }
+  FALSE
+}
+
+#' @noRd
 should_use_progressr <- function() {
   interactive() &&
     requireNamespace("progressr", quietly = TRUE) &&
@@ -56,13 +66,5 @@ register_default_progress_handler <- function() {
     progressr::handler_txtprogressbar()
   }
   progressr::handlers(handler)
-  # Enabling global rendering fails when calling handlers are already on the
-  # stack — which is exactly what `progressr::with_progress({...})` does. In
-  # that case the user has already opted into rendering, so we just leave the
-  # handler list set and let `with_progress` drive it.
-  tryCatch(
-    progressr::handlers(global = TRUE),
-    error = function(e) NULL
-  )
   invisible(TRUE)
 }

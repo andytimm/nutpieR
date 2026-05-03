@@ -35,17 +35,17 @@
 #'       both `progressr` and `cli` are installed; otherwise fall back to
 #'       `"text"`. `refresh = 0` always silences output.}
 #'     \item{`"progressr"`}{Force progressr signalling. Errors if
-#'       `progressr` / `cli` aren't installed. If no progressr handler is
-#'       registered for the session, a `cli`-styled handler is installed
-#'       globally so a bar appears without wrapping the call in
-#'       `progressr::with_progress({...})`.}
+#'       `progressr` / `cli` aren't installed. The sampling call is
+#'       wrapped in `progressr::with_progress({...})` internally so the
+#'       bar renders without any extra setup; if no handler is registered
+#'       for the session a `cli`-styled handler is installed first.}
 #'     \item{`"text"`}{Per-chain text log paced by `refresh` (the original
 #'       behaviour).}
 #'     \item{`"none"`}{No progress output. Equivalent to `refresh = 0`.}
 #'   }
-#'   Override the default progressr handler by calling
-#'   `progressr::handlers(...)` or wrapping the call site in
-#'   `progressr::with_progress({...})`.
+#'   Override the renderer by calling `progressr::handlers(...)` before
+#'   `nutpie_sample()` (e.g. `progressr::handlers("progress")` for the
+#'   `progress` package's bar, or `progressr::handlers("rstudio")`).
 #' @param init Initial values for each chain. Single entry point that
 #'   dispatches on the input shape:
 #'   \describe{
@@ -197,46 +197,60 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   keep_indices <- resolve_keep_indices(constrain_names, pars, include)
 
   resolved_progress <- resolve_progress_mode(progress, refresh)
-  progress_callback <- NULL
   effective_refresh <- switch(
     resolved_progress,
     "none" = 0L,
     "text" = as.integer(refresh),
     "progressr" = 1L
   )
+
+  progress_callback <- NULL
   if (identical(resolved_progress, "progressr")) {
     register_default_progress_handler()
     progress_callback <- make_progressr_callback(num_chains, num_warmup, num_draws)
   }
 
-  raw <- sample_stan(
-    handle,
-    num_draws,
-    num_warmup,
-    num_chains,
-    as.integer(seed),
-    effective_refresh,
-    init_resolved$positions,
-    isTRUE(init_resolved$jitter),
-    isTRUE(save_warmup),
-    cores,
-    isTRUE(store_divergences),
-    isTRUE(store_mass_matrix),
-    isTRUE(store_unconstrained),
-    isTRUE(store_gradient),
-    adaptation,
-    opt_double(max_treedepth, "max_treedepth"),
-    opt_double(mindepth, "mindepth"),
-    opt_double(target_accept, "target_accept"),
-    opt_double(max_energy_error, "max_energy_error"),
-    opt_double(extra_doublings, "extra_doublings"),
-    opt_double(mass_matrix_gamma, "mass_matrix_gamma"),
-    opt_double(mass_matrix_eigval_cutoff, "mass_matrix_eigval_cutoff"),
-    keep_indices,
-    isTRUE(flags$include_tp),
-    isTRUE(flags$include_gq),
-    progress_callback
-  )
+  call_sample_stan <- function() {
+    sample_stan(
+      handle,
+      num_draws,
+      num_warmup,
+      num_chains,
+      as.integer(seed),
+      effective_refresh,
+      init_resolved$positions,
+      isTRUE(init_resolved$jitter),
+      isTRUE(save_warmup),
+      cores,
+      isTRUE(store_divergences),
+      isTRUE(store_mass_matrix),
+      isTRUE(store_unconstrained),
+      isTRUE(store_gradient),
+      adaptation,
+      opt_double(max_treedepth, "max_treedepth"),
+      opt_double(mindepth, "mindepth"),
+      opt_double(target_accept, "target_accept"),
+      opt_double(max_energy_error, "max_energy_error"),
+      opt_double(extra_doublings, "extra_doublings"),
+      opt_double(mass_matrix_gamma, "mass_matrix_gamma"),
+      opt_double(mass_matrix_eigval_cutoff, "mass_matrix_eigval_cutoff"),
+      keep_indices,
+      isTRUE(flags$include_tp),
+      isTRUE(flags$include_gq),
+      progress_callback
+    )
+  }
+
+  # progressr's `global = TRUE` path is unreliable across IDEs (Positron's
+  # REPL keeps calling-handlers on the stack and rejects the global
+  # registration), so we wrap in `with_progress` ourselves. Skip the wrap if
+  # the caller is already inside their own `with_progress({...})` — nesting
+  # clobbers their handler choice and disturbs the muffleProgression restart.
+  raw <- if (identical(resolved_progress, "progressr") && !in_with_progress()) {
+    progressr::with_progress(call_sample_stan())
+  } else {
+    call_sample_stan()
+  }
   draws <- matrix_to_draws_array(raw$draws, num_draws, num_chains)
   attr(draws, "diagnostics") <- raw$diagnostics
   attr(draws, "num_chains") <- num_chains
