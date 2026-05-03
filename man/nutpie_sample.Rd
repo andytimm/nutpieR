@@ -134,19 +134,23 @@ parameters to \emph{keep} (whitelist). If \code{FALSE}, \code{pars} specifies pa
 to \emph{exclude} (blacklist). Ignored when \code{pars} is \code{NULL}.}
 
 \item{store_divergences}{If \code{TRUE}, store detailed information about each
-divergent transition (start/end positions, momentum, gradient). Adds
-list columns to diagnostics.}
+divergent transition (start/end positions, momentum, gradient). Surfaces
+as list columns on diagnostics, only present when at least one draw
+diverged. Default \code{FALSE}.}
 
 \item{store_mass_matrix}{If \code{TRUE}, store the inverse mass matrix diagonal
-at each draw. Adds a list column to diagnostics.}
+at each draw. Surfaces as a numeric matrix
+\verb{(n_draws * n_chains, ndim_unc)} when uniform-width; falls back to a
+list of vectors when widths differ. Default \code{FALSE}.}
 
 \item{store_unconstrained}{If \code{TRUE}, store the unconstrained position at
-each draw as a list column on diagnostics (\code{unconstrained_draw}). Adds
-one \code{ndim_unc}-length numeric vector per draw — for high-dimensional
-models this can rival the draws matrix in size. Default \code{FALSE}.}
+each draw on diagnostics (\code{unconstrained_draw}). Surfaces as a numeric
+matrix \verb{(n_draws * n_chains, ndim_unc)} when uniform-width; falls back
+to a list of vectors when widths differ. For high-dimensional models
+this can rival the draws matrix in size. Default \code{FALSE}.}
 
 \item{store_gradient}{If \code{TRUE}, store the log-density gradient at each
-draw as a list column on diagnostics (\code{gradient}). Same size profile as
+draw on diagnostics (\code{gradient}). Same shape profile as
 \code{store_unconstrained}. Default \code{FALSE}.}
 
 \item{adaptation}{Mass matrix adaptation strategy. One of:
@@ -175,12 +179,14 @@ nuts-rs default (currently \code{2.0}).}
 \value{
 A \code{posterior::draws_array} with dimensions
 \verb{(num_draws, num_chains, n_params)}. Sampler diagnostics are attached
-as an attribute and can be retrieved with \code{\link[=nutpie_diagnostics]{nutpie_diagnostics()}}.
-The attributes \code{"num_warmup"} and \code{"num_draws"} record the sampling
-configuration (accessible via \code{attr(draws, "num_warmup")} etc.). The
-\code{"sampler_config"} attribute is a JSON string capturing the \emph{effective}
-\code{nuts-rs} settings used (including any defaults that were left
-unspecified by the caller); parse with \code{\link[jsonlite:fromJSON]{jsonlite::fromJSON()}}.
+as an attribute and can be retrieved with \code{\link[=nutpie_diagnostics]{nutpie_diagnostics()}}; see
+\code{?nutpie_diagnostics} for the chain / draw indexing convention (1-indexed,
+phase-relative). The attributes \code{"num_warmup"} and \code{"num_draws"} record
+the sampling configuration (accessible via \code{attr(draws, "num_warmup")}
+etc.). The \code{"sampler_config"} attribute is a JSON string capturing the
+\emph{effective} \code{nuts-rs} settings used (including any defaults that were
+left unspecified by the caller, and exposing \code{num_warmup} to match the
+function argument name); parse with \code{\link[jsonlite:fromJSON]{jsonlite::fromJSON()}}.
 }
 \description{
 Runs the nuts-rs NUTS sampler on a compiled Stan model.

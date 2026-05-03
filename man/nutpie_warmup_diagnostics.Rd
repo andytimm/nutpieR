@@ -11,7 +11,9 @@ nutpie_warmup_diagnostics(draws)
 \code{save_warmup = TRUE}.}
 }
 \value{
-A named list of diagnostic vectors for the warmup phase.
+A named list of diagnostic vectors for the warmup phase. \code{chain}
+is 1-indexed and \code{draw} is 1-indexed in \code{1:num_warmup}; see
+\code{\link[=nutpie_diagnostics]{nutpie_diagnostics()}} for the full indexing convention.
 }
 \description{
 Extract warmup diagnostics from nutpie output
