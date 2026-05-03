@@ -505,11 +505,26 @@ test_that("sampler_config is parseable JSON capturing effective settings", {
   expect_type(cfg_str, "character")
   expect_true(nzchar(cfg_str))
   cfg <- jsonlite::fromJSON(cfg_str)
-  expect_equal(cfg$num_tune, 50)
+  expect_equal(cfg$num_warmup, 50)
+  expect_null(cfg$num_tune)
   expect_equal(cfg$num_draws, 50)
   expect_equal(cfg$maxdepth, 8)
   expect_equal(cfg$extra_doublings, 2)
   expect_equal(cfg$adapt_options$step_size_settings$target_accept, 0.9)
+})
+
+test_that("diagnostics use 1-indexed chain and phase-relative 1-indexed draw", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                         num_draws = 5L, num_warmup = 3L, num_chains = 2L,
+                         seed = 1L, refresh = 0, save_warmup = TRUE)
+  d <- nutpie_diagnostics(draws)
+  expect_equal(sort(unique(d$chain)), c(1L, 2L))
+  expect_equal(range(d$draw), c(1L, 5L))
+
+  w <- nutpie_warmup_diagnostics(draws)
+  expect_equal(sort(unique(w$chain)), c(1L, 2L))
+  expect_equal(range(w$draw), c(1L, 3L))
 })
 
 test_that("unspecified target_accept / max_treedepth use nuts-rs defaults", {
