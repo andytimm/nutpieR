@@ -2,7 +2,7 @@
 
 use arrow::array::{
     Array, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array, LargeListArray,
-    UInt32Array, UInt64Array,
+    StringArray, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::DataType;
 use extendr_api::prelude::*;
@@ -694,6 +694,21 @@ fn column_to_robj(
                     } else {
                         Rbool::from(arr.value(row))
                     };
+                    i += 1;
+                }
+            }
+            Some(out.into())
+        }
+        DataType::Utf8 => {
+            let mut out = Strings::new_with_na(total);
+            let mut i = 0;
+            for c in cols {
+                let arr = c.as_any().downcast_ref::<StringArray>()?;
+                for k in 0..n_draws {
+                    let row = skip + k;
+                    if !arr.is_null(row) {
+                        out.set_elt(i, Rstr::from(arr.value(row)));
+                    }
                     i += 1;
                 }
             }

@@ -1,3 +1,8 @@
+# nutpieR 1.7.1
+
+* Arrow `Utf8` diagnostic columns (e.g. `divergence_message`) now
+  surface as character vectors instead of being skipped.
+
 # nutpieR 1.7.0
 
 * New `adaptation =` argument on `nutpie_sample()` selects the mass-matrix
