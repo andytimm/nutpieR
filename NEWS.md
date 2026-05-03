@@ -1,3 +1,9 @@
+# nutpieR 1.7.2
+
+* Sampling output now closes with a per-chain finish summary and, when
+  any divergences occurred, a final warning matching cmdstanr's format
+  (with the canonical mc-stan.org/misc/warnings link).
+
 # nutpieR 1.7.1
 
 * Arrow `Utf8` diagnostic columns (e.g. `divergence_message`) now
