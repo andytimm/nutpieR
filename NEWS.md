@@ -1,3 +1,20 @@
+# nutpieR 1.8.0
+
+* `nutpie_diagnostics()` and `nutpie_warmup_diagnostics()` now return
+  1-indexed `chain` and 1-indexed phase-relative `draw`, matching
+  `posterior::draws_array` conventions. Joining diagnostics back to
+  draws by `(chain, iteration)` no longer silently picks wrong rows.
+* `attr(draws, "sampler_config")` JSON renames `num_tune` to
+  `num_warmup` to match the `nutpie_sample()` argument name.
+* New `nutpie_nuts_params(draws)` returns a long-format `data.frame`
+  in bayesplot's NUTS schema, so divergence overlays via
+  `bayesplot::mcmc_pairs(np = ...)` work out of the box.
+* Every exported function now has a copy-pasteable `\examples{}`
+  block; README gains a short "After sampling" reference snippet.
+* First-compile BridgeStan source download now prints a one-line
+  "Downloading BridgeStan sources (one-time, ~235 MB)..." notice so
+  the ~150s pause no longer looks like a hang.
+
 # nutpieR 1.7.2
 
 * Sampling output now closes with a per-chain finish summary and, when
