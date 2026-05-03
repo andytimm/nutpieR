@@ -1,8 +1,6 @@
 # Bring the upstream nuts-rs `chain` (0-indexed) and `draw` (cumulative
 # 1-indexed) onto `posterior::draws_array` conventions: `chain` 1-indexed in
 # 1:num_chains, `draw` 1-indexed within phase (1..num_draws or 1..num_warmup).
-# Each mutation is guarded because the field set is upstream-controlled and a
-# future schema change could drop one of these columns.
 reindex_diagnostics <- function(diag, num_warmup, phase = c("sample", "warmup")) {
   if (is.null(diag)) return(diag)
   phase <- match.arg(phase)
@@ -15,20 +13,17 @@ reindex_diagnostics <- function(diag, num_warmup, phase = c("sample", "warmup"))
   diag
 }
 
-# Rename `num_tune` -> `num_warmup` in the sampler_config JSON so the field
-# matches the `nutpie_sample()` argument name. Upstream nuts-rs uses
-# "tune" terminology; we align it with R / Stan / cmdstanr conventions on
-# the way out. Defensive: a parse failure (e.g. a future schema bump that
-# breaks fromJSON) returns the original string unchanged.
+# Upstream nuts-rs uses "tune"; we align with R / Stan / cmdstanr "warmup"
+# on the way out. tryCatch falls back to the original string so a future
+# schema bump that breaks fromJSON doesn't lose the attribute.
 rename_sampler_config <- function(json_str) {
-  if (is.null(json_str) || !nzchar(json_str)) return(json_str)
   tryCatch({
     cfg <- jsonlite::fromJSON(json_str, simplifyVector = FALSE)
     if (!is.null(cfg$num_tune)) {
       cfg$num_warmup <- cfg$num_tune
       cfg$num_tune <- NULL
     }
-    jsonlite::toJSON(cfg, auto_unbox = TRUE, null = "null")
+    jsonlite::toJSON(cfg, auto_unbox = TRUE)
   }, error = function(e) json_str)
 }
 
@@ -210,29 +205,25 @@ nutpie_warmup_diagnostics <- function(draws) {
 #' @export
 nutpie_nuts_params <- function(draws) {
   diag <- nutpie_diagnostics(draws)
-  num_chains <- attr(diag, "num_chains") %||% dim(draws)[[2]] %||% 1L
-  n <- length(diag$diverging %||% diag[[1]])
-  n_per_chain <- n %/% num_chains
+  chain <- as.integer(diag$chain)
+  iter  <- as.integer(diag$draw)
+  n <- length(chain)
+  params <- c("accept_stat__", "divergent__", "treedepth__",
+              "n_leapfrog__", "stepsize__", "energy__")
+  values <- c(
+    as.numeric(diag$mean_tree_accept),
+    as.numeric(diag$diverging),
+    as.numeric(diag$depth),
+    as.numeric(diag$n_steps),
+    as.numeric(diag$step_size),
+    as.numeric(diag$energy)
+  )
 
-  chain <- as.integer(diag$chain %||% rep(seq_len(num_chains), each = n_per_chain))
-  iter  <- as.integer(diag$draw  %||% rep(seq_len(n_per_chain), times = num_chains))
-
-  mk <- function(name, values) {
-    data.frame(
-      Chain = chain,
-      Iteration = iter,
-      Parameter = name,
-      Value = as.numeric(values),
-      stringsAsFactors = FALSE
-    )
-  }
-
-  do.call(rbind, list(
-    mk("accept_stat__", diag$mean_tree_accept),
-    mk("divergent__",   as.integer(diag$diverging)),
-    mk("treedepth__",   diag$depth),
-    mk("n_leapfrog__",  diag$n_steps),
-    mk("stepsize__",    diag$step_size),
-    mk("energy__",      diag$energy)
-  ))
+  data.frame(
+    Chain     = rep(chain,  times = length(params)),
+    Iteration = rep(iter,   times = length(params)),
+    Parameter = rep(params, each  = n),
+    Value     = values,
+    stringsAsFactors = FALSE
+  )
 }
