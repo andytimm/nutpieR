@@ -39,3 +39,21 @@ in \code{i32}, else as \code{numeric}; floating-point fields (\code{logp}, \code
 \code{step_size}, etc.) are always \code{numeric}. \code{NA}s use the matching sentinel
 (\code{NA_integer_} / \code{NA_real_}).
 }
+\section{Indexing conventions}{
+
+\code{chain} is 1-indexed in \code{1:num_chains}. \code{draw} is 1-indexed in
+\code{1:num_draws} for post-warmup diagnostics and \code{1:num_warmup} for warmup
+diagnostics (returned via \code{\link[=nutpie_warmup_diagnostics]{nutpie_warmup_diagnostics()}}). Matches
+\code{posterior::draws_array} conventions, so a \code{data.frame} of diagnostics
+joins cleanly against draws indexed by \verb{(chain, iteration)}.
+}
+
+\examples{
+\dontrun{
+draws <- nutpie_sample(model, data = dat, num_draws = 1000, num_chains = 4)
+diag <- nutpie_diagnostics(draws)
+diag                               # printed summary
+sum(diag$diverging)                # divergence count
+max(diag$depth)                    # peak treedepth across all draws
+}
+}

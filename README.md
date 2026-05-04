@@ -55,6 +55,15 @@ draws <- nutpie_sample(
 posterior::summarize_draws(draws)
 ```
 
+After sampling:
+
+```r
+dim(draws)                          # (num_draws, num_chains, n_params)
+posterior::variables(draws)
+attr(draws, "num_warmup")
+nutpie_diagnostics(draws)           # divergences, treedepth, energy, ...
+```
+
 In practice, you'll usually compile from a `.stan` file:
 
 ```r
@@ -105,15 +114,15 @@ sampling efficiency on challenging geometries.
 draws <- nutpie_sample(
   model,
   data = dat,
-  low_rank_modified_mass_matrix = TRUE,  # enable low-rank adaptation
+  adaptation = "low_rank",               # enable low-rank adaptation
   mass_matrix_gamma = 1e-5,              # regularisation (default)
   mass_matrix_eigval_cutoff = 2.0        # eigenvalue cutoff (default)
 )
 ```
 
-When enabled, the sampler defaults to 800 warmup draws (vs 400 for diagonal) to
-allow the low-rank structure to stabilize. Pass `num_warmup` explicitly to
-override.
+(`low_rank_modified_mass_matrix = TRUE` still works but is deprecated.)
+Mass-matrix and warmup defaults inherit from nuts-rs; pass `num_warmup`
+explicitly to override.
 
 ## How it works
 

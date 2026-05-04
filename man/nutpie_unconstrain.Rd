@@ -34,3 +34,9 @@ For setting sampler starting points, pass constrained values directly to
 
 All parameters declared in the \code{parameters} block must be supplied.
 }
+\examples{
+\dontrun{
+model <- nutpie_compile_model(stan_file = "my_model.stan")
+nutpie_unconstrain(model, params = list(mu = 0, sigma = 1), data = dat)
+}
+}

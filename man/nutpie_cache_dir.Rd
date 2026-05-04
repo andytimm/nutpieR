@@ -14,3 +14,6 @@ Returns the directory under which \code{nutpie_compile_model(code = ...)}
 stores its hashed compile artifacts. Useful for inspection,
 troubleshooting, or \code{unlink()}-ing a single entry.
 }
+\examples{
+nutpie_cache_dir()
+}

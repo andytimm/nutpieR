@@ -505,11 +505,26 @@ test_that("sampler_config is parseable JSON capturing effective settings", {
   expect_type(cfg_str, "character")
   expect_true(nzchar(cfg_str))
   cfg <- jsonlite::fromJSON(cfg_str)
-  expect_equal(cfg$num_tune, 50)
+  expect_equal(cfg$num_warmup, 50)
+  expect_null(cfg$num_tune)
   expect_equal(cfg$num_draws, 50)
   expect_equal(cfg$maxdepth, 8)
   expect_equal(cfg$extra_doublings, 2)
   expect_equal(cfg$adapt_options$step_size_settings$target_accept, 0.9)
+})
+
+test_that("diagnostics use 1-indexed chain and phase-relative 1-indexed draw", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                         num_draws = 5L, num_warmup = 3L, num_chains = 2L,
+                         seed = 1L, refresh = 0, save_warmup = TRUE)
+  d <- nutpie_diagnostics(draws)
+  expect_equal(sort(unique(d$chain)), c(1L, 2L))
+  expect_equal(range(d$draw), c(1L, 5L))
+
+  w <- nutpie_warmup_diagnostics(draws)
+  expect_equal(sort(unique(w$chain)), c(1L, 2L))
+  expect_equal(range(w$draw), c(1L, 3L))
 })
 
 test_that("unspecified target_accept / max_treedepth use nuts-rs defaults", {
@@ -542,6 +557,43 @@ test_that("store_mass_matrix surfaces mass_matrix_inv as a numeric matrix", {
                                         data = normal_data(),
                                         which = "unconstrained"))
   expect_equal(dim(mm), c(num_draws * num_chains, ndim_unc))
+})
+
+# --- nutpie_nuts_params -------------------------------------------------------
+
+test_that("nutpie_nuts_params returns bayesplot-style long format", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  num_draws <- 30L
+  num_chains <- 2L
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                         num_draws = num_draws, num_warmup = 30L,
+                         num_chains = num_chains, seed = 1L, refresh = 0)
+  np <- nutpie_nuts_params(draws)
+
+  expect_s3_class(np, "data.frame")
+  expect_named(np, c("Chain", "Iteration", "Parameter", "Value"))
+  expect_type(np$Chain, "integer")
+  expect_type(np$Iteration, "integer")
+  expect_type(np$Parameter, "character")
+  expect_type(np$Value, "double")
+
+  expected_params <- c("accept_stat__", "divergent__", "treedepth__",
+                       "n_leapfrog__", "stepsize__", "energy__")
+  expect_setequal(unique(np$Parameter), expected_params)
+  expect_equal(nrow(np), num_draws * num_chains * length(expected_params))
+
+  expect_equal(sort(unique(np$Chain)), seq_len(num_chains))
+  expect_equal(range(np$Iteration), c(1L, num_draws))
+})
+
+test_that("nutpie_nuts_params output is consumable by bayesplot", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  skip_if_not_installed("bayesplot")
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                         num_draws = 30L, num_warmup = 30L, num_chains = 2L,
+                         seed = 1L, refresh = 0)
+  np <- nutpie_nuts_params(draws)
+  expect_no_error(bayesplot::mcmc_nuts_energy(np))
 })
 
 # --- diagnostics on a non-nutpie object --------------------------------------

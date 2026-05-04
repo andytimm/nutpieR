@@ -73,3 +73,16 @@ process-wide, without changing call sites.
 }
 }
 
+\examples{
+\dontrun{
+# From a .stan file (cached next to the file)
+model <- nutpie_compile_model(stan_file = "my_model.stan")
+
+# From an inline code string (cached under nutpie_cache_dir())
+model <- nutpie_compile_model(code = "
+  data { int<lower=0> N; array[N] int<lower=0,upper=1> y; }
+  parameters { real<lower=0,upper=1> theta; }
+  model { theta ~ beta(1, 1); y ~ bernoulli(theta); }
+")
+}
+}

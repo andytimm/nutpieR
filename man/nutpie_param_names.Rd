@@ -38,3 +38,11 @@ Returns the parameter names of a compiled Stan model, converted from
 BridgeStan's dot-indexed form (\code{"beta.1.2"}) to Stan's bracket convention
 (\code{"beta[1,2]"}).
 }
+\examples{
+\dontrun{
+model <- nutpie_compile_model(stan_file = "my_model.stan")
+nutpie_param_names(model, data = dat)                       # block (default)
+nutpie_param_names(model, data = dat, which = "unconstrained")
+nutpie_param_names(model, data = dat, which = "full")       # incl. TP + GQ
+}
+}

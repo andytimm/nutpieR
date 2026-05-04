@@ -71,16 +71,20 @@
 #' @param cores Number of CPU cores to use for parallel sampling. Defaults to
 #'   `min(num_chains, parallel::detectCores())`.
 #' @param store_divergences If `TRUE`, store detailed information about each
-#'   divergent transition (start/end positions, momentum, gradient). Adds
-#'   list columns to diagnostics.
+#'   divergent transition (start/end positions, momentum, gradient). Surfaces
+#'   as list columns on diagnostics, only present when at least one draw
+#'   diverged. Default `FALSE`.
 #' @param store_mass_matrix If `TRUE`, store the inverse mass matrix diagonal
-#'   at each draw. Adds a list column to diagnostics.
+#'   at each draw. Surfaces as a numeric matrix
+#'   `(n_draws * n_chains, ndim_unc)` when uniform-width; falls back to a
+#'   list of vectors when widths differ. Default `FALSE`.
 #' @param store_unconstrained If `TRUE`, store the unconstrained position at
-#'   each draw as a list column on diagnostics (`unconstrained_draw`). Adds
-#'   one `ndim_unc`-length numeric vector per draw — for high-dimensional
-#'   models this can rival the draws matrix in size. Default `FALSE`.
+#'   each draw on diagnostics (`unconstrained_draw`). Surfaces as a numeric
+#'   matrix `(n_draws * n_chains, ndim_unc)` when uniform-width; falls back
+#'   to a list of vectors when widths differ. For high-dimensional models
+#'   this can rival the draws matrix in size. Default `FALSE`.
 #' @param store_gradient If `TRUE`, store the log-density gradient at each
-#'   draw as a list column on diagnostics (`gradient`). Same size profile as
+#'   draw on diagnostics (`gradient`). Same shape profile as
 #'   `store_unconstrained`. Default `FALSE`.
 #' @param pars An optional character vector of block-level parameter names
 #'   (e.g. `"beta"`, `"sigma"`). When supplied, only these parameters (or
@@ -114,12 +118,33 @@
 #'   nuts-rs default (currently `2.0`).
 #' @return A `posterior::draws_array` with dimensions
 #'   `(num_draws, num_chains, n_params)`. Sampler diagnostics are attached
-#'   as an attribute and can be retrieved with [nutpie_diagnostics()].
-#'   The attributes `"num_warmup"` and `"num_draws"` record the sampling
-#'   configuration (accessible via `attr(draws, "num_warmup")` etc.). The
-#'   `"sampler_config"` attribute is a JSON string capturing the *effective*
-#'   `nuts-rs` settings used (including any defaults that were left
-#'   unspecified by the caller); parse with [jsonlite::fromJSON()].
+#'   as an attribute and can be retrieved with [nutpie_diagnostics()]; see
+#'   `?nutpie_diagnostics` for the chain / draw indexing convention (1-indexed,
+#'   phase-relative). The attributes `"num_warmup"` and `"num_draws"` record
+#'   the sampling configuration (accessible via `attr(draws, "num_warmup")`
+#'   etc.). The `"sampler_config"` attribute is a JSON string capturing the
+#'   *effective* `nuts-rs` settings used (including any defaults that were
+#'   left unspecified by the caller, and exposing `num_warmup` to match the
+#'   function argument name); parse with [jsonlite::fromJSON()].
+#' @examples
+#' \dontrun{
+#' model <- nutpie_compile_model(code = "
+#'   data { int<lower=0> N; array[N] int<lower=0,upper=1> y; }
+#'   parameters { real<lower=0,upper=1> theta; }
+#'   model { theta ~ beta(1, 1); y ~ bernoulli(theta); }
+#' ")
+#'
+#' draws <- nutpie_sample(
+#'   model,
+#'   data = list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1)),
+#'   num_draws = 1000, num_chains = 4, seed = 604
+#' )
+#'
+#' dim(draws)                       # (num_draws, num_chains, n_params)
+#' posterior::variables(draws)
+#' posterior::summarize_draws(draws)
+#' nutpie_diagnostics(draws)
+#' }
 #' @export
 nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           num_warmup = 400L, num_chains = 4L, seed = NULL,
@@ -204,16 +229,19 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     isTRUE(flags$include_gq)
   )
   draws <- matrix_to_draws_array(raw$draws, num_draws, num_chains)
-  attr(draws, "diagnostics") <- raw$diagnostics
+  attr(draws, "diagnostics") <- reindex_diagnostics(raw$diagnostics,
+                                                    num_warmup, "sample")
   attr(draws, "num_chains") <- num_chains
   attr(draws, "num_warmup") <- num_warmup
   attr(draws, "num_draws") <- num_draws
-  attr(draws, "sampler_config") <- raw$sampler_config
+  attr(draws, "sampler_config") <- rename_sampler_config(raw$sampler_config)
 
   if (isTRUE(save_warmup) && !is.null(raw$warmup_draws)) {
     warmup <- matrix_to_draws_array(raw$warmup_draws, num_warmup, num_chains)
     attr(draws, "warmup_draws") <- warmup
-    attr(draws, "warmup_diagnostics") <- raw$warmup_diagnostics
+    attr(draws, "warmup_diagnostics") <- reindex_diagnostics(
+      raw$warmup_diagnostics, num_warmup, "warmup"
+    )
   }
 
   n_expand_errors <- raw$expand_errors %||% 0L
