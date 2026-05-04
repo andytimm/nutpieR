@@ -2,6 +2,7 @@
 .Rhistory
 .RData
 .Ruserdata
+Rplots.pdf
 inst/doc
 ai_context/
 src/rust/vendor
