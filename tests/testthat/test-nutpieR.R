@@ -586,6 +586,16 @@ test_that("nutpie_nuts_params returns bayesplot-style long format", {
   expect_equal(range(np$Iteration), c(1L, num_draws))
 })
 
+test_that("nutpie_nuts_params output is consumable by bayesplot", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  skip_if_not_installed("bayesplot")
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                         num_draws = 30L, num_warmup = 30L, num_chains = 2L,
+                         seed = 1L, refresh = 0)
+  np <- nutpie_nuts_params(draws)
+  expect_no_error(bayesplot::mcmc_nuts_energy(np))
+})
+
 # --- diagnostics on a non-nutpie object --------------------------------------
 
 test_that("nutpie_diagnostics errors on non-nutpie object", {

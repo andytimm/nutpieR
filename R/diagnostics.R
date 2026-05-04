@@ -177,10 +177,12 @@ nutpie_warmup_diagnostics <- function(draws) {
 #'
 #' Reshapes the diagnostics from [nutpie_diagnostics()] into the four-column
 #' long-format `data.frame` that bayesplot's NUTS plotting helpers (e.g.
-#' `bayesplot::mcmc_pairs(np = ...)`, `bayesplot::mcmc_nuts_divergence()`)
+#' `bayesplot::mcmc_pairs(np = ...)`, `bayesplot::mcmc_nuts_energy()`)
 #' expect. Names match Stan's CSV convention (`accept_stat__`,
 #' `divergent__`, `treedepth__`, `n_leapfrog__`, `stepsize__`,
-#' `energy__`).
+#' `energy__`). Other bayesplot NUTS helpers (e.g.
+#' `mcmc_nuts_divergence()`, `mcmc_nuts_acceptance()`) additionally
+#' need a per-draw `lp` data frame, which this helper does not produce.
 #'
 #' @param draws A `posterior::draws_array` returned by [nutpie_sample()].
 #' @return A `data.frame` with columns:

@@ -25,10 +25,12 @@ The data frame has \code{num_draws * num_chains * 6} rows.
 \description{
 Reshapes the diagnostics from \code{\link[=nutpie_diagnostics]{nutpie_diagnostics()}} into the four-column
 long-format \code{data.frame} that bayesplot's NUTS plotting helpers (e.g.
-\code{bayesplot::mcmc_pairs(np = ...)}, \code{bayesplot::mcmc_nuts_divergence()})
+\code{bayesplot::mcmc_pairs(np = ...)}, \code{bayesplot::mcmc_nuts_energy()})
 expect. Names match Stan's CSV convention (\code{accept_stat__},
 \code{divergent__}, \code{treedepth__}, \code{n_leapfrog__}, \code{stepsize__},
-\code{energy__}).
+\code{energy__}). Other bayesplot NUTS helpers (e.g.
+\code{mcmc_nuts_divergence()}, \code{mcmc_nuts_acceptance()}) additionally
+need a per-draw \code{lp} data frame, which this helper does not produce.
 }
 \examples{
 \dontrun{
