@@ -204,13 +204,14 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     "progressr" = 1L
   )
 
-  progress_callback <- NULL
   if (identical(resolved_progress, "progressr")) {
     register_default_progress_handler()
-    progress_callback <- make_progressr_callback(num_chains, num_warmup, num_draws)
   }
 
-  call_sample_stan <- function() {
+  # `progressor()` must be constructed inside `with_progress({...})` so its
+  # initiation signal reaches the handler — otherwise it's orphaned and `p()`
+  # is a no-op. Build the callback lazily inside the wrap.
+  call_sample_stan <- function(progress_callback) {
     sample_stan(
       handle,
       num_draws,
@@ -246,10 +247,16 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   # registration), so we wrap in `with_progress` ourselves. Skip the wrap if
   # the caller is already inside their own `with_progress({...})` — nesting
   # clobbers their handler choice and disturbs the muffleProgression restart.
-  raw <- if (identical(resolved_progress, "progressr") && !in_with_progress()) {
-    progressr::with_progress(call_sample_stan())
+  raw <- if (identical(resolved_progress, "progressr")) {
+    if (in_with_progress()) {
+      call_sample_stan(make_progressr_callback(num_chains, num_warmup, num_draws))
+    } else {
+      progressr::with_progress(
+        call_sample_stan(make_progressr_callback(num_chains, num_warmup, num_draws))
+      )
+    }
   } else {
-    call_sample_stan()
+    call_sample_stan(NULL)
   }
   draws <- matrix_to_draws_array(raw$draws, num_draws, num_chains)
   attr(draws, "diagnostics") <- raw$diagnostics
