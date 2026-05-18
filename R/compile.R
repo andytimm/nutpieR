@@ -5,34 +5,44 @@
 #'
 #' @section Caching:
 #'
-#' By default the compiled `.so` is cached so repeat calls are near-instant:
+#' Compiled artifacts are stored in a content-hashed cache under
+#' [`nutpie_cache_dir()`][nutpie_cache_dir] (one subdirectory per unique
+#' source + flags + BridgeStan version), regardless of whether the model
+#' was passed as `stan_file = ...` or `code = "..."`. A subsequent call
+#' with identical inputs is a near-instant cache hit.
 #'
-#' * `stan_file = ...` --- the artifact lives next to the `.stan` as
-#'   `<basename>_model.so` (matching cmdstanr's convention), with a small
-#'   `<basename>_model.cache_meta` sidecar tracking BridgeStan version and
-#'   compile flags. A subsequent call hits the cache when the artifact
-#'   mtime is at least as new as the `.stan` and every `#include`'d
-#'   file (transitively walked) *and* the sidecar matches. If the user's
-#'   `.stan` directory is read-only, the call falls back to the inline
-#'   cache below with a warning -- except for models that use
-#'   `#include`, which error since the inline cache discards the source
-#'   dirname needed to resolve includes.
-#' * `code = "..."` --- the artifact lives under
-#'   [`nutpie_cache_dir()`][nutpie_cache_dir], keyed by a hash of the source
-#'   plus BridgeStan version and compile flags (argument order preserved).
+#' For `stan_file = ...`, the transitive `#include` set is hashed
+#' together with the main file, so editing an included file (or the main
+#' file itself) busts the cache and triggers a recompile.
+#'
+#' The cache is bounded by [`nutpie_prune_cache()`][nutpie_prune_cache],
+#' which runs automatically at the end of every successful compile
+#' (cap: 16 entries, min age before eviction: 14 days).
 #'
 #' Cache controls:
 #'
-#' * `cache = FALSE` on a single call --- force a fresh compile that
-#'   overwrites the cached artifact and updates the sidecar.
+#' * `cache = FALSE` on a single call --- compile to a fresh tempdir for
+#'   this call only, without touching the persistent cache.
 #' * `Sys.setenv(NUTPIER_DISABLE_COMPILE_CACHE = "1")` --- same effect
-#'   process-wide, without changing call sites.
-#' * [`nutpie_clear_cache()`][nutpie_clear_cache] wipes the inline cache.
+#'   process-wide.
+#' * [`nutpie_clear_cache()`][nutpie_clear_cache] wipes the cache.
+#'
+#' @section Note on storage location:
+#'
+#' Prior nutpieR versions wrote `<basename>_model.so` *next to* the
+#' source `.stan` file, matching cmdstanr's convention. nutpieR now uses
+#' a content-hashed cache directory instead. This change is required for
+#' correctness: when the same `.stan` path is reloaded after a recompile,
+#' the OS dynamic linker (`dlopen`) returns the previously loaded library
+#' rather than the new one, so edits silently had no effect (see GitHub
+#' issue #23). Distinct content → distinct path → fresh `dlopen`. Any
+#' stale `<basename>_model.so` and `<basename>_model.cache_meta` files
+#' left over from earlier versions can be deleted; nutpieR no longer
+#' reads or writes them.
 #'
 #' @param stan_file Path to a `.stan` file. Exactly one of `stan_file` or
 #'   `code` must be provided.
-#' @param code A string containing Stan model code. If provided, the code is
-#'   written to a temporary `.stan` file and compiled.
+#' @param code A string containing Stan model code.
 #' @param stanc_args Character vector of extra arguments passed to the
 #'   `stanc` compiler (e.g., `"--O1"` for optimization).
 #' @param compile_args Character vector of extra arguments passed to `make`
@@ -43,15 +53,16 @@
 #'   bridgestan captures subprocess output internally rather than streaming it.
 #' @param cache Logical, default `TRUE`. When `TRUE`, reuse a previously
 #'   compiled artifact when the source, BridgeStan version, and compile
-#'   flags all match. When `FALSE`, force a fresh compile.
+#'   flags all match. When `FALSE`, compile to a fresh tempdir without
+#'   touching the persistent cache.
 #' @return An object of class `"nutpie_model"` containing the path to the
 #'   compiled shared library.
 #' @examples
 #' \dontrun{
-#' # From a .stan file (cached next to the file)
+#' # From a .stan file
 #' model <- nutpie_compile_model(stan_file = "my_model.stan")
 #'
-#' # From an inline code string (cached under nutpie_cache_dir())
+#' # From an inline code string
 #' model <- nutpie_compile_model(code = "
 #'   data { int<lower=0> N; array[N] int<lower=0,upper=1> y; }
 #'   parameters { real<lower=0,upper=1> theta; }
@@ -90,46 +101,17 @@ nutpie_compile_model <- function(stan_file = NULL, code = NULL,
   use_cache <- isTRUE(cache) &&
     !identical(Sys.getenv("NUTPIER_DISABLE_COMPILE_CACHE"), "1")
 
-  if (!is.null(code)) {
-    return(compile_inline(code, stanc_args, compile_args, verbose, use_cache))
+  bundle <- if (!is.null(code)) {
+    inline_bundle(code)
+  } else {
+    file_bundle(normalizePath(stan_file, mustWork = TRUE))
   }
 
-  stan_file <- normalizePath(stan_file, mustWork = TRUE)
-
-  if (!dir_writable(dirname(stan_file))) {
-    # Inline-cache fallback reads the .stan as a string and discards the
-    # original directory context, so #include directives can no longer
-    # resolve. Refuse rather than produce a silently broken compile.
-    if (length(included_files(stan_file)) > 0) {
-      stop(
-        "Stan file directory ", dirname(stan_file), " is not writable and ",
-        "the model uses `#include`. Make the directory writable or ",
-        "pre-resolve the includes into a single file.", call. = FALSE
-      )
-    }
-    if (use_cache) {
-      warning(
-        "Stan file directory ", dirname(stan_file), " is not writable; ",
-        "falling back to the inline cache. Pass cache = FALSE to suppress.",
-        call. = FALSE
-      )
-    }
-    code <- paste(readLines(stan_file, warn = FALSE), collapse = "\n")
-    return(compile_inline(code, stanc_args, compile_args, verbose, use_cache))
+  if (use_cache) {
+    compile_via_cache(bundle, stanc_args, compile_args, verbose)
+  } else {
+    compile_no_cache(bundle, stanc_args, compile_args, verbose)
   }
-
-  bs <- bs_version()
-  if (use_cache && in_place_hit(stan_file, bs, stanc_args, compile_args)) {
-    if (verbose >= 1L) message("Using cached compiled model.")
-    return(nutpie_model(
-      normalizePath(expected_artifact_path(stan_file), mustWork = TRUE),
-      stan_file
-    ))
-  }
-
-  lib_path <- compile_in_place(stan_file, stanc_args, compile_args, verbose)
-  write_cache_meta(stan_file, bs, stanc_args, compile_args)
-  nutpie_model(lib_path, stan_file)
 }
 
 #' @export

@@ -1,3 +1,18 @@
+# nutpieR 1.7.4
+
+* Fix #23: editing a `.stan` and recompiling no longer silently keeps
+  using the previously loaded library. `dlopen` caches by path, so the
+  same path always returned the same library; compiled models now live
+  in a content-hashed directory under
+  [`nutpie_cache_dir()`][nutpie_cache_dir], giving each unique source a
+  fresh path. The `<basename>_model.so` written next to the `.stan`
+  (cmdstanr-style) is gone — old leftover `_model.so` and
+  `_model.cache_meta` files are safe to delete.
+* New `nutpie_prune_cache(max_entries = 16, min_age_days = 14)` caps
+  the cache; runs automatically after each compile (mirrors nutpie).
+* `cache = FALSE` now compiles to a fresh tempdir instead of forcing an
+  in-place recompile.
+
 # nutpieR 1.7.3
 
 * `nutpie_diagnostics()` and `nutpie_warmup_diagnostics()` now return

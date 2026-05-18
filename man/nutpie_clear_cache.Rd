@@ -2,7 +2,7 @@
 % Please edit documentation in R/cache.R
 \name{nutpie_clear_cache}
 \alias{nutpie_clear_cache}
-\title{Clear the nutpieR inline-code compile cache}
+\title{Clear the nutpieR compile cache}
 \usage{
 nutpie_clear_cache()
 }
@@ -10,12 +10,9 @@ nutpie_clear_cache()
 Invisibly \code{NULL}.
 }
 \description{
-Removes the entire \code{R_user_dir("nutpieR", "cache")} tree, where
-\code{nutpie_compile_model(code = ...)} stores its compiled artifacts. Inline
-models will be recompiled on next use. Models compiled from a \code{stan_file}
-are not affected -- those live next to the \code{.stan}; remove the
-corresponding \verb{<basename>_model.so} (and \code{.cache_meta} sidecar) directly
-to invalidate.
+Removes the entire compile cache tree under
+\code{\link[=nutpie_cache_dir]{nutpie_cache_dir()}}. All cached compiled models
+will be recompiled on next use.
 }
 \examples{
 nutpie_clear_cache()
