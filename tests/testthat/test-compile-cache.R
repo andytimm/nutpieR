@@ -366,6 +366,98 @@ test_that("entries without ok marker don't count toward cap", {
   expect_equal(sum(grepl("^inflight", names)), 3L)
 })
 
+test_that("missing #include errors at compile time, not silently no-ops", {
+  # Regression: read_or_empty() used to materialize missing deps as
+  # empty files, so `#include missing.stan` silently compiled to a
+  # no-op include. The bundle now records missing deps but does not
+  # stage them, so stanc surfaces its native "could not find" error.
+  skip_if_no_make()
+
+  d <- tempfile("nutpieR-missing-inc-")
+  dir.create(d, recursive = TRUE)
+  on.exit(unlink(d, recursive = TRUE), add = TRUE)
+  main <- file.path(d, "main.stan")
+  prior <- file.path(d, "priors.stan")
+
+  writeLines(c(
+    "functions {",
+    "#include priors.stan",
+    "}",
+    "parameters { real x; } model { x ~ normal(0, 1); }"
+  ), main)
+  writeLines("real noop_lpdf(real x) { return 0; }", prior)
+
+  # Cold compile succeeds with the include present.
+  m1 <- nutpie_compile_model(stan_file = main, verbose = 0L)
+  expect_true(file.exists(m1$lib_path))
+
+  # Delete the include, recompile -- must error rather than silently
+  # producing a model where the include is a no-op.
+  unlink(prior)
+  expect_error(
+    nutpie_compile_model(stan_file = main, verbose = 0L)
+  )
+})
+
+test_that("nutpie_clear_cache only wipes the active cache root", {
+  # Regression: clear_cache used to unlink both R_user_dir and
+  # tempdir()/nutpieR-cache unconditionally, which could delete .so
+  # files backing live nutpie_model objects in another cache root.
+  # It should now only touch the resolved active root.
+  td_active <- tempfile("nutpieR-active-")
+  td_other  <- tempfile("nutpieR-other-")
+  dir.create(td_active, recursive = TRUE)
+  dir.create(td_other,  recursive = TRUE)
+  withr::defer(unlink(c(td_active, td_other), recursive = TRUE))
+
+  # Plant a marker in a "live but inactive" cache location.
+  other_models <- file.path(td_other, "R", "nutpieR", "cache", "models")
+  dir.create(other_models, recursive = TRUE)
+  marker_other <- file.path(other_models, "some-model.so")
+  file.create(marker_other)
+
+  # Make td_active the resolved root, then plant a marker there.
+  withr::with_envvar(c(R_USER_CACHE_DIR = td_active), {
+    rm(list = ls(nutpieR:::.cache_state), envir = nutpieR:::.cache_state)
+    root <- nutpie_cache_dir()
+    marker_active <- file.path(root, "some-model.so")
+    file.create(marker_active)
+
+    nutpie_clear_cache()
+    expect_false(file.exists(marker_active))
+  })
+
+  expect_true(file.exists(marker_other))
+})
+
+test_that("print.nutpie_model shows user source path, not staged copy", {
+  local_isolated_cache()
+  counter <- new.env(parent = emptyenv())
+  testthat::local_mocked_bindings(
+    compile_stan_model = make_compile_stub(counter),
+    bs_version = function() "TEST.0",
+    bridgestan_version = function() "TEST.0",
+    .package = "nutpieR"
+  )
+
+  stan <- make_temp_stan()
+  on.exit(unlink(dirname(stan), recursive = TRUE), add = TRUE)
+  m_file <- nutpie_compile_model(stan_file = stan, verbose = 0L)
+
+  out_file <- utils::capture.output(print(m_file))
+  expect_true(any(grepl(normalizePath(stan), out_file, fixed = TRUE)))
+  # The staged path under the cache dir must not surface as the
+  # user-facing source.
+  cache_root <- nutpie_cache_dir()
+  expect_false(any(grepl(cache_root, out_file, fixed = TRUE) &
+                     grepl("Source", out_file)))
+
+  m_code <- nutpie_compile_model(code = "parameters { real q; } model {}",
+                                 verbose = 0L)
+  out_code <- utils::capture.output(print(m_code))
+  expect_true(any(grepl("<inline code>", out_code, fixed = TRUE)))
+})
+
 test_that("end-to-end smoke: cold compile + warm hit returns a loadable model", {
   skip_if_no_make()
 

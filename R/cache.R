@@ -99,11 +99,17 @@ relative_to <- function(path, root) {
   }
 }
 
-read_or_empty <- function(path) {
+# Returns the file's text, or NULL if the path doesn't exist. The NULL
+# marker lets the bundle differentiate "present-and-empty" from "missing"
+# in the hash (so deleting a `#include` busts the cache) while letting
+# stage_bundle() skip writing the file so stanc surfaces a real
+# "Could not find include file" error instead of silently treating the
+# include as an empty no-op.
+read_dep <- function(path) {
   if (file.exists(path)) {
     paste(readLines(path, warn = FALSE), collapse = "\n")
   } else {
-    ""
+    NULL
   }
 }
 
@@ -111,11 +117,14 @@ read_or_empty <- function(path) {
 # the rel_path of the main file to compile. For inline code there's a
 # single synthetic file at `model.stan`; for file input we stage the
 # transitive include set under the lowest common ancestor so relative
-# `#include`s still resolve at compile time.
+# `#include`s still resolve at compile time. `display_source` records
+# what to show users (their original path, or NA for inline) since the
+# main staged path under the cache dir isn't meaningful to them.
 inline_bundle <- function(code) {
   list(
     files = list(list(rel_path = INLINE_STAN, content = code)),
-    main = INLINE_STAN
+    main = INLINE_STAN,
+    display_source = NA_character_
   )
 }
 
@@ -130,10 +139,11 @@ file_bundle <- function(stan_file) {
     )
   }
   files <- lapply(deps, function(p) {
-    list(rel_path = relative_to(p, root), content = read_or_empty(p))
+    list(rel_path = relative_to(p, root), content = read_dep(p))
   })
   main_rel <- relative_to(canonical_path(stan_file), root)
-  list(files = files, main = main_rel)
+  list(files = files, main = main_rel,
+       display_source = canonical_path(stan_file))
 }
 
 # --- Hash key --------------------------------------------------------------
@@ -144,6 +154,8 @@ file_bundle <- function(stan_file) {
 cache_key <- function(bundle, bs_version, stanc_args, compile_args) {
   # Sort files by rel_path so two equivalent bundles (e.g. different
   # walk orders of the same include tree) hash to the same key.
+  # display_source is *not* hashed: two users compiling the same
+  # source under different paths should share a cache slot.
   sorted <- bundle$files[order(vapply(bundle$files, `[[`, character(1L), "rel_path"))]
   payload <- list(
     files = sorted,
@@ -222,18 +234,25 @@ entry_lib_path  <- function(entry, main_rel) {
 
 # --- Compile --------------------------------------------------------------
 
-nutpie_model <- function(lib_path, stan_file) {
+nutpie_model <- function(lib_path, stan_file, staged_source) {
   structure(
-    list(lib_path = lib_path, stan_file = stan_file),
+    list(
+      lib_path = lib_path,
+      stan_file = stan_file,
+      staged_source = staged_source
+    ),
     class = "nutpie_model"
   )
 }
 
 # Materialise a bundle into dest_dir/src/. Each file lands at the
 # rel_path declared in the bundle so relative `#include`s resolve.
+# Files with NULL content (missing deps) are deliberately not written
+# so stanc fails naturally with its own "include not found" message.
 stage_bundle <- function(bundle, dest_dir) {
   src_root <- entry_src_dir(dest_dir)
   for (f in bundle$files) {
+    if (is.null(f$content)) next
     target <- file.path(src_root, f$rel_path)
     dir.create(dirname(target), showWarnings = FALSE, recursive = TRUE)
     writeLines(f$content, target)
@@ -309,8 +328,9 @@ compile_via_cache <- function(bundle, stanc_args, compile_args, verbose) {
   if (file.exists(ok) && file.exists(lib) && file.exists(main)) {
     if (verbose >= 1L) message("Using cached compiled model.")
     return(nutpie_model(
-      normalizePath(lib,  mustWork = TRUE),
-      normalizePath(main, mustWork = TRUE)
+      lib_path      = normalizePath(lib,  mustWork = TRUE),
+      stan_file     = bundle$display_source,
+      staged_source = normalizePath(main, mustWork = TRUE)
     ))
   }
 
@@ -332,8 +352,11 @@ compile_via_cache <- function(bundle, stanc_args, compile_args, verbose) {
   )
 
   nutpie_model(
-    normalizePath(built, mustWork = TRUE),
-    normalizePath(entry_main_path(entry, bundle$main), mustWork = TRUE)
+    lib_path      = normalizePath(built, mustWork = TRUE),
+    stan_file     = bundle$display_source,
+    staged_source = normalizePath(
+      entry_main_path(entry, bundle$main), mustWork = TRUE
+    )
   )
 }
 
@@ -349,8 +372,11 @@ compile_no_cache <- function(bundle, stanc_args, compile_args, verbose) {
     stanc_args, compile_args, verbose
   )
   nutpie_model(
-    normalizePath(built, mustWork = TRUE),
-    normalizePath(entry_main_path(dest, bundle$main), mustWork = TRUE)
+    lib_path      = normalizePath(built, mustWork = TRUE),
+    stan_file     = bundle$display_source,
+    staged_source = normalizePath(
+      entry_main_path(dest, bundle$main), mustWork = TRUE
+    )
   )
 }
 
@@ -412,19 +438,32 @@ nutpie_prune_cache <- function(max_entries = 16L, min_age_days = 14L) {
 
 #' Clear the nutpieR compile cache
 #'
-#' Removes the entire compile cache tree under
-#' [`nutpie_cache_dir()`][nutpie_cache_dir]. All cached compiled models
-#' will be recompiled on next use.
+#' Removes the current resolved compile cache tree under
+#' [`nutpie_cache_dir()`][nutpie_cache_dir]. Cached compiled models will
+#' be recompiled on next use.
+#'
+#' @section Warning:
+#'
+#' This deletes the underlying `_model.so` files. If you hold a
+#' `nutpie_model` object whose library hasn't been opened yet (no prior
+#' [`nutpie_sample()`][nutpie_sample] call on it), its `lib_path` will
+#' point at a deleted file and subsequent use will fail. Models that
+#' were already opened in the current session keep working — once
+#' loaded, the OS retains the mapped library independently of the file
+#' on disk.
+#'
+#' Only the *active* cache root is cleared. If `R_USER_CACHE_DIR` was
+#' previously unset (or pointed somewhere else) and a different root
+#' was resolved earlier in the session, that older directory is left
+#' alone so models still backed by it remain valid.
 #'
 #' @return Invisibly `NULL`.
 #' @examples
 #' nutpie_clear_cache()
 #' @export
 nutpie_clear_cache <- function() {
-  for (d in c(tools::R_user_dir("nutpieR", "cache"),
-              file.path(tempdir(), "nutpieR-cache"))) {
-    if (dir.exists(d)) unlink(d, recursive = TRUE, force = TRUE)
-  }
+  root <- cache_root()
+  if (dir.exists(root)) unlink(root, recursive = TRUE, force = TRUE)
   rm(list = ls(.cache_state), envir = .cache_state)
   invisible(NULL)
 }

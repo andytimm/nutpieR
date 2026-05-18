@@ -117,7 +117,8 @@ nutpie_compile_model <- function(stan_file = NULL, code = NULL,
 #' @export
 print.nutpie_model <- function(x, ...) {
   cat("nutpie Stan model\n")
-  cat("  Stan file:", x$stan_file, "\n")
-  cat("  Library:  ", x$lib_path, "\n")
+  src <- if (is.na(x$stan_file)) "<inline code>" else x$stan_file
+  cat("  Source: ", src, "\n")
+  cat("  Library:", x$lib_path, "\n")
   invisible(x)
 }

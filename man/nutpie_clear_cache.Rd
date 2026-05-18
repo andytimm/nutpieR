@@ -10,10 +10,27 @@ nutpie_clear_cache()
 Invisibly \code{NULL}.
 }
 \description{
-Removes the entire compile cache tree under
-\code{\link[=nutpie_cache_dir]{nutpie_cache_dir()}}. All cached compiled models
-will be recompiled on next use.
+Removes the current resolved compile cache tree under
+\code{\link[=nutpie_cache_dir]{nutpie_cache_dir()}}. Cached compiled models will
+be recompiled on next use.
 }
+\section{Warning}{
+
+
+This deletes the underlying \verb{_model.so} files. If you hold a
+\code{nutpie_model} object whose library hasn't been opened yet (no prior
+\code{\link[=nutpie_sample]{nutpie_sample()}} call on it), its \code{lib_path} will
+point at a deleted file and subsequent use will fail. Models that
+were already opened in the current session keep working — once
+loaded, the OS retains the mapped library independently of the file
+on disk.
+
+Only the \emph{active} cache root is cleared. If \code{R_USER_CACHE_DIR} was
+previously unset (or pointed somewhere else) and a different root
+was resolved earlier in the session, that older directory is left
+alone so models still backed by it remain valid.
+}
+
 \examples{
 nutpie_clear_cache()
 }
