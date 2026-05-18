@@ -40,6 +40,6 @@ bayesplot::mcmc_pairs(draws, np = np, pars = c("mu", "tau"))
 }
 }
 \seealso{
-\code{\link[bayesplot:MCMC-scatterplots]{bayesplot::mcmc_pairs()}} for the most common consumer of this
+\code{\link[bayesplot:mcmc_pairs]{bayesplot::mcmc_pairs()}} for the most common consumer of this
 format. \code{\link[=nutpie_diagnostics]{nutpie_diagnostics()}} for the raw diagnostics.
 }

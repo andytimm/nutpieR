@@ -2,7 +2,7 @@
 % Please edit documentation in R/cache.R
 \name{nutpie_clear_cache}
 \alias{nutpie_clear_cache}
-\title{Clear the nutpieR inline-code compile cache}
+\title{Clear the nutpieR compile cache}
 \usage{
 nutpie_clear_cache()
 }
@@ -10,13 +10,27 @@ nutpie_clear_cache()
 Invisibly \code{NULL}.
 }
 \description{
-Removes the entire \code{R_user_dir("nutpieR", "cache")} tree, where
-\code{nutpie_compile_model(code = ...)} stores its compiled artifacts. Inline
-models will be recompiled on next use. Models compiled from a \code{stan_file}
-are not affected -- those live next to the \code{.stan}; remove the
-corresponding \verb{<basename>_model.so} (and \code{.cache_meta} sidecar) directly
-to invalidate.
+Removes the current resolved compile cache tree under
+\code{\link[=nutpie_cache_dir]{nutpie_cache_dir()}}. Cached compiled models will
+be recompiled on next use.
 }
+\section{Warning}{
+
+
+This deletes the underlying \verb{_model.so} files. If you hold a
+\code{nutpie_model} object whose library hasn't been opened yet (no prior
+\code{\link[=nutpie_sample]{nutpie_sample()}} call on it), its \code{lib_path} will
+point at a deleted file and subsequent use will fail. Models that
+were already opened in the current session keep working — once
+loaded, the OS retains the mapped library independently of the file
+on disk.
+
+Only the \emph{active} cache root is cleared. If \code{R_USER_CACHE_DIR} was
+previously unset (or pointed somewhere else) and a different root
+was resolved earlier in the session, that older directory is left
+alone so models still backed by it remain valid.
+}
+
 \examples{
 nutpie_clear_cache()
 }

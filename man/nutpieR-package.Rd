@@ -11,5 +11,10 @@ Lightweight R interface to the nutpie No-U-Turn Sampler (NUTS) implemented in Ru
 \author{
 \strong{Maintainer}: Andy Timm \email{timmandrew1@gmail.com}
 
+Authors:
+\itemize{
+  \item Andy Timm \email{timmandrew1@gmail.com}
+}
+
 }
 \keyword{internal}

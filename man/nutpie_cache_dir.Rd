@@ -2,7 +2,7 @@
 % Please edit documentation in R/cache.R
 \name{nutpie_cache_dir}
 \alias{nutpie_cache_dir}
-\title{Path to the nutpieR inline-code compile cache directory}
+\title{Path to the nutpieR compile cache directory}
 \usage{
 nutpie_cache_dir()
 }
@@ -10,8 +10,9 @@ nutpie_cache_dir()
 A character string with the path to the cache root.
 }
 \description{
-Returns the directory under which \code{nutpie_compile_model(code = ...)}
-stores its hashed compile artifacts. Useful for inspection,
+Returns the directory under which \code{nutpie_compile_model()} stores its
+content-hashed compile artifacts (one subdirectory per unique
+source + flags + BridgeStan version). Useful for inspection,
 troubleshooting, or \code{unlink()}-ing a single entry.
 }
 \examples{

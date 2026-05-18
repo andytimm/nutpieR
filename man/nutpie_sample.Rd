@@ -39,7 +39,7 @@ or a path to a compiled shared library.}
 
 \item{data}{Model data. Can be:
 \itemize{
-\item A named list (will be converted to JSON via \code{\link[jsonlite:fromJSON]{jsonlite::toJSON()}})
+\item A named list (will be converted to JSON via \code{\link[jsonlite:toJSON]{jsonlite::toJSON()}})
 \item A JSON string
 \item A path to a \code{.json} file
 \item \code{NULL} for models with no data block
