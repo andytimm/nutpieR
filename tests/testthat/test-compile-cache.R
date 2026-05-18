@@ -160,12 +160,13 @@ test_that("inline cache: hit, miss on content/flags, clear wipes", {
   expect_equal(counter$n, 4L)
 })
 
-test_that("stan_file and code with identical content produce identical hashes", {
-  # Files-vs-code with the same content land in the *same* cache slot
-  # iff the inline filename (`model.stan`) matches the stan_file's
-  # relative name under its common root. file_bundle for a lone file
-  # gives main = basename(file), so naming the temp file `model.stan`
-  # is the only place this collision can happen.
+test_that("stan_file and code with byte-identical content share a cache slot", {
+  # Hashing is byte-level (readBin / writeBin), so a file written with
+  # writeLines() (which appends a newline) does *not* collide with the
+  # same string passed via `code =` (which has none). That divergence
+  # is intentional -- byte equality is what the cache promises. We
+  # demonstrate collision here by writing the file with the exact same
+  # bytes as the inline code.
   local_isolated_cache()
   counter <- new.env(parent = emptyenv())
   testthat::local_mocked_bindings(
@@ -176,12 +177,15 @@ test_that("stan_file and code with identical content produce identical hashes", 
   )
 
   src <- "parameters { real x; } model { x ~ normal(0, 1); }"
-  stan <- make_temp_stan(src)
-  on.exit(unlink(dirname(stan), recursive = TRUE), add = TRUE)
+  d <- tempfile("nutpieR-bytematch-")
+  dir.create(d, recursive = TRUE)
+  on.exit(unlink(d, recursive = TRUE), add = TRUE)
+  stan <- file.path(d, "model.stan")
+  writeBin(charToRaw(src), stan)  # byte-exact match for the inline code
 
   m_file <- nutpie_compile_model(stan_file = stan, verbose = 0L)
   m_code <- nutpie_compile_model(code = src,       verbose = 0L)
-  # Same hash -> same lib_path, single compile.
+  # Same bytes -> same hash -> same lib_path, single compile.
   expect_equal(m_code$lib_path, m_file$lib_path)
   expect_equal(counter$n, 1L)
 })
@@ -424,10 +428,13 @@ test_that("missing #include errors at compile time, not silently no-ops", {
   expect_true(file.exists(m1$lib_path))
 
   # Delete the include, recompile -- must error rather than silently
-  # producing a model where the include is a no-op.
+  # producing a model where the include is a no-op. Match the error
+  # against stanc's actual diagnostic so unrelated compile failures
+  # don't sneak through this regression test.
   unlink(prior)
   expect_error(
-    nutpie_compile_model(stan_file = main, verbose = 0L)
+    nutpie_compile_model(stan_file = main, verbose = 0L),
+    "include|priors\\.stan|Could not find"
   )
 })
 

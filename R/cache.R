@@ -99,15 +99,19 @@ relative_to <- function(path, root) {
   }
 }
 
-# Returns the file's text, or NULL if the path doesn't exist. The NULL
-# marker lets the bundle differentiate "present-and-empty" from "missing"
-# in the hash (so deleting a `#include` busts the cache) while letting
-# stage_bundle() skip writing the file so stanc surfaces a real
-# "Could not find include file" error instead of silently treating the
-# include as an empty no-op.
+# Returns the file's raw byte content, or NULL if the path doesn't
+# exist. Raw bytes (not readLines() text) so the cache key is sensitive
+# to trailing-newline differences, line-ending differences, and any
+# encoding round-trip oddities -- a content cache should never falsely
+# claim two byte-distinct files match. The NULL marker lets the bundle
+# differentiate "present-and-empty" from "missing" in the hash (so
+# deleting a `#include` busts the cache) while letting stage_bundle()
+# skip writing the file so stanc surfaces a real "Could not find
+# include file" error instead of silently treating the include as an
+# empty no-op.
 read_dep <- function(path) {
   if (file.exists(path)) {
-    paste(readLines(path, warn = FALSE), collapse = "\n")
+    readBin(path, what = raw(), n = file.info(path)$size)
   } else {
     NULL
   }
@@ -120,9 +124,14 @@ read_dep <- function(path) {
 # `#include`s still resolve at compile time. `display_source` records
 # what to show users (their original path, or NA for inline) since the
 # main staged path under the cache dir isn't meaningful to them.
+# `content` is always a raw vector (matching file_bundle), so the hash
+# is computed over the same byte representation as the staged file.
 inline_bundle <- function(code) {
   list(
-    files = list(list(rel_path = INLINE_STAN, content = code)),
+    files = list(list(
+      rel_path = INLINE_STAN,
+      content  = charToRaw(enc2utf8(code))
+    )),
     main = INLINE_STAN,
     display_source = NA_character_
   )
@@ -249,13 +258,15 @@ nutpie_model <- function(lib_path, stan_file, staged_source) {
 # rel_path declared in the bundle so relative `#include`s resolve.
 # Files with NULL content (missing deps) are deliberately not written
 # so stanc fails naturally with its own "include not found" message.
+# writeBin (not writeLines) so bytes hashed == bytes staged, with no
+# platform line-ending translation or trailing-newline insertion.
 stage_bundle <- function(bundle, dest_dir) {
   src_root <- entry_src_dir(dest_dir)
   for (f in bundle$files) {
     if (is.null(f$content)) next
     target <- file.path(src_root, f$rel_path)
     dir.create(dirname(target), showWarnings = FALSE, recursive = TRUE)
-    writeLines(f$content, target)
+    writeBin(f$content, target)
   }
 }
 
