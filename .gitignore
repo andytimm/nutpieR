@@ -18,4 +18,3 @@ src/Makevars.win
 src/rust/.rustc_info.json
 .vscode/
 benchmarks/results/
-dogfood-output/
