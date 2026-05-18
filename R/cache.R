@@ -327,6 +327,11 @@ compile_via_cache <- function(bundle, stanc_args, compile_args, verbose) {
 
   if (file.exists(ok) && file.exists(lib) && file.exists(main)) {
     if (verbose >= 1L) message("Using cached compiled model.")
+    # Refresh the `ok` mtime so this entry counts as recently-used.
+    # Pruning is LRU on the marker mtime; without the bump, a popular
+    # but old-on-disk model could be auto-evicted right after a hit
+    # returns it to the caller (issue surfaced in PR #24 review).
+    Sys.setFileTime(ok, Sys.time())
     return(nutpie_model(
       lib_path      = normalizePath(lib,  mustWork = TRUE),
       stan_file     = bundle$display_source,

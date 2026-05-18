@@ -343,6 +343,38 @@ test_that("nutpie_prune_cache respects max_entries and min_age_days", {
   expect_true(all(grepl("^new", remaining[order(remaining)][1:10])))
 })
 
+test_that("cache hit refreshes ok marker mtime (so prune treats it as LRU)", {
+  # Regression: previously, a hit returned the cached model without
+  # touching the marker, so a 30-day-old entry stayed evictable even
+  # if the user just hit it -- auto-prune could delete a model the
+  # caller still holds. Refresh on hit makes pruning LRU-ish.
+  local_isolated_cache()
+  counter <- new.env(parent = emptyenv())
+  testthat::local_mocked_bindings(
+    compile_stan_model = make_compile_stub(counter),
+    bs_version = function() "TEST.0",
+    bridgestan_version = function() "TEST.0",
+    .package = "nutpieR"
+  )
+
+  src <- "parameters { real x; } model { x ~ normal(0, 1); }"
+  m <- nutpie_compile_model(code = src, verbose = 0L)
+  entry <- dirname(dirname(m$lib_path))
+  ok <- file.path(entry, "ok")
+
+  # Backdate the marker by 30 days; without the hit-refresh fix the
+  # mtime would stay 30d old after the second compile.
+  Sys.setFileTime(ok, Sys.time() - 30 * 86400)
+  before <- file.info(ok)$mtime
+
+  nutpie_compile_model(code = src, verbose = 0L)  # cache hit
+  expect_equal(counter$n, 1L)
+  after <- file.info(ok)$mtime
+  # Allow a 1s wiggle for filesystem mtime granularity; the bump
+  # should land >= 14d more recent than the backdated value.
+  expect_gt(as.numeric(after) - as.numeric(before), 14 * 86400 - 1)
+})
+
 test_that("entries without ok marker don't count toward cap", {
   local_isolated_cache()
   root <- nutpie_cache_dir()
