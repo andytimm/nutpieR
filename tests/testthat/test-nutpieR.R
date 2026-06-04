@@ -338,6 +338,25 @@ test_that("save_warmup returns warmup draws + diagnostics with tuning field", {
   expect_true(any(warmup_diag$tuning))
 })
 
+test_that("save_warmup = FALSE skips warmup storage but keeps post-warmup draws", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+    num_draws = 7, num_warmup = 11, num_chains = 2, seed = 42,
+    refresh = 0, save_warmup = FALSE, store_mass_matrix = TRUE
+  )
+
+  expect_equal(posterior::niterations(draws), 7)
+  expect_equal(posterior::nchains(draws), 2)
+
+  diag <- nutpie_diagnostics(draws)
+  expect_length(diag$diverging, 14)
+  expect_true(all(!diag$tuning))
+  expect_true(all(diag$draw %in% 1:7))
+  expect_false("mass_matrix_inv" %in% names(diag))
+  expect_error(nutpie_warmup_draws(draws), "save_warmup")
+})
+
 # --- pars whitelist + warmup filtering on normal -----------------------------
 
 test_that("pars whitelist + save_warmup filters both draws and warmup", {
