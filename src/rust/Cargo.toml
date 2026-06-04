@@ -11,7 +11,7 @@ name = 'nutpieR'
 
 [dependencies]
 extendr-api = '0.9.0'
-nuts-rs = { version = '0.18', features = ['arrow'] }
+nuts-rs = { version = '~0.18.2', features = ['arrow'] }
 anyhow = '1'
 thiserror = '2'
 rand = '0.10'

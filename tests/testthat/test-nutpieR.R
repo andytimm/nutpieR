@@ -412,7 +412,8 @@ test_that("store_unconstrained / gradient / mass_matrix surface their columns", 
 
   num_draws <- 50
   draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
-    num_draws = num_draws, num_chains = 1, seed = 42, refresh = 0,
+    num_draws = num_draws, num_warmup = 100L, num_chains = 1, seed = 42, refresh = 0,
+    save_warmup = TRUE,
     store_unconstrained = TRUE, store_gradient = TRUE, store_mass_matrix = TRUE
   )
   diag <- nutpie_diagnostics(draws)
@@ -548,7 +549,7 @@ test_that("store_mass_matrix surfaces mass_matrix_inv as a numeric matrix", {
   draws <- nutpie_sample(test_models$normal, data = normal_data(),
                          num_draws = num_draws, num_warmup = 80,
                          num_chains = num_chains, seed = 1L, refresh = 0,
-                         store_mass_matrix = TRUE)
+                         save_warmup = TRUE, store_mass_matrix = TRUE)
   diag <- nutpie_diagnostics(draws)
   mm <- diag$mass_matrix_inv
   expect_true(is.matrix(mm))
