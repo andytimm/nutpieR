@@ -19,10 +19,14 @@ Commonly available scalar fields: \code{diverging}, \code{tuning}, \code{maxdept
 Wide fields (one row per draw): when \code{store_unconstrained = TRUE},
 \code{unconstrained_draw} (\code{NA} rows where unrecorded); when
 \code{store_gradient = TRUE}, \code{gradient} (\code{NA} rows where unrecorded); when
-\code{store_mass_matrix = TRUE}, \code{mass_matrix_inv} (and \code{mass_matrix_eigvals}
-/ \code{mass_matrix_stds} when reported), with the most recently recorded
-value carried forward into draws between updates — the inverse mass
-matrix is piecewise-constant between adapter steps, not undefined.
+\code{store_mass_matrix = TRUE} \strong{and} \code{save_warmup = TRUE},
+\code{mass_matrix_inv} (and \code{mass_matrix_eigvals} / \code{mass_matrix_stds} when
+reported), with the most recently recorded value carried forward into
+draws between updates — the inverse mass matrix is piecewise-constant
+between adapter steps, not undefined. Requires \code{save_warmup = TRUE}
+because adaptation (the only time the matrix changes) occurs during
+warmup; without warmup draws in the trace there is no value to carry
+forward.
 These surface as \verb{(n_draws * n_chains, ndim_unc)} numeric matrices when
 every recorded row has the same width; mixed-width columns fall back
 to a list of numeric vectors (one per draw, \code{NULL} when not recorded).

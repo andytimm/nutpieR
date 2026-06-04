@@ -138,9 +138,11 @@ divergent transition (start/end positions, momentum, gradient). Surfaces
 as list columns on diagnostics, only present when at least one draw
 diverged. Default \code{FALSE}.}
 
-\item{store_mass_matrix}{If \code{TRUE}, store the inverse mass matrix diagonal
-at each draw. Surfaces as a numeric matrix
-\verb{(n_draws * n_chains, ndim_unc)} when uniform-width; falls back to a
+\item{store_mass_matrix}{If \code{TRUE}, store inverse mass matrix updates in
+diagnostics. Because adaptation occurs during warmup, these diagnostics
+require \code{save_warmup = TRUE}; otherwise warmup storage is skipped and no
+mass-matrix values are available to carry forward. Surfaces as a numeric
+matrix \verb{(n_draws * n_chains, ndim_unc)} when uniform-width; falls back to a
 list of vectors when widths differ. Default \code{FALSE}.}
 
 \item{store_unconstrained}{If \code{TRUE}, store the unconstrained position at

@@ -1,3 +1,7 @@
+# nutpieR 1.7.5
+
+* `save_warmup = FALSE` no longer stores warmup draws in Arrow memory before dropping them.
+
 # nutpieR 1.7.4
 
 * Fix #23: editing a `.stan` and recompiling no longer silently keeps

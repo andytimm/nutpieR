@@ -54,10 +54,14 @@ rename_sampler_config <- function(json_str) {
 #'   Wide fields (one row per draw): when `store_unconstrained = TRUE`,
 #'   `unconstrained_draw` (`NA` rows where unrecorded); when
 #'   `store_gradient = TRUE`, `gradient` (`NA` rows where unrecorded); when
-#'   `store_mass_matrix = TRUE`, `mass_matrix_inv` (and `mass_matrix_eigvals`
-#'   / `mass_matrix_stds` when reported), with the most recently recorded
-#'   value carried forward into draws between updates — the inverse mass
-#'   matrix is piecewise-constant between adapter steps, not undefined.
+#'   `store_mass_matrix = TRUE` **and** `save_warmup = TRUE`,
+#'   `mass_matrix_inv` (and `mass_matrix_eigvals` / `mass_matrix_stds` when
+#'   reported), with the most recently recorded value carried forward into
+#'   draws between updates — the inverse mass matrix is piecewise-constant
+#'   between adapter steps, not undefined. Requires `save_warmup = TRUE`
+#'   because adaptation (the only time the matrix changes) occurs during
+#'   warmup; without warmup draws in the trace there is no value to carry
+#'   forward.
 #'   These surface as `(n_draws * n_chains, ndim_unc)` numeric matrices when
 #'   every recorded row has the same width; mixed-width columns fall back
 #'   to a list of numeric vectors (one per draw, `NULL` when not recorded).

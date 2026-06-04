@@ -111,6 +111,7 @@ fn run_sampler<S: Settings>(
     num_warmup: i32,
     num_cores: i32,
     refresh: i32,
+    save_warmup: bool,
 ) -> Result<Vec<ArrowTrace>> {
     let show_progress = refresh > 0;
     let refresh = refresh.max(0) as usize;
@@ -151,8 +152,10 @@ fn run_sampler<S: Settings>(
         None
     };
 
+    let mut arrow_config = ArrowConfig::default();
+    arrow_config.store_warmup = save_warmup;
     let mut sampler_opt = Some(
-        Sampler::new(stan_model, settings, ArrowConfig::new(), num_cores as usize, callback)
+        Sampler::new(stan_model, settings, arrow_config, num_cores as usize, callback)
             .map_err(r_err)?,
     );
 
@@ -456,12 +459,12 @@ fn sample_stan(
             if let Some(v) = opt_finite_positive_f64(&eigval_cutoff, "eigval_cutoff")? {
                 settings.adapt_options.mass_matrix_options.eigval_cutoff = v;
             }
-            run_with_settings(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
+            run_with_settings(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh, save_warmup)?
         }
         "diag" => {
             let mut settings = DiagNutsSettings::default();
             configure_settings!(settings);
-            run_with_settings(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh)?
+            run_with_settings(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh, save_warmup)?
         }
         other => {
             return Err(Error::Other(format!(
@@ -471,10 +474,12 @@ fn sample_stan(
         }
     };
 
+    let post_warmup_skip = if save_warmup { num_tune } else { 0 };
+
     let draws_robj = build_draws_matrix(
         &results,
         &keep_cols,
-        num_tune,
+        post_warmup_skip,
         n_draws_per_chain,
         &kept_param_names,
     )?;
@@ -496,7 +501,7 @@ fn sample_stan(
         drop_cols.push("gradient");
     }
 
-    let diagnostics = extract_diagnostics(&results, num_tune, n_draws_per_chain, &drop_cols)?;
+    let diagnostics = extract_diagnostics(&results, post_warmup_skip, n_draws_per_chain, &drop_cols)?;
 
     let warmup_draws_robj: Robj = if save_warmup {
         build_draws_matrix(&results, &keep_cols, 0, num_tune, &kept_param_names)?
@@ -584,11 +589,12 @@ fn run_with_settings<S: Settings + serde::Serialize>(
     num_warmup: i32,
     num_cores: i32,
     refresh: i32,
+    save_warmup: bool,
 ) -> Result<(Vec<ArrowTrace>, String)> {
     let json = serde_json::to_string(&settings)
         .map_err(|e| Error::Other(format!("failed to serialize sampler settings: {}", e)))?;
     let traces = run_sampler(
-        stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh,
+        stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh, save_warmup,
     )?;
     Ok((traces, json))
 }

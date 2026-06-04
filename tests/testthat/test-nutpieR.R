@@ -338,6 +338,25 @@ test_that("save_warmup returns warmup draws + diagnostics with tuning field", {
   expect_true(any(warmup_diag$tuning))
 })
 
+test_that("save_warmup = FALSE skips warmup storage but keeps post-warmup draws", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+
+  draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+    num_draws = 7, num_warmup = 11, num_chains = 2, seed = 42,
+    refresh = 0, save_warmup = FALSE, store_mass_matrix = TRUE
+  )
+
+  expect_equal(posterior::niterations(draws), 7)
+  expect_equal(posterior::nchains(draws), 2)
+
+  diag <- nutpie_diagnostics(draws)
+  expect_length(diag$diverging, 14)
+  expect_true(all(!diag$tuning))
+  expect_true(all(diag$draw %in% 1:7))
+  expect_false("mass_matrix_inv" %in% names(diag))
+  expect_error(nutpie_warmup_draws(draws), "save_warmup")
+})
+
 # --- pars whitelist + warmup filtering on normal -----------------------------
 
 test_that("pars whitelist + save_warmup filters both draws and warmup", {
@@ -412,7 +431,8 @@ test_that("store_unconstrained / gradient / mass_matrix surface their columns", 
 
   num_draws <- 50
   draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
-    num_draws = num_draws, num_chains = 1, seed = 42, refresh = 0,
+    num_draws = num_draws, num_warmup = 100L, num_chains = 1, seed = 42, refresh = 0,
+    save_warmup = TRUE,
     store_unconstrained = TRUE, store_gradient = TRUE, store_mass_matrix = TRUE
   )
   diag <- nutpie_diagnostics(draws)
@@ -548,7 +568,7 @@ test_that("store_mass_matrix surfaces mass_matrix_inv as a numeric matrix", {
   draws <- nutpie_sample(test_models$normal, data = normal_data(),
                          num_draws = num_draws, num_warmup = 80,
                          num_chains = num_chains, seed = 1L, refresh = 0,
-                         store_mass_matrix = TRUE)
+                         save_warmup = TRUE, store_mass_matrix = TRUE)
   diag <- nutpie_diagnostics(draws)
   mm <- diag$mass_matrix_inv
   expect_true(is.matrix(mm))
