@@ -17,6 +17,7 @@ nutpie_sample(
   max_energy_error = NULL,
   extra_doublings = NULL,
   refresh = 100L,
+  progress = c("auto", "cli", "progressr", "text", "none"),
   init = NULL,
   init_mean = NULL,
   save_warmup = FALSE,
@@ -71,8 +72,15 @@ is treated as a divergence. Default \code{NULL} keeps the nuts-rs default.}
 turning point is reached. Default \code{NULL} keeps the nuts-rs default
 (currently 0).}
 
-\item{refresh}{How often to print progress updates, in draws per chain.
+\item{refresh}{How often to print text progress updates, in draws per chain.
 Set to \code{0} to suppress progress output. Default is \code{100}.}
+
+\item{progress}{Progress rendering mode. \code{"auto"} uses a \code{cli} progress bar
+in interactive sessions when the \code{cli} package is installed, otherwise the
+line-oriented text log. \code{"cli"} shows a compact sampler-aware bar,
+\code{"progressr"} emits progressr signals for custom handlers, \code{"text"} prints
+line-oriented updates, and \code{"none"} suppresses progress. \code{refresh = 0}
+always disables progress.}
 
 \item{init}{Initial values for each chain. Single entry point that
 dispatches on the input shape:

@@ -5,8 +5,8 @@ use arrow::array::{
     StringArray, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::DataType;
-use extendr_api::prelude::*;
 use extendr_api::error::Result;
+use extendr_api::prelude::*;
 use nuts_rs::{
     ArrowConfig, ArrowTrace, ChainProgress, DiagNutsSettings, LowRankNutsSettings,
     ProgressCallback, Sampler, SamplerWaitResult, Settings,
@@ -101,6 +101,21 @@ fn compile_stan_model_impl(
     Ok(lib_path.to_string_lossy().into_owned())
 }
 
+#[derive(Clone, Default)]
+struct ChainState {
+    chain: usize,
+    finished_draws: usize,
+    total_draws: usize,
+    divergences: usize,
+    tuning: bool,
+    started: bool,
+    latest_num_steps: usize,
+    total_num_steps: usize,
+    step_size: f64,
+    runtime: Duration,
+    divergent_draws: Vec<usize>,
+}
+
 /// Sample from a Stan model using nuts-rs NUTS sampler.
 /// Run the sampler with progress reporting. Generic over Settings type.
 fn run_sampler<S: Settings>(
@@ -112,40 +127,39 @@ fn run_sampler<S: Settings>(
     num_cores: i32,
     refresh: i32,
     save_warmup: bool,
+    progress_cb: Option<Function>,
 ) -> Result<Vec<ArrowTrace>> {
-    let show_progress = refresh > 0;
     let refresh = refresh.max(0) as usize;
+    let mut progress_cb = progress_cb;
+    let use_callback = progress_cb.is_some();
+    let text_log = refresh > 0 && !use_callback;
+    let poll = text_log || use_callback;
 
-    #[derive(Clone, Default)]
-    struct ChainState {
-        finished_draws: usize,
-        total_draws: usize,
-        divergences: usize,
-        tuning: bool,
-        step_size: f64,
-    }
-
-    let progress_state: Arc<Mutex<Vec<ChainState>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let progress_state: Arc<Mutex<Vec<ChainState>>> = Arc::new(Mutex::new(Vec::new()));
     let state_clone = progress_state.clone();
 
-    let callback = if show_progress {
+    let callback = if poll {
         Some(ProgressCallback {
-            callback: Box::new(
-                move |_elapsed: Duration, progress: Box<[ChainProgress]>| {
-                    let snapshot: Vec<ChainState> = progress
-                        .iter()
-                        .map(|c| ChainState {
-                            finished_draws: c.finished_draws,
-                            total_draws: c.total_draws,
-                            divergences: c.divergences,
-                            tuning: c.tuning,
-                            step_size: c.step_size,
-                        })
-                        .collect();
-                    *state_clone.lock().unwrap() = snapshot;
-                },
-            ),
+            callback: Box::new(move |_elapsed: Duration, progress: Box<[ChainProgress]>| {
+                let snapshot: Vec<ChainState> = progress
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| ChainState {
+                        chain: i + 1,
+                        finished_draws: c.finished_draws,
+                        total_draws: c.total_draws,
+                        divergences: c.divergences,
+                        tuning: c.tuning,
+                        started: c.started,
+                        latest_num_steps: c.latest_num_steps,
+                        total_num_steps: c.total_num_steps,
+                        step_size: c.step_size,
+                        runtime: c.runtime,
+                        divergent_draws: c.divergent_draws.clone(),
+                    })
+                    .collect();
+                *state_clone.lock().unwrap() = snapshot;
+            }),
             rate: Duration::from_millis(100),
         })
     } else {
@@ -155,12 +169,22 @@ fn run_sampler<S: Settings>(
     let mut arrow_config = ArrowConfig::default();
     arrow_config.store_warmup = save_warmup;
     let mut sampler_opt = Some(
-        Sampler::new(stan_model, settings, arrow_config, num_cores as usize, callback)
-            .map_err(r_err)?,
+        Sampler::new(
+            stan_model,
+            settings,
+            arrow_config,
+            num_cores as usize,
+            callback,
+        )
+        .map_err(r_err)?,
     );
 
     let start = Instant::now();
-    let mut last_reported: Vec<usize> = vec![0; num_chains as usize];
+    let mut last_reported: Vec<usize> = if text_log {
+        vec![0; num_chains as usize]
+    } else {
+        Vec::new()
+    };
     let mut chain_announced: Vec<bool> = vec![false; num_chains as usize];
     let announce_finished = |i: usize| {
         rprintln!(
@@ -170,7 +194,7 @@ fn run_sampler<S: Settings>(
         );
     };
 
-    if show_progress {
+    if text_log {
         rprintln!(
             "Sampling {} chains, {} draws each ({} warmup)...\n",
             num_chains,
@@ -181,7 +205,7 @@ fn run_sampler<S: Settings>(
 
     let results = loop {
         let sampler = sampler_opt.take().unwrap();
-        let wait_dur = if show_progress {
+        let wait_dur = if poll {
             Duration::from_millis(200)
         } else {
             Duration::from_secs(600)
@@ -190,43 +214,70 @@ fn run_sampler<S: Settings>(
             SamplerWaitResult::Trace(traces) => break traces,
             SamplerWaitResult::Timeout(s) => {
                 sampler_opt = Some(s);
-                if show_progress {
+                let state_snapshot: Vec<ChainState> = {
                     let state = progress_state.lock().unwrap();
-                    if !state.is_empty() {
-                        for (i, chain) in state.iter().enumerate() {
-                            let draws_since = chain.finished_draws.saturating_sub(last_reported[i]);
-                            if draws_since >= refresh {
-                                let phase = if chain.tuning { "warmup" } else { "sample" };
-                                let elapsed = start.elapsed().as_secs_f64();
-                                if chain.divergences > 0 {
-                                    rprintln!(
-                                        "  Chain {} [{phase}] {}/{} draws ({} divergences, step size {:.3}) [{:.1}s]",
-                                        i + 1,
-                                        chain.finished_draws,
-                                        chain.total_draws,
-                                        chain.divergences,
-                                        chain.step_size,
-                                        elapsed
-                                    );
-                                } else {
-                                    rprintln!(
-                                        "  Chain {} [{phase}] {}/{} draws (step size {:.3}) [{:.1}s]",
-                                        i + 1,
-                                        chain.finished_draws,
-                                        chain.total_draws,
-                                        chain.step_size,
-                                        elapsed
-                                    );
-                                }
-                                last_reported[i] = chain.finished_draws;
+                    state.clone()
+                };
+                if state_snapshot.is_empty() {
+                    continue;
+                }
+
+                let cb_failed = if let Some(ref cb) = progress_cb {
+                    let snapshot_list = build_progress_snapshot(&state_snapshot);
+                    let pairlist = Pairlist::from_pairs([("", Robj::from(snapshot_list))]);
+                    match cb.call(pairlist) {
+                        Ok(_) => false,
+                        Err(e) => {
+                            rprintln!(
+                                "nutpieR: progress callback failed ({}); disabling further callbacks for this run.",
+                                e
+                            );
+                            true
+                        }
+                    }
+                } else {
+                    false
+                };
+                if cb_failed {
+                    progress_cb = None;
+                }
+
+                if text_log {
+                    for (i, chain) in state_snapshot.iter().enumerate() {
+                        let draws_since = chain.finished_draws.saturating_sub(last_reported[i]);
+                        if draws_since >= refresh {
+                            let phase = if chain.tuning { "warmup" } else { "sample" };
+                            let elapsed = start.elapsed().as_secs_f64();
+                            if chain.divergences > 0 {
+                                rprintln!(
+                                    "  Chain {} [{phase}] {}/{} draws ({} divergences, step size {:.3}, leapfrog {}) [{:.1}s]",
+                                    i + 1,
+                                    chain.finished_draws,
+                                    chain.total_draws,
+                                    chain.divergences,
+                                    chain.step_size,
+                                    chain.latest_num_steps,
+                                    elapsed
+                                );
+                            } else {
+                                rprintln!(
+                                    "  Chain {} [{phase}] {}/{} draws (step size {:.3}, leapfrog {}) [{:.1}s]",
+                                    i + 1,
+                                    chain.finished_draws,
+                                    chain.total_draws,
+                                    chain.step_size,
+                                    chain.latest_num_steps,
+                                    elapsed
+                                );
                             }
-                            if !chain_announced[i]
-                                && chain.total_draws > 0
-                                && chain.finished_draws >= chain.total_draws
-                            {
-                                announce_finished(i);
-                                chain_announced[i] = true;
-                            }
+                            last_reported[i] = chain.finished_draws;
+                        }
+                        if !chain_announced[i]
+                            && chain.total_draws > 0
+                            && chain.finished_draws >= chain.total_draws
+                        {
+                            announce_finished(i);
+                            chain_announced[i] = true;
                         }
                     }
                 }
@@ -235,7 +286,19 @@ fn run_sampler<S: Settings>(
         }
     };
 
-    if show_progress {
+    if let Some(ref cb) = progress_cb {
+        let state_snapshot: Vec<ChainState> = {
+            let state = progress_state.lock().unwrap();
+            state.clone()
+        };
+        if !state_snapshot.is_empty() {
+            let snapshot_list = build_progress_snapshot(&state_snapshot);
+            let pairlist = Pairlist::from_pairs([("", Robj::from(snapshot_list))]);
+            let _ = cb.call(pairlist);
+        }
+    }
+
+    if text_log {
         let total_divergences: usize = {
             let state = progress_state.lock().unwrap();
             for i in 0..state.len() {
@@ -264,6 +327,35 @@ fn run_sampler<S: Settings>(
     }
 
     Ok(results)
+}
+
+/// Build a `List` of per-chain named lists for the R progress callback.
+/// Field set must match the R-side progress helpers in `R/progress.R`.
+fn build_progress_snapshot(state: &[ChainState]) -> List {
+    let entries: Vec<Robj> = state
+        .iter()
+        .map(|c| {
+            list!(
+                chain = c.chain as i32,
+                finished_draws = c.finished_draws as i32,
+                total_draws = c.total_draws as i32,
+                divergences = c.divergences as i32,
+                tuning = c.tuning,
+                started = c.started,
+                latest_num_steps = c.latest_num_steps as i32,
+                total_num_steps = c.total_num_steps as f64,
+                step_size = c.step_size,
+                runtime = c.runtime.as_secs_f64(),
+                divergent_draws = c
+                    .divergent_draws
+                    .iter()
+                    .map(|x| *x as i32)
+                    .collect::<Vec<i32>>()
+            )
+            .into_robj()
+        })
+        .collect();
+    List::from_values(entries)
 }
 
 /// @param handle An `ExternalPtr<BSHandle>` from `bs_open()`.
@@ -304,6 +396,13 @@ fn run_sampler<S: Settings>(
 ///   when expanding each draw. Setting this `FALSE` skips the GQ block
 ///   (including any `*_rng` calls) entirely. Must imply `include_tp = TRUE`
 ///   when `TRUE`, since GQ may reference TP.
+/// @param progress_callback NULL or an R closure invoked on each poll wakeup
+///   with one argument: a list of `num_chains` per-chain snapshots
+///   (`chain`, `finished_draws`, `total_draws`, `divergences`, `tuning`,
+///   `started`, `latest_num_steps`, `total_num_steps`, `step_size`, `runtime`,
+///   `divergent_draws`). When supplied, the built-in per-chain text log is
+///   suppressed; errors raised by the closure are warned once and further calls
+///   suppressed for the run.
 /// @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 ///   sampler_config (JSON), and optionally warmup_draws and warmup_diagnostics.
 /// @noRd
@@ -334,198 +433,229 @@ fn sample_stan(
     keep_indices: Robj,
     include_tp: bool,
     include_gq: bool,
+    progress_callback: Robj,
 ) -> List {
     or_throw((|| -> Result<List> {
-    // Defensive guards before unsigned casts. The R wrapper validates these
-    // already; we re-check here so direct callers (or malformed inputs that
-    // somehow slip past the R layer) can't turn negative ints into huge
-    // u64/usize allocations.
-    for (val, name) in [
-        (num_draws, "num_draws"),
-        (num_chains, "num_chains"),
-        (num_cores, "num_cores"),
-    ] {
-        if val <= 0 {
+        // Defensive guards before unsigned casts. The R wrapper validates these
+        // already; we re-check here so direct callers (or malformed inputs that
+        // somehow slip past the R layer) can't turn negative ints into huge
+        // u64/usize allocations.
+        for (val, name) in [
+            (num_draws, "num_draws"),
+            (num_chains, "num_chains"),
+            (num_cores, "num_cores"),
+        ] {
+            if val <= 0 {
+                return Err(Error::Other(format!("{} must be >= 1, got {}", name, val)));
+            }
+        }
+        if num_warmup < 0 {
             return Err(Error::Other(format!(
-                "{} must be >= 1, got {}",
-                name, val
+                "num_warmup must be >= 0, got {}",
+                num_warmup
             )));
         }
-    }
-    if num_warmup < 0 {
-        return Err(Error::Other(format!(
-            "num_warmup must be >= 0, got {}",
-            num_warmup
-        )));
-    }
-    check_seed(seed)?;
+        check_seed(seed)?;
 
-    let max_treedepth_opt = opt_count(&max_treedepth, "max_treedepth", 1)?;
-    let mindepth_opt = opt_count(&mindepth, "mindepth", 0)?;
-    let target_accept_opt =
-        opt_finite_in_open_unit(&target_accept, "target_accept")?;
-    let max_energy_error_opt = opt_finite_positive_f64(&max_energy_error, "max_energy_error")?;
-    let extra_doublings_opt = opt_count(&extra_doublings, "extra_doublings", 0)?;
+        let max_treedepth_opt = opt_count(&max_treedepth, "max_treedepth", 1)?;
+        let mindepth_opt = opt_count(&mindepth, "mindepth", 0)?;
+        let target_accept_opt = opt_finite_in_open_unit(&target_accept, "target_accept")?;
+        let max_energy_error_opt = opt_finite_positive_f64(&max_energy_error, "max_energy_error")?;
+        let extra_doublings_opt = opt_count(&extra_doublings, "extra_doublings", 0)?;
 
-    let init_positions_raw: Option<Vec<Vec<f64>>> = if init_positions.is_null() {
-        None
-    } else {
-        let lst = init_positions
-            .as_list()
-            .ok_or_else(|| Error::Other("init_positions must be a list of numeric vectors".into()))?;
-        let mut out = Vec::with_capacity(lst.len());
-        for (i, (_, el)) in lst.iter().enumerate() {
-            let v = el.as_real_vector().ok_or_else(|| {
-                Error::Other(format!(
-                    "init_positions[[{}]] must be a numeric vector",
-                    i + 1
-                ))
+        let init_positions_raw: Option<Vec<Vec<f64>>> = if init_positions.is_null() {
+            None
+        } else {
+            let lst = init_positions.as_list().ok_or_else(|| {
+                Error::Other("init_positions must be a list of numeric vectors".into())
             })?;
-            out.push(v);
+            let mut out = Vec::with_capacity(lst.len());
+            for (i, (_, el)) in lst.iter().enumerate() {
+                let v = el.as_real_vector().ok_or_else(|| {
+                    Error::Other(format!(
+                        "init_positions[[{}]] must be a numeric vector",
+                        i + 1
+                    ))
+                })?;
+                out.push(v);
+            }
+            Some(out)
+        };
+
+        let stan_model = model::StanModel::new(&handle)
+            .with_init_positions(init_positions_raw, jitter)
+            .and_then(|m| m.with_constrain_flags(&handle, include_tp, include_gq))
+            .map_err(r_err)?;
+
+        let ndim = stan_model.num_constrained();
+        let all_param_names: &[String] = stan_model.constrained_param_names();
+
+        // Resolve keep_indices: NULL → keep all, else use as-supplied. Indices
+        // are 0-based and must be within [0, ndim).
+        let keep_cols: Vec<usize> = if keep_indices.is_null() {
+            (0..ndim).collect()
+        } else {
+            let v = keep_indices.as_integer_vector().ok_or_else(|| {
+                Error::Other("keep_indices must be NULL or an integer vector".into())
+            })?;
+            let mut out = Vec::with_capacity(v.len());
+            for &idx in v.iter() {
+                if idx < 0 || (idx as usize) >= ndim {
+                    return Err(Error::Other(format!(
+                        "keep_indices contains out-of-range value {} (ndim={})",
+                        idx, ndim
+                    )));
+                }
+                out.push(idx as usize);
+            }
+            out
+        };
+        let kept_param_names: Vec<String> = keep_cols
+            .iter()
+            .map(|&i| all_param_names[i].clone())
+            .collect();
+        let expand_error_count = stan_model.expand_error_count_handle();
+
+        let num_tune = num_warmup as usize;
+        let n_draws_per_chain = num_draws as usize;
+
+        macro_rules! configure_settings {
+            ($settings:expr) => {{
+                $settings.num_tune = num_warmup as u64;
+                $settings.num_draws = num_draws as u64;
+                $settings.num_chains = num_chains as usize;
+                $settings.seed = seed as u64;
+                if let Some(v) = max_treedepth_opt {
+                    $settings.maxdepth = v as u64;
+                }
+                if let Some(v) = mindepth_opt {
+                    $settings.mindepth = v as u64;
+                }
+                if let Some(v) = target_accept_opt {
+                    $settings.adapt_options.step_size_settings.target_accept = v;
+                }
+                if let Some(v) = max_energy_error_opt {
+                    $settings.max_energy_error = v;
+                }
+                if let Some(v) = extra_doublings_opt {
+                    $settings.extra_doublings = v as u64;
+                }
+                $settings.store_divergences = store_divergences;
+                $settings.store_unconstrained = store_unconstrained;
+                $settings.store_gradient = store_gradient;
+                $settings
+                    .adapt_options
+                    .mass_matrix_options
+                    .store_mass_matrix = store_mass_matrix;
+            }};
         }
-        Some(out)
-    };
 
-    let stan_model = model::StanModel::new(&handle)
-        .with_init_positions(init_positions_raw, jitter)
-        .and_then(|m| m.with_constrain_flags(&handle, include_tp, include_gq))
-        .map_err(r_err)?;
+        let progress_callback = if progress_callback.is_null() {
+            None
+        } else {
+            Some(progress_callback.as_function().ok_or_else(|| {
+                Error::Other("progress_callback must be NULL or a function".into())
+            })?)
+        };
 
-    let ndim = stan_model.num_constrained();
-    let all_param_names: &[String] = stan_model.constrained_param_names();
-
-    // Resolve keep_indices: NULL → keep all, else use as-supplied. Indices
-    // are 0-based and must be within [0, ndim).
-    let keep_cols: Vec<usize> = if keep_indices.is_null() {
-        (0..ndim).collect()
-    } else {
-        let v = keep_indices
-            .as_integer_vector()
-            .ok_or_else(|| Error::Other("keep_indices must be NULL or an integer vector".into()))?;
-        let mut out = Vec::with_capacity(v.len());
-        for &idx in v.iter() {
-            if idx < 0 || (idx as usize) >= ndim {
+        let (results, sampler_config_json) = match adaptation {
+            "low_rank" => {
+                let mut settings = LowRankNutsSettings::default();
+                configure_settings!(settings);
+                if let Some(v) = opt_finite_positive_f64(&mass_matrix_gamma, "mass_matrix_gamma")? {
+                    settings.adapt_options.mass_matrix_options.gamma = v;
+                }
+                if let Some(v) = opt_finite_positive_f64(&eigval_cutoff, "eigval_cutoff")? {
+                    settings.adapt_options.mass_matrix_options.eigval_cutoff = v;
+                }
+                run_with_settings(
+                    stan_model,
+                    settings,
+                    num_chains,
+                    num_draws,
+                    num_warmup,
+                    num_cores,
+                    refresh,
+                    save_warmup,
+                    progress_callback.clone(),
+                )?
+            }
+            "diag" => {
+                let mut settings = DiagNutsSettings::default();
+                configure_settings!(settings);
+                run_with_settings(
+                    stan_model,
+                    settings,
+                    num_chains,
+                    num_draws,
+                    num_warmup,
+                    num_cores,
+                    refresh,
+                    save_warmup,
+                    progress_callback.clone(),
+                )?
+            }
+            other => {
                 return Err(Error::Other(format!(
-                    "keep_indices contains out-of-range value {} (ndim={})",
-                    idx, ndim
+                    "adaptation must be one of \"diag\" or \"low_rank\", got \"{}\"",
+                    other
                 )));
             }
-            out.push(idx as usize);
+        };
+
+        let post_warmup_skip = if save_warmup { num_tune } else { 0 };
+
+        let draws_robj = build_draws_matrix(
+            &results,
+            &keep_cols,
+            post_warmup_skip,
+            n_draws_per_chain,
+            &kept_param_names,
+        )?;
+
+        // Diagnostic columns to suppress at the R boundary. nuts-rs 0.17.4
+        // populates `unconstrained_draw` and `gradient` unconditionally
+        // regardless of `store_unconstrained` / `store_gradient` (the flags
+        // exist but are not read in `chain.rs::extract_stats`). To match the
+        // documented R-side semantics — and to avoid surfacing one
+        // `ndim_unc`-wide list-of-vectors per draw by default — drop those
+        // columns here unless the user opts in. When nuts-rs starts honouring
+        // the flags, the columns will already be all-null and our existing
+        // `any_non_null` filter will drop them.
+        let mut drop_cols: Vec<&str> = Vec::new();
+        if !store_unconstrained {
+            drop_cols.push("unconstrained_draw");
         }
-        out
-    };
-    let kept_param_names: Vec<String> =
-        keep_cols.iter().map(|&i| all_param_names[i].clone()).collect();
-    let expand_error_count = stan_model.expand_error_count_handle();
-
-    let num_tune = num_warmup as usize;
-    let n_draws_per_chain = num_draws as usize;
-
-    macro_rules! configure_settings {
-        ($settings:expr) => {{
-            $settings.num_tune = num_warmup as u64;
-            $settings.num_draws = num_draws as u64;
-            $settings.num_chains = num_chains as usize;
-            $settings.seed = seed as u64;
-            if let Some(v) = max_treedepth_opt {
-                $settings.maxdepth = v as u64;
-            }
-            if let Some(v) = mindepth_opt {
-                $settings.mindepth = v as u64;
-            }
-            if let Some(v) = target_accept_opt {
-                $settings.adapt_options.step_size_settings.target_accept = v;
-            }
-            if let Some(v) = max_energy_error_opt {
-                $settings.max_energy_error = v;
-            }
-            if let Some(v) = extra_doublings_opt {
-                $settings.extra_doublings = v as u64;
-            }
-            $settings.store_divergences = store_divergences;
-            $settings.store_unconstrained = store_unconstrained;
-            $settings.store_gradient = store_gradient;
-            $settings.adapt_options.mass_matrix_options.store_mass_matrix = store_mass_matrix;
-        }};
-    }
-
-    let (results, sampler_config_json) = match adaptation {
-        "low_rank" => {
-            let mut settings = LowRankNutsSettings::default();
-            configure_settings!(settings);
-            if let Some(v) = opt_finite_positive_f64(&mass_matrix_gamma, "mass_matrix_gamma")? {
-                settings.adapt_options.mass_matrix_options.gamma = v;
-            }
-            if let Some(v) = opt_finite_positive_f64(&eigval_cutoff, "eigval_cutoff")? {
-                settings.adapt_options.mass_matrix_options.eigval_cutoff = v;
-            }
-            run_with_settings(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh, save_warmup)?
+        if !store_gradient {
+            drop_cols.push("gradient");
         }
-        "diag" => {
-            let mut settings = DiagNutsSettings::default();
-            configure_settings!(settings);
-            run_with_settings(stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh, save_warmup)?
-        }
-        other => {
-            return Err(Error::Other(format!(
-                "adaptation must be one of \"diag\" or \"low_rank\", got \"{}\"",
-                other
-            )));
-        }
-    };
 
-    let post_warmup_skip = if save_warmup { num_tune } else { 0 };
+        let diagnostics =
+            extract_diagnostics(&results, post_warmup_skip, n_draws_per_chain, &drop_cols)?;
 
-    let draws_robj = build_draws_matrix(
-        &results,
-        &keep_cols,
-        post_warmup_skip,
-        n_draws_per_chain,
-        &kept_param_names,
-    )?;
+        let warmup_draws_robj: Robj = if save_warmup {
+            build_draws_matrix(&results, &keep_cols, 0, num_tune, &kept_param_names)?
+        } else {
+            ().into_robj()
+        };
+        let warmup_diagnostics_robj: Robj = if save_warmup {
+            extract_diagnostics(&results, 0, num_tune, &drop_cols)?.into_robj()
+        } else {
+            ().into_robj()
+        };
 
-    // Diagnostic columns to suppress at the R boundary. nuts-rs 0.17.4
-    // populates `unconstrained_draw` and `gradient` unconditionally
-    // regardless of `store_unconstrained` / `store_gradient` (the flags
-    // exist but are not read in `chain.rs::extract_stats`). To match the
-    // documented R-side semantics — and to avoid surfacing one
-    // `ndim_unc`-wide list-of-vectors per draw by default — drop those
-    // columns here unless the user opts in. When nuts-rs starts honouring
-    // the flags, the columns will already be all-null and our existing
-    // `any_non_null` filter will drop them.
-    let mut drop_cols: Vec<&str> = Vec::new();
-    if !store_unconstrained {
-        drop_cols.push("unconstrained_draw");
-    }
-    if !store_gradient {
-        drop_cols.push("gradient");
-    }
+        let n_expand_errors = expand_error_count.load(Ordering::Relaxed) as i32;
 
-    let diagnostics = extract_diagnostics(&results, post_warmup_skip, n_draws_per_chain, &drop_cols)?;
-
-    let warmup_draws_robj: Robj = if save_warmup {
-        build_draws_matrix(&results, &keep_cols, 0, num_tune, &kept_param_names)?
-    } else {
-        ().into_robj()
-    };
-    let warmup_diagnostics_robj: Robj = if save_warmup {
-        extract_diagnostics(&results, 0, num_tune, &drop_cols)?.into_robj()
-    } else {
-        ().into_robj()
-    };
-
-    let n_expand_errors = expand_error_count.load(Ordering::Relaxed) as i32;
-
-    Ok(list!(
-        draws = draws_robj,
-        num_warmup = num_warmup,
-        num_chains = num_chains,
-        diagnostics = diagnostics,
-        warmup_draws = warmup_draws_robj,
-        warmup_diagnostics = warmup_diagnostics_robj,
-        expand_errors = n_expand_errors,
-        sampler_config = sampler_config_json
-    ))
+        Ok(list!(
+            draws = draws_robj,
+            num_warmup = num_warmup,
+            num_chains = num_chains,
+            diagnostics = diagnostics,
+            warmup_draws = warmup_draws_robj,
+            warmup_diagnostics = warmup_diagnostics_robj,
+            expand_errors = n_expand_errors,
+            sampler_config = sampler_config_json
+        ))
     })())
 }
 
@@ -559,21 +689,32 @@ fn opt_finite_in_open_unit(robj: &Robj, name: &str) -> Result<Option<f64>> {
     let v = opt_finite_f64(robj, name)?;
     if let Some(x) = v {
         if !(x > 0.0 && x < 1.0) {
-            return Err(Error::Other(format!("`{}` must be in (0, 1), got {}.", name, x)));
+            return Err(Error::Other(format!(
+                "`{}` must be in (0, 1), got {}.",
+                name, x
+            )));
         }
     }
     Ok(v)
 }
 
 fn opt_count(robj: &Robj, name: &str, min: i32) -> Result<Option<i32>> {
-    let Some(v) = opt_finite_f64(robj, name)? else { return Ok(None); };
+    let Some(v) = opt_finite_f64(robj, name)? else {
+        return Ok(None);
+    };
     if v.fract() != 0.0 {
-        return Err(Error::Other(format!("`{}` must be a whole number, got {}.", name, v)));
+        return Err(Error::Other(format!(
+            "`{}` must be a whole number, got {}.",
+            name, v
+        )));
     }
     if v < min as f64 || v > i32::MAX as f64 {
         return Err(Error::Other(format!(
             "`{}` must be in [{}, {}], got {}.",
-            name, min, i32::MAX, v
+            name,
+            min,
+            i32::MAX,
+            v
         )));
     }
     Ok(Some(v as i32))
@@ -590,11 +731,20 @@ fn run_with_settings<S: Settings + serde::Serialize>(
     num_cores: i32,
     refresh: i32,
     save_warmup: bool,
+    progress_callback: Option<Function>,
 ) -> Result<(Vec<ArrowTrace>, String)> {
     let json = serde_json::to_string(&settings)
         .map_err(|e| Error::Other(format!("failed to serialize sampler settings: {}", e)))?;
     let traces = run_sampler(
-        stan_model, settings, num_chains, num_draws, num_warmup, num_cores, refresh, save_warmup,
+        stan_model,
+        settings,
+        num_chains,
+        num_draws,
+        num_warmup,
+        num_cores,
+        refresh,
+        save_warmup,
+        progress_callback,
     )?;
     Ok((traces, json))
 }
@@ -771,10 +921,8 @@ fn column_to_robj(
         }
         DataType::Float64 => build_doubles!(Float64Array),
         DataType::Float32 => build_doubles!(Float32Array),
-        DataType::Int64 => build_int_or_double!(
-            Int64Array,
-            |v: i64| v > i32::MIN as i64 && v <= i32::MAX as i64
-        ),
+        DataType::Int64 => build_int_or_double!(Int64Array, |v: i64| v > i32::MIN as i64
+            && v <= i32::MAX as i64),
         DataType::UInt64 => build_int_or_double!(UInt64Array, |v: u64| v <= i32::MAX as u64),
         DataType::Int32 => build_int_or_double!(Int32Array, |v: i32| v > i32::MIN),
         DataType::UInt32 => build_int_or_double!(UInt32Array, |v: u32| v <= i32::MAX as u32),
@@ -824,7 +972,9 @@ fn column_to_robj(
                             // forward; `inner_values` outlives the loop, so
                             // a usize is enough — no per-row Vec clone.
                             let mut last_start: Option<usize> = if carry_forward {
-                                (0..skip).rev().find(|&r| !arr.is_null(r))
+                                (0..skip)
+                                    .rev()
+                                    .find(|&r| !arr.is_null(r))
                                     .map(|r| offsets[r] as usize)
                             } else {
                                 None
@@ -857,11 +1007,8 @@ fn column_to_robj(
                             }
                         }
                         let mut robj: Robj = out.into();
-                        robj.set_attrib(
-                            "dim",
-                            [total as i32, inner_len as i32].into_robj(),
-                        )
-                        .ok()?;
+                        robj.set_attrib("dim", [total as i32, inner_len as i32].into_robj())
+                            .ok()?;
                         return Some(robj);
                     }
                 }
@@ -942,9 +1089,9 @@ fn extract_diagnostics(
             "mass_matrix_inv" | "mass_matrix_eigvals" | "mass_matrix_stds"
         );
         let non_null_start = if carry_forward { 0 } else { skip };
-        let any_non_null = cols.iter().any(|c| {
-            (non_null_start..skip + n_draws).any(|row| row < c.len() && !c.is_null(row))
-        });
+        let any_non_null = cols
+            .iter()
+            .any(|c| (non_null_start..skip + n_draws).any(|row| row < c.len() && !c.is_null(row)));
         if !any_non_null {
             continue;
         }
@@ -1034,10 +1181,7 @@ fn bs_ndim_block(handle: ExternalPtr<model::BSHandle>) -> i32 {
 /// space. No JSON parsing.
 /// @noRd
 #[extendr]
-fn bs_param_unconstrain(
-    handle: ExternalPtr<model::BSHandle>,
-    theta: Vec<f64>,
-) -> Vec<f64> {
+fn bs_param_unconstrain(handle: ExternalPtr<model::BSHandle>, theta: Vec<f64>) -> Vec<f64> {
     or_throw(bs_param_unconstrain_impl(handle, theta))
 }
 
@@ -1101,10 +1245,7 @@ fn bs_param_constrain_impl(
 /// right primitive for resolving partial-init random fills.
 /// @noRd
 #[extendr]
-fn bs_param_constrain_block(
-    handle: ExternalPtr<model::BSHandle>,
-    theta_unc: Vec<f64>,
-) -> Vec<f64> {
+fn bs_param_constrain_block(handle: ExternalPtr<model::BSHandle>, theta_unc: Vec<f64>) -> Vec<f64> {
     or_throw(bs_param_constrain_block_impl(handle, theta_unc))
 }
 

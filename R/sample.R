@@ -26,8 +26,14 @@
 #' @param extra_doublings Number of additional tree doublings allowed after a
 #'   turning point is reached. Default `NULL` keeps the nuts-rs default
 #'   (currently 0).
-#' @param refresh How often to print progress updates, in draws per chain.
+#' @param refresh How often to print text progress updates, in draws per chain.
 #'   Set to `0` to suppress progress output. Default is `100`.
+#' @param progress Progress rendering mode. `"auto"` uses a `cli` progress bar
+#'   in interactive sessions when the `cli` package is installed, otherwise the
+#'   line-oriented text log. `"cli"` shows a compact sampler-aware bar,
+#'   `"progressr"` emits progressr signals for custom handlers, `"text"` prints
+#'   line-oriented updates, and `"none"` suppresses progress. `refresh = 0`
+#'   always disables progress.
 #' @param init Initial values for each chain. Single entry point that
 #'   dispatches on the input shape:
 #'   \describe{
@@ -154,6 +160,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           target_accept = NULL, max_energy_error = NULL,
                           extra_doublings = NULL,
                           refresh = 100L,
+                          progress = c("auto", "cli", "progressr", "text", "none"),
                           init = NULL,
                           init_mean = NULL,
                           save_warmup = FALSE, cores = NULL,
@@ -175,6 +182,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   }
   adaptation <- match.arg(adaptation)
   if (identical(adaptation, "low-rank")) adaptation <- "low_rank"
+  progress <- match.arg(progress)
   if (isTRUE(low_rank_modified_mass_matrix)) {
     warning(
       "`low_rank_modified_mass_matrix` is deprecated; use ",
@@ -203,32 +211,65 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                                                flags$include_gq)
   keep_indices <- resolve_keep_indices(constrain_names, pars, include)
 
-  raw <- sample_stan(
-    handle,
-    num_draws,
-    num_warmup,
-    num_chains,
-    as.integer(seed),
-    as.integer(refresh),
-    init_resolved$positions,
-    isTRUE(init_resolved$jitter),
-    isTRUE(save_warmup),
-    cores,
-    isTRUE(store_divergences),
-    isTRUE(store_mass_matrix),
-    isTRUE(store_unconstrained),
-    isTRUE(store_gradient),
-    adaptation,
-    opt_double(max_treedepth, "max_treedepth"),
-    opt_double(mindepth, "mindepth"),
-    opt_double(target_accept, "target_accept"),
-    opt_double(max_energy_error, "max_energy_error"),
-    opt_double(extra_doublings, "extra_doublings"),
-    opt_double(mass_matrix_gamma, "mass_matrix_gamma"),
-    opt_double(mass_matrix_eigval_cutoff, "mass_matrix_eigval_cutoff"),
-    keep_indices,
-    isTRUE(flags$include_tp),
-    isTRUE(flags$include_gq)
+  resolved_progress <- resolve_progress_mode(progress, refresh)
+  effective_refresh <- switch(
+    resolved_progress,
+    "none" = 0L,
+    "text" = as.integer(refresh),
+    "cli" = 1L,
+    "progressr" = 1L
+  )
+
+  call_sample_stan <- function(progress_callback) {
+    sample_stan(
+      handle,
+      num_draws,
+      num_warmup,
+      num_chains,
+      as.integer(seed),
+      effective_refresh,
+      init_resolved$positions,
+      isTRUE(init_resolved$jitter),
+      isTRUE(save_warmup),
+      cores,
+      isTRUE(store_divergences),
+      isTRUE(store_mass_matrix),
+      isTRUE(store_unconstrained),
+      isTRUE(store_gradient),
+      adaptation,
+      opt_double(max_treedepth, "max_treedepth"),
+      opt_double(mindepth, "mindepth"),
+      opt_double(target_accept, "target_accept"),
+      opt_double(max_energy_error, "max_energy_error"),
+      opt_double(extra_doublings, "extra_doublings"),
+      opt_double(mass_matrix_gamma, "mass_matrix_gamma"),
+      opt_double(mass_matrix_eigval_cutoff, "mass_matrix_eigval_cutoff"),
+      keep_indices,
+      isTRUE(flags$include_tp),
+      isTRUE(flags$include_gq),
+      progress_callback
+    )
+  }
+
+  raw <- switch(
+    resolved_progress,
+    "cli" = {
+      progress_callback <- make_cli_progress_callback(num_chains, num_warmup, num_draws)
+      progress_started <- Sys.time()
+      on.exit(finish_progress_callback(progress_callback), add = TRUE)
+      raw <- call_sample_stan(progress_callback)
+      finish_progress_callback(progress_callback)
+      attr(raw, "progress_elapsed") <- as.numeric(difftime(Sys.time(), progress_started, units = "secs"))
+      raw
+    },
+    "progressr" = {
+      run_with_progressr <- function() {
+        progress_callback <- make_progressr_callback(num_chains, num_warmup, num_draws)
+        call_sample_stan(progress_callback)
+      }
+      if (in_with_progress()) run_with_progressr() else progressr::with_progress(run_with_progressr())
+    },
+    call_sample_stan(NULL)
   )
   draws <- matrix_to_draws_array(raw$draws, num_draws, num_chains)
   attr(draws, "diagnostics") <- reindex_diagnostics(raw$diagnostics,
@@ -237,6 +278,14 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   attr(draws, "num_warmup") <- num_warmup
   attr(draws, "num_draws") <- num_draws
   attr(draws, "sampler_config") <- rename_sampler_config(raw$sampler_config)
+
+  if (identical(resolved_progress, "cli")) {
+    print_sampling_diagnostic_summary(
+      attr(draws, "diagnostics"),
+      num_chains = num_chains,
+      elapsed = attr(raw, "progress_elapsed") %||% 0
+    )
+  }
 
   if (isTRUE(save_warmup) && !is.null(raw$warmup_draws)) {
     warmup <- matrix_to_draws_array(raw$warmup_draws, num_warmup, num_chains)

@@ -15,7 +15,9 @@ Imports:
     posterior
 Suggests:
     bayesplot,
+    cli,
     posteriordb,
+    progressr,
     reticulate,
     testthat (>= 3.0.0),
     withr
