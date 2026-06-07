@@ -214,6 +214,11 @@ fn run_sampler<S: Settings>(
             SamplerWaitResult::Trace(traces) => break traces,
             SamplerWaitResult::Timeout(s) => {
                 sampler_opt = Some(s);
+                // Check interrupt BEFORE calling back into R. If we call R first,
+                // R's evaluator may consume the interrupt flag internally (throwing
+                // an Err) and by the time we reach R_CheckUserInterrupt() below the
+                // flag is already cleared — sampling never stops.
+                unsafe { R_CheckUserInterrupt() };
                 let state_snapshot: Vec<ChainState> = {
                     let state = progress_state.lock().unwrap();
                     state.clone()
@@ -281,11 +286,6 @@ fn run_sampler<S: Settings>(
                         }
                     }
                 }
-                // Check for a pending R interrupt (e.g. Stop button in IDE). R's SIGINT
-                // handler only sets a flag; the longjmp happens here at a safe point where
-                // no Rust resources are mid-use. Without this, the async longjmp can fire
-                // inside wait_timeout and skip Rust destructors, crashing the session.
-                unsafe { R_CheckUserInterrupt() };
             }
             SamplerWaitResult::Err(e, _) => return Err(r_err(e)),
         }
