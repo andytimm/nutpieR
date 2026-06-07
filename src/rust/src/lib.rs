@@ -16,6 +16,10 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+extern "C" {
+    fn R_CheckUserInterrupt();
+}
+
 mod model;
 
 /// Convert any Display error to an extendr Error. Uses anyhow's alternate
@@ -205,11 +209,7 @@ fn run_sampler<S: Settings>(
 
     let results = loop {
         let sampler = sampler_opt.take().unwrap();
-        let wait_dur = if poll {
-            Duration::from_millis(200)
-        } else {
-            Duration::from_secs(600)
-        };
+        let wait_dur = Duration::from_millis(200);
         match sampler.wait_timeout(wait_dur) {
             SamplerWaitResult::Trace(traces) => break traces,
             SamplerWaitResult::Timeout(s) => {
@@ -281,6 +281,11 @@ fn run_sampler<S: Settings>(
                         }
                     }
                 }
+                // Check for a pending R interrupt (e.g. Stop button in IDE). R's SIGINT
+                // handler only sets a flag; the longjmp happens here at a safe point where
+                // no Rust resources are mid-use. Without this, the async longjmp can fire
+                // inside wait_timeout and skip Rust destructors, crashing the session.
+                unsafe { R_CheckUserInterrupt() };
             }
             SamplerWaitResult::Err(e, _) => return Err(r_err(e)),
         }
