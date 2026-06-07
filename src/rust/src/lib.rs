@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 extern "C" {
-    fn R_CheckUserInterrupt();
+    static mut R_interrupts_pending: std::os::raw::c_int;
 }
 
 mod model;
@@ -214,11 +214,15 @@ fn run_sampler<S: Settings>(
             SamplerWaitResult::Trace(traces) => break traces,
             SamplerWaitResult::Timeout(s) => {
                 sampler_opt = Some(s);
-                // Check interrupt BEFORE calling back into R. If we call R first,
-                // R's evaluator may consume the interrupt flag internally (throwing
-                // an Err) and by the time we reach R_CheckUserInterrupt() below the
-                // flag is already cleared — sampling never stops.
-                unsafe { R_CheckUserInterrupt() };
+                // Check interrupt BEFORE calling back into R. Clear the flag and
+                // return a normal Err so extendr raises a clean R error at the
+                // call site ("Sampling interrupted."), rather than longjmp'ing past
+                // the assignment and leaving the user with a confusing "object not
+                // found" on the next line.
+                if unsafe { R_interrupts_pending != 0 } {
+                    unsafe { R_interrupts_pending = 0 };
+                    return Err(Error::Other("Sampling interrupted.".into()));
+                }
                 let state_snapshot: Vec<ChainState> = {
                     let state = progress_state.lock().unwrap();
                     state.clone()
