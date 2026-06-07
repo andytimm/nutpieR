@@ -47,9 +47,10 @@ test_that("progress snapshot summary exposes useful sampler diagnostics", {
   expect_equal(summary$min_step_size, 0.015)
   expect_equal(summary$max_latest_num_steps, 63L)
   expect_equal(summary$first_divergence, "chain 2 draw 17")
-  expect_match(summary$status, "div 2")
-  expect_match(summary$status, "c2")
-  expect_match(summary$status, "lf")
+  expect_match(summary$status, "! div: 2 c2", fixed = TRUE)
+  expect_match(summary$status, "chains: c2 behind 90/200")
+  expect_match(summary$status, "grad: c2 63")
+  expect_false(grepl("step", summary$status))
 })
 
 test_that("cli callback only advances by new draws", {
@@ -73,7 +74,7 @@ test_that("cli callback only advances by new draws", {
 
   expect_length(updates, 1L)
   expect_equal(updates[[1]]$set, 5)
-  expect_match(updates[[1]]$status, "warmup")
+  expect_equal(updates[[1]]$extra$phase, "warm")
 })
 
 

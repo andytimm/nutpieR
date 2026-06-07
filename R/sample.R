@@ -219,6 +219,11 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     "cli" = 1L,
     "progressr" = 1L
   )
+  progress_max_treedepth <- if (is.null(max_treedepth)) {
+    10L
+  } else {
+    check_count(max_treedepth, "max_treedepth", min = 1L)
+  }
 
   call_sample_stan <- function(progress_callback) {
     sample_stan(
@@ -254,7 +259,10 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   raw <- switch(
     resolved_progress,
     "cli" = {
-      progress_callback <- make_cli_progress_callback(num_chains, num_warmup, num_draws)
+      progress_callback <- make_cli_progress_callback(
+        num_chains, num_warmup, num_draws,
+        max_treedepth = progress_max_treedepth
+      )
       progress_started <- Sys.time()
       on.exit(finish_progress_callback(progress_callback), add = TRUE)
       raw <- call_sample_stan(progress_callback)
@@ -264,7 +272,10 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     },
     "progressr" = {
       run_with_progressr <- function() {
-        progress_callback <- make_progressr_callback(num_chains, num_warmup, num_draws)
+        progress_callback <- make_progressr_callback(
+          num_chains, num_warmup, num_draws,
+          max_treedepth = progress_max_treedepth
+        )
         call_sample_stan(progress_callback)
       }
       if (in_with_progress()) run_with_progressr() else progressr::with_progress(run_with_progressr())
