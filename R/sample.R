@@ -271,6 +271,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
       raw
     },
     "progressr" = {
+      progress_started <- Sys.time()
       run_with_progressr <- function() {
         progress_callback <- make_progressr_callback(
           num_chains, num_warmup, num_draws,
@@ -278,7 +279,9 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
         )
         call_sample_stan(progress_callback)
       }
-      if (in_with_progress()) run_with_progressr() else progressr::with_progress(run_with_progressr())
+      raw <- if (in_with_progress()) run_with_progressr() else progressr::with_progress(run_with_progressr())
+      attr(raw, "progress_elapsed") <- as.numeric(difftime(Sys.time(), progress_started, units = "secs"))
+      raw
     },
     call_sample_stan(NULL)
   )
@@ -290,7 +293,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   attr(draws, "num_draws") <- num_draws
   attr(draws, "sampler_config") <- rename_sampler_config(raw$sampler_config)
 
-  if (identical(resolved_progress, "cli")) {
+  if (resolved_progress %in% c("cli", "progressr")) {
     print_sampling_diagnostic_summary(
       attr(draws, "diagnostics"),
       num_chains = num_chains,
