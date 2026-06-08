@@ -217,6 +217,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     "none" = 0L,
     "text" = as.integer(refresh),
     "cli" = 1L,
+    "multi" = 1L,
     "progressr" = 1L
   )
   progress_max_treedepth <- if (is.null(max_treedepth)) {
@@ -260,6 +261,18 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     resolved_progress,
     "cli" = {
       progress_callback <- make_cli_progress_callback(
+        num_chains, num_warmup, num_draws,
+        max_treedepth = progress_max_treedepth
+      )
+      progress_started <- Sys.time()
+      on.exit(finish_progress_callback(progress_callback), add = TRUE)
+      raw <- call_sample_stan(progress_callback)
+      finish_progress_callback(progress_callback)
+      attr(raw, "progress_elapsed") <- as.numeric(difftime(Sys.time(), progress_started, units = "secs"))
+      raw
+    },
+    "multi" = {
+      progress_callback <- make_multi_chain_progress_callback(
         num_chains, num_warmup, num_draws,
         max_treedepth = progress_max_treedepth
       )

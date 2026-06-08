@@ -14,17 +14,41 @@ should_use_cli_progress <- function() {
 }
 
 #' @noRd
+is_multi_bar_capable <- function() {
+  Sys.getenv("POSITRON") == "1" ||
+    (Sys.getenv("RSTUDIO") != "1" &&
+     isatty(stdout()) &&
+     requireNamespace("cli", quietly = TRUE) &&
+     cli::num_ansi_colors() > 1L)
+}
+
+#' @noRd
 resolve_progress_mode <- function(progress, refresh) {
   if (isTRUE(refresh <= 0L) || identical(progress, "none")) return("none")
   switch(
     progress,
-    "auto" = if (should_use_cli_progress()) "cli" else "text",
+    "auto" = {
+      if (!should_use_cli_progress()) return("text")
+      if (is_multi_bar_capable()) "multi" else "cli"
+    },
     "cli" = {
       if (!requireNamespace("cli", quietly = TRUE)) {
         stop("`progress = \"cli\"` requires the 'cli' package. ",
              "Install it or set `progress = \"text\"`.", call. = FALSE)
       }
       "cli"
+    },
+    "multi" = {
+      if (!requireNamespace("cli", quietly = TRUE)) {
+        stop("`progress = \"multi\"` requires the 'cli' package. ",
+             "Install it or set `progress = \"cli\"`/`\"text\"`.", call. = FALSE)
+      }
+      if (!is_multi_bar_capable()) {
+        warning("Multi-bar progress not supported in this environment, using single bar.",
+                call. = FALSE)
+        return("cli")
+      }
+      "multi"
     },
     "progressr" = {
       if (!requireNamespace("progressr", quietly = TRUE)) {
@@ -390,6 +414,80 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
 
   attr(callback, "finish") <- function() {
     try(done(id = id), silent = TRUE)
+    invisible(NULL)
+  }
+  callback
+}
+
+#' @noRd
+make_multi_chain_progress_callback <- function(num_chains, num_warmup, num_draws,
+                                               max_treedepth = 10L) {
+  chain_total <- as.numeric(num_warmup) + as.numeric(num_draws)
+  ids <- vapply(seq_len(num_chains), function(i) {
+    cli::cli_progress_bar(
+      total = chain_total,
+      type = "custom",
+      clear = FALSE,
+      extra = list(phase = "warmup"),
+      format = paste0(
+        "{cli::pb_spin} c", i, " {cli::pb_extra$phase}",
+        " {cli::pb_percent} |{cli::pb_bar}|",
+        " {cli::pb_current}/{cli::pb_total} {cli::pb_eta_str}",
+        " | {cli::pb_status}"
+      ),
+      format_done = paste0(
+        "c", i, " {cli::pb_percent} |{cli::pb_bar}|",
+        " {cli::pb_current}/{cli::pb_total}",
+        " | {cli::pb_status}"
+      ),
+      .auto_close = FALSE
+    )
+  }, character(1))
+
+  last_totals <- rep(0, num_chains)
+  last_statuses <- rep("", num_chains)
+  callback_failed <- FALSE
+
+  callback <- function(snapshot) {
+    if (callback_failed || length(snapshot) == 0L) return(invisible(NULL))
+    for (i in seq_along(snapshot)) {
+      s <- snapshot[[i]]
+      chain_idx <- as.integer(as_progress_num(s$chain, i))
+      if (chain_idx < 1L || chain_idx > num_chains) next
+
+      finished    <- as_progress_num(s$finished_draws)
+      total_steps <- as_progress_num(s$total_num_steps)
+      div_count   <- as.integer(as_progress_num(s$divergences))
+      phase_label <- if (isTRUE(s$tuning)) "warmup" else "sample"
+      avg_lf      <- if (finished > 0) total_steps / finished else NA_real_
+
+      status <- style_progress_status(
+        paste(
+          format_divergence_status(div_count),
+          format_gradient_status(avg_lf, max_treedepth),
+          sep = " | "
+        ),
+        color = progress_supports_color()
+      )
+      total_now <- min(finished, chain_total)
+      if (total_now == last_totals[chain_idx] && identical(status, last_statuses[chain_idx])) next
+      last_totals[chain_idx]   <<- total_now
+      last_statuses[chain_idx] <<- status
+
+      ok <- try(cli::cli_progress_update(
+        set   = total_now,
+        status = status,
+        extra  = list(phase = phase_label),
+        id     = ids[chain_idx],
+        force  = TRUE
+      ), silent = TRUE)
+      if (inherits(ok, "try-error")) { callback_failed <<- TRUE; break }
+    }
+    invisible(NULL)
+  }
+
+  attr(callback, "finish") <- function() {
+    for (id in ids) try(cli::cli_progress_done(id = id), silent = TRUE)
     invisible(NULL)
   }
   callback
