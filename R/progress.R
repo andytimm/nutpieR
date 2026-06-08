@@ -63,88 +63,10 @@ format_draw_count <- function(x) {
 }
 
 #' @noRd
-format_draw_range <- function(values) {
-  values <- as.integer(values)
-  lo <- min(values)
-  hi <- max(values)
-  if (lo == hi) return(format_draw_count(lo))
-  paste0(format_draw_count(lo), "-", format_draw_count(hi))
-}
-
-#' @noRd
-format_draw_count_compact <- function(x) {
-  x <- as.integer(x)
-  if (abs(x) >= 1000L && x %% 1000L == 0L) {
-    return(sprintf("%dk", x %/% 1000L))
-  }
-  format_draw_count(x)
-}
-
-#' @noRd
-format_chain_fraction_compact <- function(finished, total) {
-  paste0(format_draw_count(finished), "/", format_draw_count_compact(total))
-}
-
-#' @noRd
-format_progress_phase <- function(phase) {
-  switch(
-    phase,
-    "warmup" = "warm",
-    "mixed" = "mix",
-    "sample" = "draw",
-    phase
-  )
-}
-
-#' @noRd
-format_chain_progress_status <- function(chains, finished, totals, slowest) {
-  slow_idx <- which(chains == slowest)[1]
-  total_ref <- max(totals, na.rm = TRUE)
-  lag_threshold <- max(5, 0.05 * total_ref)
-
-  if (length(chains) > 1L &&
-      is.finite(lag_threshold) &&
-      finished[slow_idx] < stats::median(finished, na.rm = TRUE) - lag_threshold) {
-    done <- finished >= totals
-    slow_fraction <- format_chain_fraction_compact(finished[slow_idx], totals[slow_idx])
-    if (sum(done) == length(chains) - 1L && !done[slow_idx]) {
-      return(sprintf(
-        "chains: %d/%d done, c%d %s",
-        sum(done),
-        length(chains),
-        slowest,
-        slow_fraction
-      ))
-    }
-
-    return(sprintf("chains: c%d behind %s", slowest, slow_fraction))
-  }
-
-  sprintf(
-    "chains: %s/%s",
-    format_draw_range(finished),
-    format_draw_count_compact(total_ref)
-  )
-}
-
-#' @noRd
-format_divergence_status <- function(chains, divergences) {
-  total <- sum(divergences, na.rm = TRUE)
-  if (total == 0L) return("div: 0")
-
-  div_idx <- which(divergences > 0L)
-  if (length(div_idx) == 1L) {
-    return(sprintf("! div: %d c%d", total, chains[div_idx]))
-  }
-
-  ord <- div_idx[order(divergences[div_idx], decreasing = TRUE)]
-  if (length(ord) <= 3L) {
-    pieces <- sprintf("c%d %d", chains[ord], divergences[ord])
-    return(sprintf("! div: %d (%s)", total, paste(pieces, collapse = ", ")))
-  }
-
-  worst <- ord[1]
-  sprintf("! div: %d (worst c%d %d)", total, chains[worst], divergences[worst])
+format_divergence_status <- function(total_divs) {
+  if (total_divs == 0L) return("div: 0")
+  warn_sym <- if (requireNamespace("cli", quietly = TRUE)) cli::symbol$warning else "!"
+  sprintf("%s div: %d", warn_sym, as.integer(total_divs))
 }
 
 #' @noRd
@@ -156,89 +78,21 @@ infer_tree_depth <- function(n_steps) {
 #' @noRd
 style_progress_status <- function(status, color = FALSE) {
   if (!isTRUE(color) || !requireNamespace("cli", quietly = TRUE)) return(status)
-  status <- sub("! div: [^|]+", cli::col_red("\\0"), status)
-  sub("grad: [^|]+", cli::col_yellow("\\0"), status)
+  color_match <- function(s, pattern, fn) {
+    m <- regexpr(pattern, s)
+    if (m[[1]] > 0L) regmatches(s, m) <- fn(regmatches(s, m))
+    s
+  }
+  status <- color_match(status, "[^ ]+ div: [1-9][0-9]*", cli::col_red)
+  color_match(status, "~ [0-9.]+ grad/draw", cli::col_yellow)
 }
 
 #' @noRd
-format_gradient_status <- function(chains, latest_steps, divergences = NULL,
-                                   max_treedepth = 10L) {
-  finite_steps <- is.finite(latest_steps) & latest_steps > 0
-  if (!any(finite_steps)) return(NA_character_)
-
-  if (!is.null(divergences) && sum(divergences, na.rm = TRUE) > 0L) {
-    candidates <- which(divergences == max(divergences, na.rm = TRUE))
-    candidates <- candidates[finite_steps[candidates]]
-    idx <- if (length(candidates) > 0L) candidates[1] else which.max(ifelse(finite_steps, latest_steps, -Inf))
-  } else {
-    idx <- which.max(ifelse(finite_steps, latest_steps, -Inf))
-  }
-  max_grad <- latest_steps[idx]
-  depth <- infer_tree_depth(max_grad)
-  finite_values <- latest_steps[finite_steps]
-  med_grad <- stats::median(finite_values, na.rm = TRUE)
-
-  max_treedepth <- as.integer(max_treedepth %||% 10L)
-  if (is.finite(depth) && is.finite(max_treedepth) && depth >= max_treedepth) {
-    return(sprintf(
-      "grad: c%d %s tdepth %d/%d",
-      chains[idx],
-      format_draw_count(max_grad),
-      depth,
-      max_treedepth
-    ))
-  }
-
-  if (!is.null(divergences) && sum(divergences, na.rm = TRUE) > 0L) {
-    return(sprintf("grad: c%d %s", chains[idx], format_draw_count(max_grad)))
-  }
-
-  if (max_grad >= 100 || max_grad >= 2 * max(med_grad, 1)) {
-    return(sprintf("grad: c%d %s", chains[idx], format_draw_count(max_grad)))
-  }
-
-  NA_character_
-}
-
-#' @noRd
-format_hard_chain_status <- function(chains, divergences, step_sizes, latest_steps,
-                                     phase) {
-  finite_steps <- is.finite(latest_steps)
-  finite_step_sizes <- is.finite(step_sizes) & step_sizes > 0
-
-  if (sum(divergences, na.rm = TRUE) > 0L) {
-    candidates <- which(divergences == max(divergences, na.rm = TRUE))
-    if (length(candidates) > 1L && any(finite_steps[candidates])) {
-      candidates <- candidates[which.max(latest_steps[candidates])]
-    }
-    idx <- candidates[1]
-    bits <- character()
-    if (finite_step_sizes[idx]) bits <- c(bits, sprintf("step %.3g", step_sizes[idx]))
-    if (finite_steps[idx]) bits <- c(bits, sprintf("lf %d", latest_steps[idx]))
-    if (length(bits) == 0L || length(which(divergences > 0L)) > 1L) {
-      return(NA_character_)
-    }
-    return(sprintf("hard c%d %s", chains[idx], paste(bits, collapse = ", ")))
-  }
-
-  bits <- character()
-  if (any(finite_steps)) {
-    lf_idx <- which.max(latest_steps)
-    step_range <- range(latest_steps[finite_steps], na.rm = TRUE)
-    lf_spread <- step_range[2] / max(step_range[1], 1)
-    if (step_range[2] >= 100 || lf_spread >= 2) {
-      bits <- c(bits, sprintf("lf max c%d %d", chains[lf_idx], latest_steps[lf_idx]))
-    }
-  }
-  if (any(finite_step_sizes) && !identical(phase, "warmup")) {
-    step_idx <- which.min(ifelse(finite_step_sizes, step_sizes, Inf))
-    step_range <- range(step_sizes[finite_step_sizes], na.rm = TRUE)
-    if (step_range[2] / step_range[1] >= 2) {
-      bits <- c(bits, sprintf("step min c%d %.3g", chains[step_idx], step_sizes[step_idx]))
-    }
-  }
-  if (length(bits) == 0L) return(NA_character_)
-  paste(bits, collapse = " | ")
+format_gradient_status <- function(avg_lf, max_treedepth = 10L) {
+  if (!is.finite(avg_lf)) return("- grad/draw")
+  max_possible <- 2^as.integer(max_treedepth %||% 10L) - 1L
+  label <- sprintf("%.1f grad/draw", avg_lf)
+  if (avg_lf / max_possible >= 0.05) paste("~", label) else label
 }
 
 #' @noRd
@@ -246,6 +100,7 @@ summarize_progress_snapshot <- function(snapshot, max_treedepth = 10L) {
   if (length(snapshot) == 0L) {
     return(list(
       total_finished = 0, total_draws = 0, phase = "warmup",
+      phase_label = "warmup",
       total_divergences = 0L, slowest_chain = NA_integer_,
       min_step_size = NA_real_, max_latest_num_steps = NA_integer_,
       avg_num_steps = NA_real_, first_divergence = NA_character_,
@@ -265,8 +120,6 @@ summarize_progress_snapshot <- function(snapshot, max_treedepth = 10L) {
   chain_values <- vapply(snapshot, function(s) as.integer(as_progress_num(s$chain, NA_real_)), integer(1))
   chains[!is.na(chain_values)] <- chain_values[!is.na(chain_values)]
 
-  progress_ratio <- ifelse(totals > 0, finished / totals, 1)
-  slowest <- chains[which.min(progress_ratio)]
   finite_steps <- step_sizes[is.finite(step_sizes) & step_sizes > 0]
   min_step <- if (length(finite_steps) > 0L) min(finite_steps) else NA_real_
   avg_steps <- if (sum(finished) > 0) sum(total_steps) / sum(finished) else NA_real_
@@ -287,10 +140,18 @@ summarize_progress_snapshot <- function(snapshot, max_treedepth = 10L) {
     }
   }
 
+  num_tuning <- sum(tuning)
   phase <- if (all(tuning)) {
     "warmup"
   } else if (any(tuning)) {
     "mixed"
+  } else {
+    "sample"
+  }
+  phase_label <- if (all(tuning)) {
+    "warmup"
+  } else if (any(tuning)) {
+    sprintf("warmup %d/%d", num_tuning, length(tuning))
   } else {
     "sample"
   }
@@ -299,35 +160,25 @@ summarize_progress_snapshot <- function(snapshot, max_treedepth = 10L) {
   total_draws <- sum(totals)
   max_latest_steps <- if (length(steps) > 0L) max(steps) else NA_integer_
   max_runtime <- if (length(runtimes) > 0L) max(runtimes) else 0
-  progress_status <- format_chain_progress_status(
-    chains = chains,
-    finished = finished,
-    totals = totals,
-    slowest = slowest
+  status <- paste(
+    format_divergence_status(sum(divergences, na.rm = TRUE)),
+    format_gradient_status(avg_steps, max_treedepth),
+    sep = " | "
   )
-  div_status <- format_divergence_status(chains, divergences)
-  grad_status <- format_gradient_status(
-    chains = chains,
-    latest_steps = steps,
-    divergences = divergences,
-    max_treedepth = max_treedepth
-  )
-
-  diag_bits <- c(progress_status, div_status)
-  if (!is.na(grad_status)) diag_bits <- c(diag_bits, grad_status)
 
   list(
     total_finished = total_finished,
     total_draws = total_draws,
     phase = phase,
+    phase_label = phase_label,
     total_divergences = total_divergences,
-    slowest_chain = slowest,
+    slowest_chain = NA_integer_,
     min_step_size = min_step,
     max_latest_num_steps = max_latest_steps,
     avg_num_steps = avg_steps,
     first_divergence = first_div,
     max_runtime = max_runtime,
-    status = paste(diag_bits, collapse = " | ")
+    status = status
   )
 }
 
@@ -494,16 +345,16 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
       total = total_steps,
       type = "custom",
       clear = FALSE,
-      extra = list(phase = "warm"),
+      extra = list(phase = "warmup"),
       format = paste(
         "{cli::pb_spin} {cli::pb_extra$phase} {cli::pb_percent} |{cli::pb_bar}|",
         "{cli::pb_current}/{cli::pb_total} {cli::pb_eta_str}",
-        "{cli::pb_status}"
+        "| {cli::pb_status}"
       ),
       format_done = paste(
         "{cli::pb_percent} |{cli::pb_bar}|",
         "{cli::pb_current}/{cli::pb_total}",
-        "{cli::pb_status}"
+        "| {cli::pb_status}"
       ),
       .auto_close = FALSE
     )
@@ -529,7 +380,7 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
     ok <- try(update(
       set = total_now,
       status = status,
-      extra = list(phase = format_progress_phase(summary$phase)),
+      extra = list(phase = summary$phase_label),
       id = id,
       force = TRUE
     ), silent = TRUE)
@@ -557,7 +408,7 @@ make_progressr_callback <- function(num_chains, num_warmup, num_draws,
     summary <- summarize_progress_snapshot(snapshot, max_treedepth = max_treedepth)
     delta <- max(0, min(summary$total_finished, total_steps) - last_total)
     last_total <<- min(summary$total_finished, total_steps)
-    full_status <- paste0(format_progress_phase(summary$phase), " ", summary$status)
+    full_status <- paste0(summary$phase_label, " ", summary$status)
     if (delta == 0 && identical(full_status, last_status)) return(invisible(NULL))
     last_status <<- full_status
     ok <- try(p(amount = delta, message = full_status), silent = TRUE)
