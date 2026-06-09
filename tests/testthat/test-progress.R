@@ -43,14 +43,145 @@ test_that("progress snapshot summary exposes useful sampler diagnostics", {
   expect_equal(summary$total_draws, 400)
   expect_equal(summary$phase, "mixed")
   expect_equal(summary$total_divergences, 2L)
-  expect_equal(summary$slowest_chain, 2L)
   expect_equal(summary$min_step_size, 0.015)
   expect_equal(summary$max_latest_num_steps, 63L)
   expect_equal(summary$first_divergence, "chain 2 draw 17")
-  expect_match(summary$status, "! div: 2 c2", fixed = TRUE)
-  expect_match(summary$status, "chains: c2 behind 90/200")
-  expect_match(summary$status, "grad: c2 63")
-  expect_false(grepl("step", summary$status))
+  # status is "! div: 2 | <grad>" — divergence indicator present
+  expect_match(summary$status, "div: 2", fixed = TRUE)
+  # avg_num_steps = (900+1800)/(120+90) = 2700/210 ~= 12.86
+  expect_match(summary$status, "grad/draw", fixed = TRUE)
+})
+
+test_that("format_status_tokens replaces div and grad tokens", {
+  snapshot <- list(
+    list(
+      chain = 1L, finished_draws = 408L, total_draws = 2000L,
+      divergences = 3L, tuning = FALSE, started = TRUE,
+      latest_num_steps = 7L, total_num_steps = 1500L,
+      step_size = 0.3, runtime = 12.0,
+      divergent_draws = c(10L, 20L, 30L)
+    ),
+    list(
+      chain = 2L, finished_draws = 465L, total_draws = 2000L,
+      divergences = 0L, tuning = FALSE, started = TRUE,
+      latest_num_steps = 3L, total_num_steps = 1800L,
+      step_size = 0.4, runtime = 11.5,
+      divergent_draws = integer()
+    )
+  )
+  summary <- nutpieR:::summarize_progress_snapshot(snapshot)
+
+  result <- nutpieR:::format_status_tokens(snapshot, summary, 10L, "{div} | {grad}")
+  expect_match(result, "div:", fixed = TRUE)
+  expect_match(result, "grad/draw", fixed = TRUE)
+
+  # div-only format
+  div_only <- nutpieR:::format_status_tokens(snapshot, summary, 10L, "{div}")
+  expect_match(div_only, "div: 3", fixed = TRUE)
+  expect_false(grepl("grad", div_only))
+})
+
+test_that("format_status_tokens handles empty tokens without leaving stray pipes", {
+  snapshot <- list(
+    list(
+      chain = 1L, finished_draws = 100L, total_draws = 2000L,
+      divergences = 0L, tuning = TRUE, started = TRUE,
+      latest_num_steps = 3L, total_num_steps = 300L,
+      step_size = 0.5, runtime = 5.0,
+      divergent_draws = integer()
+    ),
+    list(
+      chain = 2L, finished_draws = 100L, total_draws = 2000L,
+      divergences = 0L, tuning = TRUE, started = TRUE,
+      latest_num_steps = 3L, total_num_steps = 300L,
+      step_size = 0.5, runtime = 5.0,
+      divergent_draws = integer()
+    )
+  )
+  summary <- nutpieR:::summarize_progress_snapshot(snapshot)
+
+  # {lag} returns "" when chains are in sync — no stray pipes
+  result <- nutpieR:::format_status_tokens(snapshot, summary, 10L, "{div} | {lag} | {grad}")
+  expect_false(grepl("\\|\\s*\\|", result))
+  expect_false(grepl("^\\s*\\|", result))
+  expect_false(grepl("\\|\\s*$", result))
+})
+
+test_that("format_chain_draw_range produces range for multi-chain snapshots", {
+  snapshot <- list(
+    list(finished_draws = 408L, total_draws = 2000L),
+    list(finished_draws = 465L, total_draws = 2000L),
+    list(finished_draws = 430L, total_draws = 2000L)
+  )
+  result <- nutpieR:::format_chain_draw_range(snapshot)
+  expect_match(result, "408", fixed = TRUE)
+  expect_match(result, "465", fixed = TRUE)
+  expect_match(result, "2k", fixed = TRUE)
+  expect_match(result, "–", fixed = TRUE)  # en-dash
+
+  # when all chains have same count, no dash
+  snapshot_equal <- list(
+    list(finished_draws = 500L, total_draws = 1000L),
+    list(finished_draws = 500L, total_draws = 1000L)
+  )
+  result_eq <- nutpieR:::format_chain_draw_range(snapshot_equal)
+  expect_false(grepl("–", result_eq))
+  expect_match(result_eq, "1k", fixed = TRUE)
+})
+
+test_that("format_gradient_status uses triangle symbol when treedepth cap hit", {
+  # avg_lf / max_possible >= 0.05 triggers warning
+  # max_possible for max_treedepth=10 is 2^10 - 1 = 1023
+  # 0.05 * 1023 = 51.15, so avg_lf >= 52 triggers warning
+  result_warn <- nutpieR:::format_gradient_status(100.0, max_treedepth = 10L)
+  expect_match(result_warn, "▲", fixed = TRUE)  # ▲
+  expect_false(grepl("~", result_warn))
+
+  result_ok <- nutpieR:::format_gradient_status(2.0, max_treedepth = 10L)
+  expect_false(grepl("▲", result_ok))
+  expect_false(grepl("~", result_ok))
+})
+
+test_that("make_text_progress_callback prints one line per chain at refresh interval", {
+  output_lines <- character(0)
+  local_cat <- function(..., sep = " ") {
+    output_lines <<- c(output_lines, paste(..., sep = sep))
+  }
+
+  snapshot <- list(
+    list(
+      chain = 1L, finished_draws = 100L, total_draws = 1000L,
+      divergences = 0L, tuning = TRUE, started = TRUE,
+      latest_num_steps = 3L, total_num_steps = 300L,
+      step_size = 0.5, runtime = 5.0,
+      divergent_draws = integer()
+    ),
+    list(
+      chain = 2L, finished_draws = 100L, total_draws = 1000L,
+      divergences = 1L, tuning = TRUE, started = TRUE,
+      latest_num_steps = 3L, total_num_steps = 300L,
+      step_size = 0.5, runtime = 5.0,
+      divergent_draws = c(50L)
+    )
+  )
+
+  callback <- nutpieR:::make_text_progress_callback(
+    num_chains = 2L, num_warmup = 400L, num_draws = 1000L,
+    max_treedepth = 10L, refresh = 50L
+  )
+  # Capture cat output
+  out <- capture.output(callback(snapshot), type = "output")
+
+  # Should print 2 lines (one per chain), since finished=100 >= refresh=50
+  expect_length(out, 2L)
+  expect_match(out[1], "c1", fixed = TRUE)
+  expect_match(out[2], "c2", fixed = TRUE)
+  expect_match(out[1], "warmup", fixed = TRUE)
+  expect_match(out[2], "div:", fixed = TRUE)
+
+  # Second call with same snapshot should not print (since_last = 0 < 50)
+  out2 <- capture.output(callback(snapshot), type = "output")
+  expect_length(out2, 0L)
 })
 
 test_that("cli callback only advances by new draws", {
@@ -74,8 +205,9 @@ test_that("cli callback only advances by new draws", {
 
   expect_length(updates, 1L)
   expect_equal(updates[[1]]$set, 5)
-  expect_equal(updates[[1]]$extra$phase, "warm")
+  expect_equal(updates[[1]]$extra$phase, "warmup")
 })
+
 test_that("explicit progressr progress samples successfully", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
   skip_if_not_installed("progressr")
@@ -103,6 +235,21 @@ test_that("explicit cli progress samples successfully", {
         test_models$bernoulli, data = bernoulli_data(),
         num_draws = 30, num_warmup = 30, num_chains = 2,
         seed = 1L, refresh = 1L, progress = "cli"
+      )
+    ),
+    type = "output"
+  )
+  expect_s3_class(draws, "draws_array")
+})
+
+test_that("explicit text progress samples successfully", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  capture.output(
+    capture_messages(
+      draws <- nutpie_sample(
+        test_models$bernoulli, data = bernoulli_data(),
+        num_draws = 30, num_warmup = 30, num_chains = 2,
+        seed = 1L, refresh = 10L, progress = "text"
       )
     ),
     type = "output"

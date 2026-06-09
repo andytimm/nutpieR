@@ -14,41 +14,17 @@ should_use_cli_progress <- function() {
 }
 
 #' @noRd
-is_multi_bar_capable <- function() {
-  Sys.getenv("POSITRON") == "1" ||
-    (Sys.getenv("RSTUDIO") != "1" &&
-     isatty(stdout()) &&
-     requireNamespace("cli", quietly = TRUE) &&
-     cli::num_ansi_colors() > 1L)
-}
-
-#' @noRd
 resolve_progress_mode <- function(progress, refresh) {
   if (isTRUE(refresh <= 0L) || identical(progress, "none")) return("none")
   switch(
     progress,
-    "auto" = {
-      if (!should_use_cli_progress()) return("text")
-      if (is_multi_bar_capable()) "multi" else "cli"
-    },
+    "auto" = if (!should_use_cli_progress()) "text" else "cli",
     "cli" = {
       if (!requireNamespace("cli", quietly = TRUE)) {
         stop("`progress = \"cli\"` requires the 'cli' package. ",
              "Install it or set `progress = \"text\"`.", call. = FALSE)
       }
       "cli"
-    },
-    "multi" = {
-      if (!requireNamespace("cli", quietly = TRUE)) {
-        stop("`progress = \"multi\"` requires the 'cli' package. ",
-             "Install it or set `progress = \"cli\"`/`\"text\"`.", call. = FALSE)
-      }
-      if (!is_multi_bar_capable()) {
-        warning("Multi-bar progress not supported in this environment, using single bar.",
-                call. = FALSE)
-        return("cli")
-      }
-      "multi"
     },
     "progressr" = {
       if (!requireNamespace("progressr", quietly = TRUE)) {
@@ -87,6 +63,12 @@ format_draw_count <- function(x) {
 }
 
 #' @noRd
+format_draw_count_compact <- function(x) {
+  x <- as.integer(x)
+  if (x >= 1000L) sprintf("%dk", x %/% 1000L) else as.character(x)
+}
+
+#' @noRd
 format_divergence_status <- function(total_divs) {
   if (total_divs == 0L) return("div: 0")
   warn_sym <- if (requireNamespace("cli", quietly = TRUE)) cli::symbol$warning else "!"
@@ -108,7 +90,7 @@ style_progress_status <- function(status, color = FALSE) {
     s
   }
   status <- color_match(status, "[^ ]+ div: [1-9][0-9]*", cli::col_red)
-  color_match(status, "~ [0-9.]+ grad/draw", cli::col_yellow)
+  color_match(status, "[▲^] [0-9.]+ grad/draw", cli::col_yellow)
 }
 
 #' @noRd
@@ -116,7 +98,71 @@ format_gradient_status <- function(avg_lf, max_treedepth = 10L) {
   if (!is.finite(avg_lf)) return("- grad/draw")
   max_possible <- 2^as.integer(max_treedepth %||% 10L) - 1L
   label <- sprintf("%.1f grad/draw", avg_lf)
-  if (avg_lf / max_possible >= 0.05) paste("~", label) else label
+  if (avg_lf / max_possible >= 0.05) {
+    warn_sym <- "▲"  # ▲
+    paste(warn_sym, label)
+  } else {
+    label
+  }
+}
+
+#' @noRd
+format_chain_draw_range <- function(snapshot) {
+  if (length(snapshot) == 0L) return("")
+  finished <- vapply(snapshot, function(s) as_progress_num(s$finished_draws), numeric(1))
+  totals <- vapply(snapshot, function(s) as_progress_num(s$total_draws), numeric(1))
+  total <- max(totals)
+  min_f <- min(finished)
+  max_f <- max(finished)
+  total_str <- format_draw_count_compact(total)
+  if (min_f == max_f) {
+    sprintf("%s/%s", format_draw_count(min_f), total_str)
+  } else {
+    sprintf("%s–%s/%s", format_draw_count(min_f), format_draw_count(max_f), total_str)
+  }
+}
+
+#' @noRd
+format_chain_lag <- function(snapshot) {
+  if (length(snapshot) <= 1L) return("")
+  finished <- vapply(snapshot, function(s) as_progress_num(s$finished_draws), numeric(1))
+  med <- median(finished)
+  if (med == 0) return("")
+  lag_idx <- which(finished < med * 0.9)
+  if (length(lag_idx) == 0L) return("")
+  chain_vals <- vapply(snapshot, function(s) as.integer(as_progress_num(s$chain, NA_real_)), integer(1))
+  chain_labels <- ifelse(is.na(chain_vals), seq_along(snapshot), chain_vals)
+  paste(paste0("c", chain_labels[lag_idx], collapse = ","), "slow")
+}
+
+#' @noRd
+format_min_step <- function(snapshot) {
+  steps <- vapply(snapshot, function(s) as_progress_num(s$step_size, NA_real_), numeric(1))
+  finite_steps <- steps[is.finite(steps) & steps > 0]
+  if (length(finite_steps) == 0L) return("")
+  sprintf("%.3g", min(finite_steps))
+}
+
+#' @noRd
+format_status_tokens <- function(snapshot, summary, max_treedepth, format_str) {
+  result <- format_str
+  if (grepl("{div}", format_str, fixed = TRUE))
+    result <- gsub("{div}", format_divergence_status(summary$total_divergences),
+                   result, fixed = TRUE)
+  if (grepl("{grad}", format_str, fixed = TRUE))
+    result <- gsub("{grad}", format_gradient_status(summary$avg_num_steps, max_treedepth),
+                   result, fixed = TRUE)
+  if (grepl("{draws}", format_str, fixed = TRUE))
+    result <- gsub("{draws}", format_chain_draw_range(snapshot), result, fixed = TRUE)
+  if (grepl("{lag}", format_str, fixed = TRUE))
+    result <- gsub("{lag}", format_chain_lag(snapshot), result, fixed = TRUE)
+  if (grepl("{step}", format_str, fixed = TRUE))
+    result <- gsub("{step}", format_min_step(snapshot), result, fixed = TRUE)
+  # clean up empty segments from tokens that returned ""
+  result <- gsub("\\s*\\|\\s*\\|", " |", result)
+  result <- gsub("^\\s*\\|\\s*", "", result)
+  result <- gsub("\\s*\\|\\s*$", "", result)
+  trimws(result)
 }
 
 #' @noRd
@@ -357,9 +403,11 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed) 
 #' @noRd
 make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
                                        max_treedepth = 10L,
+                                       chain_format = NULL,
                                        id = NULL,
                                        update = NULL,
                                        done = NULL) {
+  if (is.null(chain_format)) chain_format <- "{div} | {grad}"
   if (is.null(update)) update <- cli::cli_progress_update
   if (is.null(done)) done <- cli::cli_progress_done
   total_steps <- as.numeric(num_chains) * (as.numeric(num_warmup) + as.numeric(num_draws))
@@ -388,7 +436,8 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
   last_status <- ""
   last_summary <- NULL
   last_snapshot <- NULL
-
+  warned_div <- FALSE
+  warned_treedepth <- FALSE
   callback_failed <- FALSE
 
   callback <- function(snapshot) {
@@ -397,7 +446,24 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
     last_summary <<- summary
     last_snapshot <<- snapshot
     total_now <- min(summary$total_finished, total_steps)
-    status <- style_progress_status(summary$status, color = progress_supports_color())
+
+    if (!warned_div && summary$total_divergences > 0L) {
+      warned_div <<- TRUE
+      try(cli::cli_alert_info(
+        "! div = divergent transitions — try increasing target_accept or reparameterizing."
+      ), silent = TRUE)
+    }
+
+    raw_status <- format_status_tokens(snapshot, summary, max_treedepth, chain_format)
+
+    if (!warned_treedepth && grepl("▲", raw_status, fixed = TRUE)) {
+      warned_treedepth <<- TRUE
+      try(cli::cli_alert_info(
+        "▲ grad/draw = treedepth cap hit frequently — consider increasing max_treedepth."
+      ), silent = TRUE)
+    }
+
+    status <- style_progress_status(raw_status, color = progress_supports_color())
     if (total_now == last_total && identical(status, last_status)) return(invisible(NULL))
     last_total <<- total_now
     last_status <<- status
@@ -420,76 +486,57 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
 }
 
 #' @noRd
-make_multi_chain_progress_callback <- function(num_chains, num_warmup, num_draws,
-                                               max_treedepth = 10L) {
-  chain_total <- as.numeric(num_warmup) + as.numeric(num_draws)
-  ids <- vapply(seq_len(num_chains), function(i) {
-    cli::cli_progress_bar(
-      total = chain_total,
-      type = "custom",
-      clear = FALSE,
-      extra = list(phase = "warmup"),
-      format = paste0(
-        "{cli::pb_spin} c", i, " {cli::pb_extra$phase}",
-        " {cli::pb_percent} |{cli::pb_bar}|",
-        " {cli::pb_current}/{cli::pb_total} {cli::pb_eta_str}",
-        " | {cli::pb_status}"
-      ),
-      format_done = paste0(
-        "c", i, " {cli::pb_percent} |{cli::pb_bar}|",
-        " {cli::pb_current}/{cli::pb_total}",
-        " | {cli::pb_status}"
-      ),
-      .auto_close = FALSE
-    )
-  }, character(1))
-
-  last_totals <- rep(0, num_chains)
-  last_statuses <- rep("", num_chains)
-  callback_failed <- FALSE
+make_text_progress_callback <- function(num_chains, num_warmup, num_draws,
+                                        max_treedepth = 10L,
+                                        refresh = 10L,
+                                        chain_format = NULL) {
+  if (is.null(chain_format)) {
+    chain_format <- "[{elapsed}] c{chain} {phase} {pct}  {draws}/{total} | {div} | {grad}"
+  }
+  last_printed <- rep(0L, num_chains)
+  start_time <- proc.time()[["elapsed"]]
 
   callback <- function(snapshot) {
-    if (callback_failed || length(snapshot) == 0L) return(invisible(NULL))
-    for (i in seq_along(snapshot)) {
-      s <- snapshot[[i]]
-      chain_idx <- as.integer(as_progress_num(s$chain, i))
-      if (chain_idx < 1L || chain_idx > num_chains) next
+    if (length(snapshot) == 0L) return(invisible(NULL))
+    elapsed_secs <- proc.time()[["elapsed"]] - start_time
+    elapsed_str <- format_progress_time(elapsed_secs)
 
-      finished    <- as_progress_num(s$finished_draws)
-      total_steps <- as_progress_num(s$total_num_steps)
-      div_count   <- as.integer(as_progress_num(s$divergences))
-      phase_label <- if (isTRUE(s$tuning)) "warmup" else "sample"
-      avg_lf      <- if (finished > 0) total_steps / finished else NA_real_
+    for (s in snapshot) {
+      chain_idx <- as.integer(as_progress_num(s$chain, NA_real_))
+      if (is.na(chain_idx) || chain_idx < 1L || chain_idx > num_chains) next
 
-      status <- style_progress_status(
-        paste(
-          format_divergence_status(div_count),
-          format_gradient_status(avg_lf, max_treedepth),
-          sep = " | "
-        ),
-        color = progress_supports_color()
-      )
-      total_now <- min(finished, chain_total)
-      if (total_now == last_totals[chain_idx] && identical(status, last_statuses[chain_idx])) next
-      last_totals[chain_idx]   <<- total_now
-      last_statuses[chain_idx] <<- status
+      finished <- as.integer(as_progress_num(s$finished_draws))
+      since_last <- finished - last_printed[chain_idx]
+      if (since_last < as.integer(refresh)) next
+      last_printed[chain_idx] <<- finished
 
-      ok <- try(cli::cli_progress_update(
-        set   = total_now,
-        status = status,
-        extra  = list(phase = phase_label),
-        id     = ids[chain_idx],
-        force  = TRUE
-      ), silent = TRUE)
-      if (inherits(ok, "try-error")) { callback_failed <<- TRUE; break }
+      total <- as.integer(as_progress_num(s$total_draws))
+      pct <- if (total > 0L) {
+        sprintf("%d%%", as.integer(round(100 * finished / total)))
+      } else {
+        "0%"
+      }
+      phase_str <- if (isTRUE(s$tuning)) "warmup" else "sample"
+      total_steps_chain <- as_progress_num(s$total_num_steps)
+      avg_lf <- if (finished > 0L) total_steps_chain / finished else NA_real_
+      div_count <- as.integer(as_progress_num(s$divergences))
+
+      line <- chain_format
+      line <- gsub("{chain}", chain_idx, line, fixed = TRUE)
+      line <- gsub("{phase}", phase_str, line, fixed = TRUE)
+      line <- gsub("{pct}", pct, line, fixed = TRUE)
+      line <- gsub("{draws}", format_draw_count(finished), line, fixed = TRUE)
+      line <- gsub("{total}", format_draw_count(total), line, fixed = TRUE)
+      line <- gsub("{elapsed}", elapsed_str, line, fixed = TRUE)
+      line <- gsub("{div}", format_divergence_status(div_count), line, fixed = TRUE)
+      line <- gsub("{grad}", format_gradient_status(avg_lf, max_treedepth), line, fixed = TRUE)
+
+      cat(line, "\n", sep = "")
     }
     invisible(NULL)
   }
 
-  attr(callback, "finish") <- function() {
-    for (id in ids) try(cli::cli_progress_done(id = id), silent = TRUE)
-    invisible(NULL)
-  }
+  attr(callback, "finish") <- function() invisible(NULL)
   callback
 }
 

@@ -32,8 +32,15 @@
 #'   in interactive sessions when the `cli` package is installed, otherwise the
 #'   line-oriented text log. `"cli"` shows a compact sampler-aware bar,
 #'   `"progressr"` emits progressr signals for custom handlers, `"text"` prints
-#'   line-oriented updates, and `"none"` suppresses progress. `refresh = 0`
-#'   always disables progress.
+#'   line-oriented updates (one line per chain, every `refresh` draws), and
+#'   `"none"` suppresses progress. `refresh = 0` always disables progress.
+#' @param chain_format A format string controlling what the status field of the
+#'   progress bar shows. Use `{token}` placeholders. Available tokens for
+#'   `"cli"` mode: `{div}` (divergence count), `{grad}` (grad/draw),
+#'   `{draws}` (per-chain draw range), `{lag}` (slow chain indicator),
+#'   `{step}` (min step size). For `"text"` mode, per-chain tokens are also
+#'   available: `{chain}`, `{phase}`, `{pct}`, `{draws}`, `{total}`,
+#'   `{elapsed}`, `{div}`, `{grad}`. `NULL` uses the mode-appropriate default.
 #' @param init Initial values for each chain. Single entry point that
 #'   dispatches on the input shape:
 #'   \describe{
@@ -161,6 +168,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           extra_doublings = NULL,
                           refresh = 100L,
                           progress = c("auto", "cli", "progressr", "text", "none"),
+                          chain_format = NULL,
                           init = NULL,
                           init_mean = NULL,
                           save_warmup = FALSE, cores = NULL,
@@ -217,7 +225,6 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     "none" = 0L,
     "text" = as.integer(refresh),
     "cli" = 1L,
-    "multi" = 1L,
     "progressr" = 1L
   )
   progress_max_treedepth <- if (is.null(max_treedepth)) {
@@ -262,7 +269,8 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     "cli" = {
       progress_callback <- make_cli_progress_callback(
         num_chains, num_warmup, num_draws,
-        max_treedepth = progress_max_treedepth
+        max_treedepth = progress_max_treedepth,
+        chain_format = chain_format
       )
       progress_started <- Sys.time()
       on.exit(finish_progress_callback(progress_callback), add = TRUE)
@@ -271,10 +279,12 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
       attr(raw, "progress_elapsed") <- as.numeric(difftime(Sys.time(), progress_started, units = "secs"))
       raw
     },
-    "multi" = {
-      progress_callback <- make_multi_chain_progress_callback(
+    "text" = {
+      progress_callback <- make_text_progress_callback(
         num_chains, num_warmup, num_draws,
-        max_treedepth = progress_max_treedepth
+        max_treedepth = progress_max_treedepth,
+        refresh = refresh,
+        chain_format = chain_format
       )
       progress_started <- Sys.time()
       on.exit(finish_progress_callback(progress_callback), add = TRUE)
@@ -306,7 +316,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   attr(draws, "num_draws") <- num_draws
   attr(draws, "sampler_config") <- rename_sampler_config(raw$sampler_config)
 
-  if (resolved_progress %in% c("cli", "progressr")) {
+  if (resolved_progress %in% c("cli", "text", "progressr")) {
     print_sampling_diagnostic_summary(
       attr(draws, "diagnostics"),
       num_chains = num_chains,
