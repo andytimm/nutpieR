@@ -205,7 +205,7 @@ test_that("cli callback only advances by new draws", {
 
   expect_length(updates, 1L)
   expect_equal(updates[[1]]$set, 5)
-  expect_equal(updates[[1]]$extra$phase, "warmup")
+  expect_equal(updates[[1]]$extra$phase, "warmup")  # all chains still tuning
 })
 
 test_that("explicit progressr progress samples successfully", {

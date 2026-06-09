@@ -221,7 +221,7 @@ summarize_progress_snapshot <- function(snapshot, max_treedepth = 10L) {
   phase_label <- if (all(tuning)) {
     "warmup"
   } else if (any(tuning)) {
-    sprintf("warmup %d/%d", num_tuning, length(tuning))
+    sprintf("sample %d/%d", length(tuning) - num_tuning, length(tuning))
   } else {
     "sample"
   }
@@ -458,9 +458,14 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
 
     if (!warned_treedepth && grepl("▲", raw_status, fixed = TRUE)) {
       warned_treedepth <<- TRUE
-      try(cli::cli_alert_info(
-        "▲ grad/draw = treedepth cap hit frequently — consider increasing max_treedepth."
-      ), silent = TRUE)
+      max_possible <- 2L^as.integer(max_treedepth) - 1L
+      avg_lf <- summary$avg_num_steps
+      pct <- if (is.finite(avg_lf)) round(100 * avg_lf / max_possible) else NA_integer_
+      try(cli::cli_alert_info(paste0(
+        "▲ grad/draw: avg ", sprintf("%.1f", avg_lf),
+        " leapfrog steps/draw (≥", pct, "% of 2^", as.integer(max_treedepth),
+        "−1=", max_possible, " cap) — consider increasing max_treedepth."
+      )), silent = TRUE)
     }
 
     status <- style_progress_status(raw_status, color = progress_supports_color())
