@@ -1,3 +1,9 @@
+# nutpieR 1.7.6
+
+* Fix #30: the one-time BridgeStan source download now verifies TLS
+  against the OS trust store instead of a bundled CA list, so it works
+  behind TLS-intercepting corporate proxies with a system-installed CA.
+
 # nutpieR 1.7.5
 
 * `save_warmup = FALSE` no longer stores warmup draws in Arrow memory before dropping them.
