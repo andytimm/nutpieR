@@ -1,3 +1,11 @@
+# Tunable thresholds for the live progress hints and end-of-run summary.
+# Collected here so they are easy to find and adjust during dogfooding.
+LATE_WARMUP_FRACTION  <- 0.75  # baseline grad/draw stats from this point on
+GRAD_HINT_THRESHOLD   <- 128   # avg grad/draw at/above this triggers the hint + accent
+SPREAD_TRIGGER_POINTS <- 15    # percentage-point chain spread to trigger the hint
+SPREAD_MEDIAN_FLOOR   <- 0.10  # median chain must be past this fraction first
+CAP_SUMMARY_THRESHOLD <- 0.05  # %-at-cap gate for the end-of-run advice line
+
 #' cli routing depends only on the environment: an interactive session that
 #' isn't rendering a knitr document. cli itself is a hard dependency, so there
 #' is no package-availability check to make.
@@ -73,13 +81,17 @@ style_progress_status <- function(status, color = FALSE) {
 }
 
 #' @noRd
-format_gradient_status <- function(avg_lf, max_treedepth = 10L) {
+#' Accent the grad/draw token once the average crosses GRAD_HINT_THRESHOLD (an
+#' absolute leapfrog-steps-per-draw count, not a fraction of the treedepth cap —
+#' %-at-cap advice lives in the end summary). The `▲` glyph falls back to `^`
+#' when the console can't render UTF-8; style_progress_status()'s regex matches
+#' both.
+format_gradient_status <- function(avg_lf) {
   if (!is.finite(avg_lf)) return("- grad/draw")
-  max_possible <- 2^as.integer(max_treedepth %||% 10L) - 1L
   label <- sprintf("%.1f grad/draw", avg_lf)
-  if (avg_lf / max_possible >= 0.05) {
-    warn_sym <- "▲"  # ▲
-    paste(warn_sym, label)
+  if (avg_lf >= GRAD_HINT_THRESHOLD) {
+    accent <- if (cli::is_utf8_output()) "▲" else "^"
+    paste(accent, label)
   } else {
     label
   }
@@ -152,7 +164,7 @@ format_status_tokens <- function(snapshot, summary, max_treedepth, format_str) {
     result <- gsub("{div}", format_divergence_status(summary$total_divergences),
                    result, fixed = TRUE)
   if (grepl("{grad}", format_str, fixed = TRUE))
-    result <- gsub("{grad}", format_gradient_status(summary$avg_num_steps, max_treedepth),
+    result <- gsub("{grad}", format_gradient_status(summary$avg_num_steps),
                    result, fixed = TRUE)
   if (grepl("{draws}", format_str, fixed = TRUE))
     result <- gsub("{draws}", format_chain_draw_range(snapshot), result, fixed = TRUE)
@@ -242,7 +254,7 @@ summarize_progress_snapshot <- function(snapshot, max_treedepth = 10L,
   max_runtime <- if (length(runtimes) > 0L) max(runtimes) else 0
   status <- paste(
     format_divergence_status(sum(divergences, na.rm = TRUE)),
-    format_gradient_status(avg_steps, max_treedepth),
+    format_gradient_status(avg_steps),
     sep = " | "
   )
 
@@ -327,8 +339,29 @@ render_progress_table <- function(table) {
   c(header, sep, body)
 }
 
+#' Fraction of sampled draws that hit the max tree depth cap. Prefers the exact
+#' `depth >= max_treedepth` test when a depth column exists; otherwise falls back
+#' to `n_steps >= 2^max_treedepth - 1`. Returns `NA` when neither is available.
 #' @noRd
-print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed) {
+fraction_at_treedepth_cap <- function(diagnostics, max_treedepth) {
+  if (is.null(max_treedepth) || !is.finite(max_treedepth)) return(NA_real_)
+  if (!is.null(diagnostics$depth)) {
+    depth <- as.numeric(diagnostics$depth)
+    at_cap <- depth >= as.numeric(max_treedepth)
+  } else if (!is.null(diagnostics$n_steps)) {
+    n_steps <- as.numeric(diagnostics$n_steps)
+    at_cap <- n_steps >= (2^as.numeric(max_treedepth) - 1)
+  } else {
+    return(NA_real_)
+  }
+  at_cap <- at_cap[!is.na(at_cap)]
+  if (length(at_cap) == 0L) return(NA_real_)
+  mean(at_cap)
+}
+
+#' @noRd
+print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
+                                              max_treedepth = NULL) {
   elapsed_label <- format_progress_time(elapsed)
   if (is.null(diagnostics) || length(diagnostics) == 0L || is.null(diagnostics$chain)) {
     message("Sampling complete in ", elapsed_label)
@@ -391,6 +424,14 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed) 
       "Try increasing `target_accept`, inspecting pairs, or reparameterizing."
     )
   }
+
+  cap_frac <- fraction_at_treedepth_cap(diagnostics, max_treedepth)
+  if (is.finite(cap_frac) && cap_frac >= CAP_SUMMARY_THRESHOLD) {
+    cap_pct <- sprintf("%d%%", as.integer(round(100 * cap_frac)))
+    cli::cli_alert_info(
+      "{cap_pct} of draws hit the max_treedepth cap — consider increasing `max_treedepth`."
+    )
+  }
   invisible(NULL)
 }
 
@@ -405,7 +446,70 @@ new_progress_hints <- function(mode = c("cli", "text")) {
   env$mode <- match.arg(mode)
   env$warned_div <- FALSE
   env$warned_grad <- FALSE
+  # Per-chain late-warmup baselines for the grad/draw average, keyed by chain id.
+  env$grad_baseline <- list()
   env
+}
+
+#' Record each started chain's `(total_num_steps, finished_draws)` the first
+#' time it passes LATE_WARMUP_FRACTION of warmup. Anchoring here discards the
+#' high-leapfrog early-warmup transient so the reported average reflects the
+#' tuned sampler.
+#' @noRd
+update_grad_baselines <- function(hints, snapshot, num_warmup) {
+  threshold <- LATE_WARMUP_FRACTION * as.numeric(num_warmup)
+  for (s in snapshot) {
+    chain <- as.integer(as_progress_num(s$chain, NA_real_))
+    if (is.na(chain)) next
+    finished <- as_progress_num(s$finished_draws)
+    if (finished < threshold) next
+    key <- as.character(chain)
+    if (!is.null(hints$grad_baseline[[key]])) next
+    hints$grad_baseline[[key]] <- list(
+      total = as_progress_num(s$total_num_steps),
+      finished = finished
+    )
+  }
+  invisible(NULL)
+}
+
+#' Pooled grad/draw average over baselined chains:
+#' `sum(total - base_total) / sum(finished - base_finished)`. Exact and
+#' unbiased — no cap detection, no length-biased polling. Returns `NA` until at
+#' least one baselined chain has produced a post-baseline draw.
+#' @noRd
+pooled_grad_per_draw <- function(hints, snapshot) {
+  steps_delta <- 0
+  draws_delta <- 0
+  for (s in snapshot) {
+    chain <- as.integer(as_progress_num(s$chain, NA_real_))
+    if (is.na(chain)) next
+    base <- hints$grad_baseline[[as.character(chain)]]
+    if (is.null(base)) next
+    steps_delta <- steps_delta + (as_progress_num(s$total_num_steps) - base$total)
+    draws_delta <- draws_delta + (as_progress_num(s$finished_draws) - base$finished)
+  }
+  if (draws_delta <= 0) return(NA_real_)
+  steps_delta / draws_delta
+}
+
+#' One-shot grad/draw hint (informational). Fires when the late-warmup-baseline
+#' pooled average reaches GRAD_HINT_THRESHOLD. Tree depth is `round(log2(avg+1))`.
+#' max_treedepth advice deliberately lives only in the end summary, where the
+#' exact %-at-cap is known.
+#' @noRd
+maybe_grad_hint <- function(hints, avg) {
+  if (hints$warned_grad || !is.finite(avg) || avg < GRAD_HINT_THRESHOLD) {
+    return(invisible(NULL))
+  }
+  hints$warned_grad <- TRUE
+  depth <- as.integer(round(log2(avg + 1)))
+  emit_progress_hint(hints, "info", sprintf(
+    paste0("grad/draw: ~%d gradient evaluations per draw (tree depth ~ %d) ",
+           "— usually a sign of difficult posterior geometry. If that's ",
+           "unexpected for your model, it's worth a sanity check."),
+    as.integer(round(avg)), depth
+  ))
 }
 
 #' Emit a one-time hint. `level` is "warning" or "info". The message is passed to
@@ -470,7 +574,6 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
   last_summary <- NULL
   last_snapshot <- NULL
   hints <- new_progress_hints("cli")
-  warned_treedepth <- FALSE
   callback_failed <- FALSE
 
   callback <- function(snapshot) {
@@ -483,19 +586,14 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
 
     maybe_div_hint(hints, summary$total_divergences)
 
-    raw_status <- format_status_tokens(snapshot, summary, max_treedepth, chain_format)
+    # Once chains pass late warmup, switch the {grad} token and the hint to the
+    # baseline-adjusted average so the bar and the hint never disagree.
+    update_grad_baselines(hints, snapshot, num_warmup)
+    baseline_avg <- pooled_grad_per_draw(hints, snapshot)
+    if (is.finite(baseline_avg)) summary$avg_num_steps <- baseline_avg
+    maybe_grad_hint(hints, summary$avg_num_steps)
 
-    if (!warned_treedepth && grepl("▲", raw_status, fixed = TRUE)) {
-      warned_treedepth <<- TRUE
-      max_possible <- 2L^as.integer(max_treedepth) - 1L
-      avg_lf <- summary$avg_num_steps
-      pct <- if (is.finite(avg_lf)) round(100 * avg_lf / max_possible) else NA_integer_
-      try(cli::cli_alert_info(paste0(
-        "▲ grad/draw: avg ", sprintf("%.1f", avg_lf),
-        " leapfrog steps/draw (≥", pct, "% of 2^", as.integer(max_treedepth),
-        "−1=", max_possible, " cap) — consider increasing max_treedepth."
-      )), silent = TRUE)
-    }
+    raw_status <- format_status_tokens(snapshot, summary, max_treedepth, chain_format)
 
     status <- style_progress_status(raw_status, color = progress_supports_color())
     if (total_now == last_total && identical(status, last_status)) return(invisible(NULL))
@@ -544,6 +642,10 @@ make_text_progress_callback <- function(num_chains, num_warmup, num_draws,
     ))
     maybe_div_hint(hints, total_divs)
 
+    # grad/draw hint (once), from the same late-warmup baseline the cli bar uses.
+    update_grad_baselines(hints, snapshot, num_warmup)
+    maybe_grad_hint(hints, pooled_grad_per_draw(hints, snapshot))
+
     for (s in snapshot) {
       chain_idx <- as.integer(as_progress_num(s$chain, NA_real_))
       if (is.na(chain_idx) || chain_idx < 1L || chain_idx > num_chains) next
@@ -572,7 +674,7 @@ make_text_progress_callback <- function(num_chains, num_warmup, num_draws,
       line <- gsub("{total}", format_draw_count(total), line, fixed = TRUE)
       line <- gsub("{elapsed}", elapsed_str, line, fixed = TRUE)
       line <- gsub("{div}", format_divergence_status(div_count), line, fixed = TRUE)
-      line <- gsub("{grad}", format_gradient_status(avg_lf, max_treedepth), line, fixed = TRUE)
+      line <- gsub("{grad}", format_gradient_status(avg_lf), line, fixed = TRUE)
 
       # stderr via message() so text lines interleave correctly with hints and
       # the end summary, and suppressMessages() silences the whole stream.

@@ -106,6 +106,93 @@ test_that("text callback emits the div hint once across calls", {
   expect_equal(sum(grepl("divergent transitions detected", msgs2)), 0L)
 })
 
+test_that("grad/draw baseline anchors at late warmup and pools exactly", {
+  hints <- nutpieR:::new_progress_hints("cli")
+  num_warmup <- 100L  # late-warmup threshold = 0.75 * 100 = 75
+
+  # Below threshold: no baseline yet, pooled average is NA.
+  snap0 <- list(
+    list(chain = 1L, finished_draws = 50L, total_num_steps = 5000),
+    list(chain = 2L, finished_draws = 50L, total_num_steps = 5000)
+  )
+  nutpieR:::update_grad_baselines(hints, snap0, num_warmup)
+  expect_length(hints$grad_baseline, 0L)
+  expect_true(is.na(nutpieR:::pooled_grad_per_draw(hints, snap0)))
+
+  # Cross threshold: each chain records (total, finished). No post-baseline
+  # draws yet, so pooled average is still NA.
+  snap1 <- list(
+    list(chain = 1L, finished_draws = 80L, total_num_steps = 8000),
+    list(chain = 2L, finished_draws = 80L, total_num_steps = 8000)
+  )
+  nutpieR:::update_grad_baselines(hints, snap1, num_warmup)
+  expect_length(hints$grad_baseline, 2L)
+  expect_true(is.na(nutpieR:::pooled_grad_per_draw(hints, snap1)))
+
+  # +100 draws/chain costing +20000 steps/chain -> exactly 200 grad/draw pooled.
+  snap2 <- list(
+    list(chain = 1L, finished_draws = 180L, total_num_steps = 28000),
+    list(chain = 2L, finished_draws = 180L, total_num_steps = 28000)
+  )
+  expect_equal(nutpieR:::pooled_grad_per_draw(hints, snap2), 200)
+
+  # Baselines are sticky: a later update does not move them.
+  nutpieR:::update_grad_baselines(hints, snap2, num_warmup)
+  expect_equal(nutpieR:::pooled_grad_per_draw(hints, snap2), 200)
+})
+
+test_that("grad hint fires once above the threshold with rounded depth", {
+  hints <- nutpieR:::new_progress_hints("text")
+  # Below GRAD_HINT_THRESHOLD (128): nothing.
+  expect_length(testthat::capture_messages(nutpieR:::maybe_grad_hint(hints, 50)), 0L)
+
+  m <- testthat::capture_messages(nutpieR:::maybe_grad_hint(hints, 210))
+  expect_match(m, "grad/draw: ~210 gradient evaluations per draw", all = FALSE)
+  expect_match(m, "tree depth ~ 8", all = FALSE)  # round(log2(211)) = 8
+
+  # Once only.
+  expect_length(testthat::capture_messages(nutpieR:::maybe_grad_hint(hints, 300)), 0L)
+})
+
+test_that("end summary reports %-at-cap from per-draw diagnostics", {
+  # depth column present -> cap is depth >= max_treedepth; 4 of 20 draws = 20%.
+  diags <- list(
+    chain = rep(1:2, each = 10),
+    n_steps = rep(3, 20),
+    depth = c(rep(10L, 3L), rep(2L, 7L), 10L, rep(2L, 9L)),
+    step_size = rep(0.5, 20),
+    diverging = rep(FALSE, 20)
+  )
+  expect_equal(nutpieR:::fraction_at_treedepth_cap(diags, 10L), 0.2)
+
+  msgs <- testthat::capture_messages(
+    nutpieR:::print_sampling_diagnostic_summary(
+      diags, num_chains = 2L, elapsed = 1, max_treedepth = 10L
+    )
+  )
+  joined <- paste(msgs, collapse = "")
+  expect_match(joined, "20% of draws hit the max_treedepth cap", fixed = TRUE)
+
+  # Below CAP_SUMMARY_THRESHOLD (5%): no advice line.
+  diags_low <- diags
+  diags_low$depth <- rep(2L, 20)
+  msgs_low <- testthat::capture_messages(
+    nutpieR:::print_sampling_diagnostic_summary(
+      diags_low, num_chains = 2L, elapsed = 1, max_treedepth = 10L
+    )
+  )
+  expect_false(grepl("max_treedepth cap", paste(msgs_low, collapse = "")))
+})
+
+test_that("fraction_at_treedepth_cap falls back to n_steps when no depth column", {
+  diags <- list(
+    chain = rep(1L, 10),
+    n_steps = c(rep(1023, 2), rep(7, 8))  # 2/10 >= 2^10 - 1 = 1023
+  )
+  expect_equal(nutpieR:::fraction_at_treedepth_cap(diags, 10L), 0.2)
+  expect_true(is.na(nutpieR:::fraction_at_treedepth_cap(list(chain = 1L), 10L)))
+})
+
 test_that("format_status_tokens replaces div and grad tokens", {
   snapshot <- list(
     list(
@@ -183,17 +270,17 @@ test_that("format_chain_draw_range produces range for multi-chain snapshots", {
   expect_match(result_eq, "1k", fixed = TRUE)
 })
 
-test_that("format_gradient_status uses triangle symbol when treedepth cap hit", {
-  # avg_lf / max_possible >= 0.05 triggers warning
-  # max_possible for max_treedepth=10 is 2^10 - 1 = 1023
-  # 0.05 * 1023 = 51.15, so avg_lf >= 52 triggers warning
-  result_warn <- nutpieR:::format_gradient_status(100.0, max_treedepth = 10L)
-  expect_match(result_warn, "▲", fixed = TRUE)  # ▲
-  expect_false(grepl("~", result_warn))
+test_that("format_gradient_status accents above the absolute grad threshold", {
+  # Accent fires at GRAD_HINT_THRESHOLD (128) leapfrog steps/draw, regardless of
+  # max_treedepth. The glyph is ▲ (UTF-8) or ^ (fallback).
+  result_warn <- nutpieR:::format_gradient_status(200.0)
+  expect_match(result_warn, "[▲^]")
+  expect_match(result_warn, "200.0 grad/draw", fixed = TRUE)
 
-  result_ok <- nutpieR:::format_gradient_status(2.0, max_treedepth = 10L)
-  expect_false(grepl("▲", result_ok))
-  expect_false(grepl("~", result_ok))
+  # 100 is below the threshold -> no accent.
+  result_ok <- nutpieR:::format_gradient_status(100.0)
+  expect_false(grepl("[▲^]", result_ok))
+  expect_match(result_ok, "100.0 grad/draw", fixed = TRUE)
 })
 
 test_that("make_text_progress_callback prints one line per chain at refresh interval", {

@@ -305,7 +305,8 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     print_sampling_diagnostic_summary(
       attr(draws, "diagnostics"),
       num_chains = num_chains,
-      elapsed = attr(raw, "progress_elapsed") %||% 0
+      elapsed = attr(raw, "progress_elapsed") %||% 0,
+      max_treedepth = progress_max_treedepth
     )
   }
 
