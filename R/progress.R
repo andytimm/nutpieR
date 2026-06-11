@@ -109,16 +109,17 @@ format_chain_draw_range <- function(snapshot) {
   if (min_f == max_f) {
     sprintf("%s/%s", format_draw_count(min_f), total_str)
   } else {
-    sprintf("%s–%s/%s", format_draw_count(min_f), format_draw_count(max_f), total_str)
+    sprintf("%s-%s/%s", format_draw_count(min_f), format_draw_count(max_f), total_str)
   }
 }
 
-#' @noRd
 #' Gap-from-leader sparkline: one glyph per chain (in chain order), where the
 #' glyph height is how far that chain trails the front-runner — NOT its absolute
 #' progress. Chains that are together read as a flat baseline (all ▁); a laggard
-#' shows up as a tall bar. Returns "" for single-chain runs.
-format_chain_spread <- function(snapshot) {
+#' shows up as a tall bar. Returns "" for single-chain runs. Opt-in `{spark}`
+#' token (never in the default format); the percent-range token is `{spread}`.
+#' @noRd
+format_chain_spark <- function(snapshot) {
   if (length(snapshot) <= 1L) return("")
   finished <- vapply(snapshot, function(s) as_progress_num(s$finished_draws), numeric(1))
   totals <- vapply(snapshot, function(s) as_progress_num(s$total_draws), numeric(1))
@@ -134,6 +135,47 @@ format_chain_spread <- function(snapshot) {
   frac <- pmin(1, pmax(0, (ratio - lo) / (hi - lo)))
   level <- 1L + as.integer(round(frac * 7))
   paste(glyphs[level], collapse = "")
+}
+
+#' Per-chain progress fraction (finished/total) over *started* chains only.
+#' Unstarted chains — queued when cores < num_chains — are excluded so they
+#' don't read as a false spread at 0%.
+#' @noRd
+started_chain_fractions <- function(snapshot) {
+  fracs <- vapply(snapshot, function(s) {
+    if (!isTRUE(s$started)) return(NA_real_)
+    total <- as_progress_num(s$total_draws)
+    if (!is.finite(total) || total <= 0) return(NA_real_)
+    as_progress_num(s$finished_draws) / total
+  }, numeric(1))
+  fracs[!is.na(fracs)]
+}
+
+#' Has the chain spread crossed the trigger? Over started chains:
+#' `max - min >= SPREAD_TRIGGER_POINTS` (percentage points) and the median chain
+#' is past `SPREAD_MEDIAN_FLOOR`. The median floor avoids firing in the noisy
+#' opening laps before chains have settled.
+#' @noRd
+spread_triggered <- function(snapshot) {
+  fracs <- started_chain_fractions(snapshot)
+  if (length(fracs) < 2L) return(FALSE)
+  (max(fracs) - min(fracs)) >= (SPREAD_TRIGGER_POINTS / 100) &&
+    stats::median(fracs) >= SPREAD_MEDIAN_FLOOR
+}
+
+#' Percent-range spread token, e.g. "spread 23-78%" (ASCII hyphen, text-safe;
+#' percent not draw counts to avoid colliding with the bar's current/total).
+#' Empty until `active`; the callback latches `active` on once triggered, so it
+#' renders for the rest of the run and collapses honestly (e.g. "spread 98-100%")
+#' as chains converge.
+#' @noRd
+format_chain_spread <- function(snapshot, active = FALSE) {
+  if (!isTRUE(active)) return("")
+  fracs <- started_chain_fractions(snapshot)
+  if (length(fracs) < 2L) return("")
+  sprintf("spread %d-%d%%",
+          as.integer(round(100 * min(fracs))),
+          as.integer(round(100 * max(fracs))))
 }
 
 #' @noRd
@@ -158,7 +200,8 @@ format_min_step <- function(snapshot) {
 }
 
 #' @noRd
-format_status_tokens <- function(snapshot, summary, max_treedepth, format_str) {
+format_status_tokens <- function(snapshot, summary, max_treedepth, format_str,
+                                 spread_active = FALSE) {
   result <- format_str
   if (grepl("{div}", format_str, fixed = TRUE))
     result <- gsub("{div}", format_divergence_status(summary$total_divergences),
@@ -169,13 +212,20 @@ format_status_tokens <- function(snapshot, summary, max_treedepth, format_str) {
   if (grepl("{draws}", format_str, fixed = TRUE))
     result <- gsub("{draws}", format_chain_draw_range(snapshot), result, fixed = TRUE)
   if (grepl("{spread}", format_str, fixed = TRUE))
-    result <- gsub("{spread}", format_chain_spread(snapshot), result, fixed = TRUE)
+    result <- gsub("{spread}", format_chain_spread(snapshot, active = spread_active),
+                   result, fixed = TRUE)
+  if (grepl("{spark}", format_str, fixed = TRUE))
+    result <- gsub("{spark}", format_chain_spark(snapshot), result, fixed = TRUE)
   if (grepl("{lag}", format_str, fixed = TRUE))
     result <- gsub("{lag}", format_chain_lag(snapshot), result, fixed = TRUE)
   if (grepl("{step}", format_str, fixed = TRUE))
     result <- gsub("{step}", format_min_step(snapshot), result, fixed = TRUE)
-  # clean up empty segments from tokens that returned ""
-  result <- gsub("\\s*\\|\\s*\\|", " |", result)
+  # Collapse empty segments left by tokens that returned "". Multi-pass: a run
+  # of three or more empty tokens (e.g. "{div} | {spread} | {spark}") needs more
+  # than one sweep because each gsub consumes a pipe non-overlapping.
+  while (grepl("\\|\\s*\\|", result)) {
+    result <- gsub("\\s*\\|\\s*\\|", " |", result)
+  }
   result <- gsub("^\\s*\\|\\s*", "", result)
   result <- gsub("\\s*\\|\\s*$", "", result)
   trimws(result)
@@ -446,6 +496,8 @@ new_progress_hints <- function(mode = c("cli", "text")) {
   env$mode <- match.arg(mode)
   env$warned_div <- FALSE
   env$warned_grad <- FALSE
+  env$warned_spread <- FALSE
+  env$spread_active <- FALSE
   # Per-chain late-warmup baselines for the grad/draw average, keyed by chain id.
   env$grad_baseline <- list()
   env
@@ -512,6 +564,23 @@ maybe_grad_hint <- function(hints, avg) {
   ))
 }
 
+#' One-shot chain-spread hint (cli only — in text mode the per-chain lines are
+#' themselves the spread display). slowest/fastest are the started-chain min/max
+#' percentages at trigger time.
+#' @noRd
+maybe_spread_hint <- function(hints, snapshot) {
+  if (hints$warned_spread) return(invisible(NULL))
+  fracs <- started_chain_fractions(snapshot)
+  if (length(fracs) < 2L) return(invisible(NULL))
+  hints$warned_spread <- TRUE
+  emit_progress_hint(hints, "info", sprintf(
+    paste0("spread: chain progress is uneven (slowest %d%%, fastest %d%%) — often ",
+           "one chain adapted a smaller step size or is in a harder region of ",
+           "the posterior. Adding to status line."),
+    as.integer(round(100 * min(fracs))), as.integer(round(100 * max(fracs)))
+  ))
+}
+
 #' Emit a one-time hint. `level` is "warning" or "info". The message is passed to
 #' cli via `{msg}` interpolation so any backticks/braces in it stay literal.
 #' @noRd
@@ -546,7 +615,7 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
                                        id = NULL,
                                        update = NULL,
                                        done = NULL) {
-  if (is.null(chain_format)) chain_format <- "{div} | {grad}"
+  if (is.null(chain_format)) chain_format <- "{div} | {grad} | {spread}"
   if (is.null(update)) update <- cli::cli_progress_update
   if (is.null(done)) done <- cli::cli_progress_done
   total_steps <- as.numeric(num_chains) * (as.numeric(num_warmup) + as.numeric(num_draws))
@@ -556,14 +625,16 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
       total = total_steps,
       type = "custom",
       clear = FALSE,
-      extra = list(phase = "warmup", draws = "", spread = ""),
+      extra = list(phase = "warmup"),
       format = paste(
         "{cli::pb_spin} {cli::pb_extra$phase} {cli::pb_percent} |{cli::pb_bar}|",
-        "draws {cli::pb_extra$draws} {cli::pb_extra$spread} {cli::pb_eta_str} | {cli::pb_status}"
+        "{cli::pb_current}/{cli::pb_total} {cli::pb_eta_str}",
+        "| {cli::pb_status}"
       ),
       format_done = paste(
         "{cli::pb_percent} |{cli::pb_bar}|",
-        "draws {cli::pb_extra$draws} | {cli::pb_status}"
+        "{cli::pb_current}/{cli::pb_total}",
+        "| {cli::pb_status}"
       ),
       .auto_close = FALSE
     )
@@ -593,7 +664,16 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
     if (is.finite(baseline_avg)) summary$avg_num_steps <- baseline_avg
     maybe_grad_hint(hints, summary$avg_num_steps)
 
-    raw_status <- format_status_tokens(snapshot, summary, max_treedepth, chain_format)
+    # Spread: latch on once the started chains diverge enough, then keep the
+    # {spread} token for the rest of the run (it collapses honestly as chains
+    # converge). The hint fires once, at the latch.
+    if (!hints$spread_active && spread_triggered(snapshot)) {
+      hints$spread_active <- TRUE
+      maybe_spread_hint(hints, snapshot)
+    }
+
+    raw_status <- format_status_tokens(snapshot, summary, max_treedepth, chain_format,
+                                       spread_active = hints$spread_active)
 
     status <- style_progress_status(raw_status, color = progress_supports_color())
     if (total_now == last_total && identical(status, last_status)) return(invisible(NULL))
@@ -602,8 +682,7 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
     ok <- try(update(
       set = total_now,
       status = status,
-      extra = list(phase = summary$phase_label, draws = format_chain_draw_range(snapshot),
-                   spread = format_chain_spread(snapshot)),
+      extra = list(phase = summary$phase_label),
       id = id,
       force = TRUE
     ), silent = TRUE)

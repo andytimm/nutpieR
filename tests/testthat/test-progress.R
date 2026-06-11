@@ -258,16 +258,91 @@ test_that("format_chain_draw_range produces range for multi-chain snapshots", {
   expect_match(result, "408", fixed = TRUE)
   expect_match(result, "465", fixed = TRUE)
   expect_match(result, "2k", fixed = TRUE)
-  expect_match(result, "–", fixed = TRUE)  # en-dash
+  expect_match(result, "408-465", fixed = TRUE)  # ASCII hyphen, text-safe
 
-  # when all chains have same count, no dash
+  # when all chains have same count, no range separator
   snapshot_equal <- list(
     list(finished_draws = 500L, total_draws = 1000L),
     list(finished_draws = 500L, total_draws = 1000L)
   )
   result_eq <- nutpieR:::format_chain_draw_range(snapshot_equal)
-  expect_false(grepl("–", result_eq))
+  expect_false(grepl("-", result_eq, fixed = TRUE))
   expect_match(result_eq, "1k", fixed = TRUE)
+})
+
+test_that("spread token: sticky, started-chains-only, percent range", {
+  # Two chains 20% apart, median past the floor -> triggers.
+  spread_snap <- list(
+    list(chain = 1L, finished_draws = 30L, total_draws = 100L, started = TRUE),
+    list(chain = 2L, finished_draws = 50L, total_draws = 100L, started = TRUE)
+  )
+  expect_true(nutpieR:::spread_triggered(spread_snap))
+  expect_equal(nutpieR:::format_chain_spread(spread_snap, active = TRUE), "spread 30-50%")
+  # Inactive -> empty (the callback latches activation).
+  expect_equal(nutpieR:::format_chain_spread(spread_snap, active = FALSE), "")
+
+  # Too close together -> no trigger.
+  close_snap <- list(
+    list(chain = 1L, finished_draws = 48L, total_draws = 100L, started = TRUE),
+    list(chain = 2L, finished_draws = 52L, total_draws = 100L, started = TRUE)
+  )
+  expect_false(nutpieR:::spread_triggered(close_snap))
+
+  # Below the median floor -> no trigger even with a wide spread.
+  early_snap <- list(
+    list(chain = 1L, finished_draws = 1L, total_draws = 100L, started = TRUE),
+    list(chain = 2L, finished_draws = 18L, total_draws = 100L, started = TRUE)
+  )
+  expect_false(nutpieR:::spread_triggered(early_snap))
+
+  # Unstarted (queued) chains are ignored, so they don't fake a spread.
+  queued_snap <- list(
+    list(chain = 1L, finished_draws = 60L, total_draws = 100L, started = TRUE),
+    list(chain = 2L, finished_draws = 0L, total_draws = 100L, started = FALSE)
+  )
+  expect_false(nutpieR:::spread_triggered(queued_snap))
+  expect_equal(nutpieR:::format_chain_spread(queued_snap, active = TRUE), "")
+})
+
+test_that("spread hint fires once via the cli callback", {
+  trigger_snap <- list(
+    list(chain = 1L, finished_draws = 30L, total_draws = 100L, divergences = 0L,
+         tuning = FALSE, started = TRUE, latest_num_steps = 3L, total_num_steps = 90,
+         step_size = 0.5, runtime = 1, divergent_draws = integer()),
+    list(chain = 2L, finished_draws = 50L, total_draws = 100L, divergences = 0L,
+         tuning = FALSE, started = TRUE, latest_num_steps = 3L, total_num_steps = 150,
+         step_size = 0.5, runtime = 1, divergent_draws = integer())
+  )
+  cb <- nutpieR:::make_cli_progress_callback(
+    num_chains = 2L, num_warmup = 0L, num_draws = 100L,
+    id = "fake", update = function(...) TRUE, done = function(...) TRUE
+  )
+  msgs <- testthat::capture_messages(cb(trigger_snap))
+  expect_equal(sum(grepl("chain progress is uneven", msgs)), 1L)
+  # advance but stay spread; hint does not repeat
+  trigger_snap[[1]]$finished_draws <- 60L
+  trigger_snap[[2]]$finished_draws <- 90L
+  msgs2 <- testthat::capture_messages(cb(trigger_snap))
+  expect_equal(sum(grepl("chain progress is uneven", msgs2)), 0L)
+})
+
+test_that("format_chain_spark renders a glyph per chain, flat when together", {
+  together <- list(
+    list(chain = 1L, finished_draws = 100L, total_draws = 200L),
+    list(chain = 2L, finished_draws = 100L, total_draws = 200L)
+  )
+  spark <- nutpieR:::format_chain_spark(together)
+  expect_equal(nchar(spark), 2L)
+  expect_true(grepl("▁", spark))  # both at baseline
+
+  laggard <- list(
+    list(chain = 1L, finished_draws = 200L, total_draws = 200L),
+    list(chain = 2L, finished_draws = 20L, total_draws = 200L)
+  )
+  spark2 <- nutpieR:::format_chain_spark(laggard)
+  expect_equal(nchar(spark2), 2L)
+  # leader is flat, laggard is a taller glyph
+  expect_false(identical(substr(spark2, 1, 1), substr(spark2, 2, 2)))
 })
 
 test_that("format_gradient_status accents above the absolute grad threshold", {
