@@ -219,12 +219,6 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   keep_indices <- resolve_keep_indices(constrain_names, pars, include)
 
   resolved_progress <- resolve_progress_mode(progress, refresh)
-  effective_refresh <- switch(
-    resolved_progress,
-    "none" = 0L,
-    "text" = as.integer(refresh),
-    "cli" = 1L
-  )
   progress_max_treedepth <- if (is.null(max_treedepth)) {
     10L
   } else {
@@ -238,7 +232,6 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
       num_warmup,
       num_chains,
       as.integer(seed),
-      effective_refresh,
       init_resolved$positions,
       isTRUE(init_resolved$jitter),
       isTRUE(save_warmup),

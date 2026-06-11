@@ -14,7 +14,7 @@ use nuts_rs::{
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 extern "C" {
     static mut R_interrupts_pending: std::os::raw::c_int;
@@ -125,24 +125,21 @@ struct ChainState {
 fn run_sampler<S: Settings>(
     stan_model: model::StanModel,
     settings: S,
-    num_chains: i32,
-    num_draws: i32,
-    num_warmup: i32,
     num_cores: i32,
-    refresh: i32,
     save_warmup: bool,
     progress_cb: Option<Function>,
 ) -> Result<Vec<ArrowTrace>> {
-    let refresh = refresh.max(0) as usize;
     let mut progress_cb = progress_cb;
     let use_callback = progress_cb.is_some();
-    let text_log = refresh > 0 && !use_callback;
-    let poll = text_log || use_callback;
 
     let progress_state: Arc<Mutex<Vec<ChainState>>> = Arc::new(Mutex::new(Vec::new()));
     let state_clone = progress_state.clone();
 
-    let callback = if poll {
+    // Only install the nuts-rs progress callback when R wants per-poll
+    // snapshots. With `progress = "none"` there is no R callback, so we skip
+    // the snapshot bookkeeping — but the wait loop below still runs to service
+    // interrupts.
+    let callback = if use_callback {
         Some(ProgressCallback {
             callback: Box::new(move |_elapsed: Duration, progress: Box<[ChainProgress]>| {
                 let snapshot: Vec<ChainState> = progress
@@ -182,30 +179,6 @@ fn run_sampler<S: Settings>(
         )
         .map_err(r_err)?,
     );
-
-    let start = Instant::now();
-    let mut last_reported: Vec<usize> = if text_log {
-        vec![0; num_chains as usize]
-    } else {
-        Vec::new()
-    };
-    let mut chain_announced: Vec<bool> = vec![false; num_chains as usize];
-    let announce_finished = |i: usize| {
-        rprintln!(
-            "  Chain {} finished in {:.1}s",
-            i + 1,
-            start.elapsed().as_secs_f64()
-        );
-    };
-
-    if text_log {
-        rprintln!(
-            "Sampling {} chains, {} draws each ({} warmup)...\n",
-            num_chains,
-            num_draws,
-            num_warmup
-        );
-    }
 
     let results = loop {
         let sampler = sampler_opt.take().unwrap();
@@ -250,46 +223,6 @@ fn run_sampler<S: Settings>(
                 if cb_failed {
                     progress_cb = None;
                 }
-
-                if text_log {
-                    for (i, chain) in state_snapshot.iter().enumerate() {
-                        let draws_since = chain.finished_draws.saturating_sub(last_reported[i]);
-                        if draws_since >= refresh {
-                            let phase = if chain.tuning { "warmup" } else { "sample" };
-                            let elapsed = start.elapsed().as_secs_f64();
-                            if chain.divergences > 0 {
-                                rprintln!(
-                                    "  Chain {} [{phase}] {}/{} draws ({} divergences, step size {:.3}, leapfrog {}) [{:.1}s]",
-                                    i + 1,
-                                    chain.finished_draws,
-                                    chain.total_draws,
-                                    chain.divergences,
-                                    chain.step_size,
-                                    chain.latest_num_steps,
-                                    elapsed
-                                );
-                            } else {
-                                rprintln!(
-                                    "  Chain {} [{phase}] {}/{} draws (step size {:.3}, leapfrog {}) [{:.1}s]",
-                                    i + 1,
-                                    chain.finished_draws,
-                                    chain.total_draws,
-                                    chain.step_size,
-                                    chain.latest_num_steps,
-                                    elapsed
-                                );
-                            }
-                            last_reported[i] = chain.finished_draws;
-                        }
-                        if !chain_announced[i]
-                            && chain.total_draws > 0
-                            && chain.finished_draws >= chain.total_draws
-                        {
-                            announce_finished(i);
-                            chain_announced[i] = true;
-                        }
-                    }
-                }
             }
             SamplerWaitResult::Err(e, _) => return Err(r_err(e)),
         }
@@ -304,34 +237,6 @@ fn run_sampler<S: Settings>(
             let snapshot_list = build_progress_snapshot(&state_snapshot);
             let pairlist = Pairlist::from_pairs([("", Robj::from(snapshot_list))]);
             let _ = cb.call(pairlist);
-        }
-    }
-
-    if text_log {
-        let total_divergences: usize = {
-            let state = progress_state.lock().unwrap();
-            for i in 0..state.len() {
-                if !chain_announced[i] {
-                    announce_finished(i);
-                    chain_announced[i] = true;
-                }
-            }
-            state.iter().map(|c| c.divergences).sum()
-        };
-
-        let elapsed = start.elapsed().as_secs_f64();
-        rprintln!("\nSampling complete ({:.1}s)", elapsed);
-
-        if total_divergences > 0 {
-            let total_post_warmup = (num_chains as usize) * (num_draws as usize);
-            let pct = 100.0 * total_divergences as f64 / total_post_warmup as f64;
-            rprintln!(
-                "\nWarning: {} of {} transitions ended with a divergence ({:.1}%).",
-                total_divergences,
-                total_post_warmup,
-                pct,
-            );
-            rprintln!("See https://mc-stan.org/misc/warnings for details.");
         }
     }
 
@@ -372,7 +277,6 @@ fn build_progress_snapshot(state: &[ChainState]) -> List {
 /// @param num_warmup Number of warmup (tuning) draws per chain.
 /// @param num_chains Number of parallel chains.
 /// @param seed Random seed.
-/// @param refresh Print progress every `refresh` draws per chain (0 = no progress).
 /// @param init_positions Optional list of numeric vectors (one per chain, or length 1 = broadcast).
 /// @param jitter If TRUE, apply ±0.5 uniform jitter per coordinate.
 /// @param save_warmup Whether to return warmup draws.
@@ -422,7 +326,6 @@ fn sample_stan(
     num_warmup: i32,
     num_chains: i32,
     seed: i32,
-    refresh: i32,
     init_positions: Robj,
     jitter: bool,
     save_warmup: bool,
@@ -580,11 +483,7 @@ fn sample_stan(
                 run_with_settings(
                     stan_model,
                     settings,
-                    num_chains,
-                    num_draws,
-                    num_warmup,
                     num_cores,
-                    refresh,
                     save_warmup,
                     progress_callback.clone(),
                 )?
@@ -595,11 +494,7 @@ fn sample_stan(
                 run_with_settings(
                     stan_model,
                     settings,
-                    num_chains,
-                    num_draws,
-                    num_warmup,
                     num_cores,
-                    refresh,
                     save_warmup,
                     progress_callback.clone(),
                 )?
@@ -734,27 +629,13 @@ fn opt_count(robj: &Robj, name: &str, min: i32) -> Result<Option<i32>> {
 fn run_with_settings<S: Settings + serde::Serialize>(
     stan_model: model::StanModel,
     settings: S,
-    num_chains: i32,
-    num_draws: i32,
-    num_warmup: i32,
     num_cores: i32,
-    refresh: i32,
     save_warmup: bool,
     progress_callback: Option<Function>,
 ) -> Result<(Vec<ArrowTrace>, String)> {
     let json = serde_json::to_string(&settings)
         .map_err(|e| Error::Other(format!("failed to serialize sampler settings: {}", e)))?;
-    let traces = run_sampler(
-        stan_model,
-        settings,
-        num_chains,
-        num_draws,
-        num_warmup,
-        num_cores,
-        refresh,
-        save_warmup,
-        progress_callback,
-    )?;
+    let traces = run_sampler(stan_model, settings, num_cores, save_warmup, progress_callback)?;
     Ok((traces, json))
 }
 
