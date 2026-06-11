@@ -29,6 +29,51 @@ test_that("auto mode falls back to text when rendering a knitr document", {
   expect_equal(nutpieR:::resolve_progress_mode("auto", refresh = 100L), "text")
 })
 
+test_that("chain_format must be a scalar string with mode-specific tokens", {
+  expect_null(nutpieR:::validate_chain_format(NULL, "cli"))
+  expect_equal(
+    nutpieR:::validate_chain_format("{div} | {grad}", "cli"),
+    "{div} | {grad}"
+  )
+  expect_equal(
+    nutpieR:::validate_chain_format("[{elapsed}] c{chain}", "text"),
+    "[{elapsed}] c{chain}"
+  )
+  expect_error(
+    nutpieR:::validate_chain_format(c("{div}", "{grad}"), "cli"),
+    "single non-missing string",
+    fixed = TRUE
+  )
+  expect_error(
+    nutpieR:::validate_chain_format(NA_character_, "cli"),
+    "single non-missing string",
+    fixed = TRUE
+  )
+  expect_error(
+    nutpieR:::validate_chain_format("{chain}", "cli"),
+    "unsupported token",
+    fixed = TRUE
+  )
+  expect_error(
+    nutpieR:::validate_chain_format("{spread}", "text"),
+    "unsupported token",
+    fixed = TRUE
+  )
+})
+
+test_that("protected progress callbacks fail once without raising", {
+  n <- 0L
+  callback <- nutpieR:::protect_progress_callback(function(snapshot) {
+    n <<- n + 1L
+    stop("kaboom")
+  })
+
+  expect_silent(callback(list()))
+  expect_equal(n, 1L)
+  expect_silent(callback(list()))
+  expect_equal(n, 1L)
+})
+
 test_that("progress snapshot summary exposes useful sampler diagnostics", {
   snapshot <- list(
     list(
@@ -463,6 +508,37 @@ test_that("explicit text progress samples successfully", {
   expect_s3_class(draws, "draws_array")
 })
 
+test_that("progress arguments fail before sampling on malformed inputs", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  expect_error(
+    nutpie_sample(
+      test_models$bernoulli, data = bernoulli_data(),
+      num_draws = 30, num_warmup = 30, num_chains = 1,
+      seed = 1L, progress = "text", refresh = NA_integer_
+    ),
+    "refresh"
+  )
+  expect_error(
+    nutpie_sample(
+      test_models$bernoulli, data = bernoulli_data(),
+      num_draws = 30, num_warmup = 30, num_chains = 1,
+      seed = 1L, progress = "text", refresh = 1L,
+      chain_format = c("{chain}", "{draws}")
+    ),
+    "chain_format"
+  )
+  expect_error(
+    nutpie_sample(
+      test_models$bernoulli, data = bernoulli_data(),
+      num_draws = 30, num_warmup = 30, num_chains = 1,
+      seed = 1L, progress = "cli", refresh = 1L,
+      chain_format = "{chain}"
+    ),
+    "unsupported token",
+    fixed = TRUE
+  )
+})
+
 test_that("progress = 'none' produces no console output", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
   expect_silent(
@@ -487,14 +563,17 @@ test_that("a failing progress callback is disabled instead of killing sampling",
     },
     .package = "nutpieR"
   )
-  capture.output(
-    draws <- nutpie_sample(
-      test_models$bernoulli, data = bernoulli_data(),
-      num_draws = 30, num_warmup = 30, num_chains = 1,
-      seed = 1L, refresh = 1L, progress = "cli"
+  out <- capture.output(
+    suppressMessages(
+      draws <- nutpie_sample(
+        test_models$bernoulli, data = bernoulli_data(),
+        num_draws = 30, num_warmup = 30, num_chains = 1,
+        seed = 1L, refresh = 1L, progress = "cli"
+      )
     ),
     type = "output"
   )
   expect_s3_class(draws, "draws_array")
-  expect_lte(call_count, 2L)
+  expect_equal(call_count, 1L)
+  expect_false(grepl("Error in", paste(out, collapse = "\n"), fixed = TRUE))
 })

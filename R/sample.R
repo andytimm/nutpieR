@@ -206,6 +206,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   num_draws <- check_count(num_draws, "num_draws", min = 1L)
   num_warmup <- check_count(num_warmup, "num_warmup", min = 0L)
   num_chains <- check_count(num_chains, "num_chains", min = 1L)
+  refresh <- check_count(refresh, "refresh", min = 0L)
 
   if (is.null(cores)) {
     cores <- min(num_chains, parallel::detectCores())
@@ -223,6 +224,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   keep_indices <- resolve_keep_indices(constrain_names, pars, include)
 
   resolved_progress <- resolve_progress_mode(progress, refresh)
+  chain_format <- validate_chain_format(chain_format, resolved_progress)
   progress_max_treedepth <- if (is.null(max_treedepth)) {
     10L
   } else {
@@ -230,6 +232,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   }
 
   call_sample_stan <- function(progress_callback) {
+    progress_callback <- protect_progress_callback(progress_callback)
     sample_stan(
       handle,
       num_draws,

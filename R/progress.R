@@ -27,6 +27,55 @@ resolve_progress_mode <- function(progress, refresh) {
 }
 
 #' @noRd
+validate_chain_format <- function(chain_format, mode) {
+  if (is.null(chain_format)) return(NULL)
+  if (!is.character(chain_format) || length(chain_format) != 1L ||
+      is.na(chain_format)) {
+    stop("`chain_format` must be NULL or a single non-missing string.",
+         call. = FALSE)
+  }
+  if (identical(mode, "none")) return(chain_format)
+
+  allowed <- switch(
+    mode,
+    cli = c("div", "grad", "spread", "draws", "spark", "lag", "step"),
+    text = c("chain", "phase", "pct", "draws", "total", "elapsed", "div", "grad"),
+    character()
+  )
+  matches <- gregexpr("\\{[^{}]+\\}", chain_format, perl = TRUE)
+  if (matches[[1]][[1]] < 0L) return(chain_format)
+  tokens <- regmatches(chain_format, matches)[[1]]
+  token_names <- unique(sub("^\\{([^{}]+)\\}$", "\\1", tokens))
+  unknown <- setdiff(token_names, allowed)
+  if (length(unknown) > 0L) {
+    stop(sprintf(
+      "`chain_format` contains unsupported token%s for progress = \"%s\": %s. Available tokens: %s.",
+      if (length(unknown) == 1L) "" else "s",
+      mode,
+      paste(sprintf("{%s}", unknown), collapse = ", "),
+      paste(sprintf("{%s}", allowed), collapse = ", ")
+    ), call. = FALSE)
+  }
+  chain_format
+}
+
+#' @noRd
+protect_progress_callback <- function(callback) {
+  if (is.null(callback)) return(NULL)
+  failed <- FALSE
+  function(snapshot) {
+    if (failed) return(invisible(NULL))
+    tryCatch(
+      callback(snapshot),
+      error = function(e) {
+        failed <<- TRUE
+        invisible(NULL)
+      }
+    )
+  }
+}
+
+#' @noRd
 as_progress_num <- function(x, default = 0) {
   # `x[[1]]` keeps the is.na() guard scalar: a length > 1 input would otherwise
   # make `if (is.na(x))` error ("condition has length > 1").
