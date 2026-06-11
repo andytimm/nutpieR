@@ -193,6 +193,17 @@ test_that("fraction_at_treedepth_cap falls back to n_steps when no depth column"
   expect_true(is.na(nutpieR:::fraction_at_treedepth_cap(list(chain = 1L), 10L)))
 })
 
+test_that("fraction_at_treedepth_cap prefers the maxdepth_reached flag", {
+  # maxdepth_reached is authoritative; depth/max_treedepth are ignored when present.
+  diags <- list(
+    maxdepth_reached = c(rep(TRUE, 3), rep(FALSE, 7)),
+    depth = rep(2L, 10)  # would say 0% via the fallback
+  )
+  expect_equal(nutpieR:::fraction_at_treedepth_cap(diags, 10L), 0.3)
+  # works even without max_treedepth, since the flag needs no threshold
+  expect_equal(nutpieR:::fraction_at_treedepth_cap(diags, NULL), 0.3)
+})
+
 test_that("format_status_tokens replaces div and grad tokens", {
   snapshot <- list(
     list(
@@ -212,12 +223,12 @@ test_that("format_status_tokens replaces div and grad tokens", {
   )
   summary <- nutpieR:::summarize_progress_snapshot(snapshot)
 
-  result <- nutpieR:::format_status_tokens(snapshot, summary, 10L, "{div} | {grad}")
+  result <- nutpieR:::format_status_tokens(snapshot, summary, "{div} | {grad}")
   expect_match(result, "div:", fixed = TRUE)
   expect_match(result, "grad/draw", fixed = TRUE)
 
   # div-only format
-  div_only <- nutpieR:::format_status_tokens(snapshot, summary, 10L, "{div}")
+  div_only <- nutpieR:::format_status_tokens(snapshot, summary, "{div}")
   expect_match(div_only, "div: 3", fixed = TRUE)
   expect_false(grepl("grad", div_only))
 })
@@ -242,7 +253,7 @@ test_that("format_status_tokens handles empty tokens without leaving stray pipes
   summary <- nutpieR:::summarize_progress_snapshot(snapshot)
 
   # {lag} returns "" when chains are in sync — no stray pipes
-  result <- nutpieR:::format_status_tokens(snapshot, summary, 10L, "{div} | {lag} | {grad}")
+  result <- nutpieR:::format_status_tokens(snapshot, summary, "{div} | {lag} | {grad}")
   expect_false(grepl("\\|\\s*\\|", result))
   expect_false(grepl("^\\s*\\|", result))
   expect_false(grepl("\\|\\s*$", result))

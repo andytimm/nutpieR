@@ -202,7 +202,7 @@ format_min_step <- function(snapshot) {
 }
 
 #' @noRd
-format_status_tokens <- function(snapshot, summary, max_treedepth, format_str,
+format_status_tokens <- function(snapshot, summary, format_str,
                                  spread_active = FALSE) {
   result <- format_str
   if (grepl("{div}", format_str, fixed = TRUE))
@@ -234,8 +234,7 @@ format_status_tokens <- function(snapshot, summary, max_treedepth, format_str,
 }
 
 #' @noRd
-summarize_progress_snapshot <- function(snapshot, max_treedepth = 10L,
-                                        num_warmup = 0L) {
+summarize_progress_snapshot <- function(snapshot, num_warmup = 0L) {
   if (length(snapshot) == 0L) {
     return(list(
       total_finished = 0, total_draws = 0, phase = "warmup",
@@ -360,18 +359,21 @@ render_progress_table <- function(table) {
   c(header, sep, body)
 }
 
-#' Fraction of sampled draws that hit the max tree depth cap. Prefers the exact
-#' `depth >= max_treedepth` test when a depth column exists; otherwise falls back
-#' to `n_steps >= 2^max_treedepth - 1`. Returns `NA` when neither is available.
+#' Fraction of sampled draws that hit the max tree depth cap. Prefers nuts-rs's
+#' own `maxdepth_reached` flag — the same field `print.nutpie_diagnostics()`
+#' reports — so the two never disagree. Falls back to `depth >= max_treedepth`,
+#' then `n_steps >= 2^max_treedepth - 1`, when that flag is absent. Returns `NA`
+#' when none is available.
 #' @noRd
 fraction_at_treedepth_cap <- function(diagnostics, max_treedepth) {
-  if (is.null(max_treedepth) || !is.finite(max_treedepth)) return(NA_real_)
-  if (!is.null(diagnostics$depth)) {
-    depth <- as.numeric(diagnostics$depth)
-    at_cap <- depth >= as.numeric(max_treedepth)
+  if (!is.null(diagnostics$maxdepth_reached)) {
+    at_cap <- as.logical(diagnostics$maxdepth_reached)
+  } else if (is.null(max_treedepth) || !is.finite(max_treedepth)) {
+    return(NA_real_)
+  } else if (!is.null(diagnostics$depth)) {
+    at_cap <- as.numeric(diagnostics$depth) >= as.numeric(max_treedepth)
   } else if (!is.null(diagnostics$n_steps)) {
-    n_steps <- as.numeric(diagnostics$n_steps)
-    at_cap <- n_steps >= (2^as.numeric(max_treedepth) - 1)
+    at_cap <- as.numeric(diagnostics$n_steps) >= (2^as.numeric(max_treedepth) - 1)
   } else {
     return(NA_real_)
   }
@@ -632,8 +634,7 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
 
   callback <- function(snapshot) {
     if (callback_failed) return(invisible(NULL))
-    summary <- summarize_progress_snapshot(snapshot, max_treedepth = max_treedepth,
-                                           num_warmup = num_warmup)
+    summary <- summarize_progress_snapshot(snapshot, num_warmup = num_warmup)
     last_summary <<- summary
     last_snapshot <<- snapshot
     total_now <- min(summary$total_finished, total_steps)
@@ -655,7 +656,7 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
       maybe_spread_hint(hints, snapshot)
     }
 
-    raw_status <- format_status_tokens(snapshot, summary, max_treedepth, chain_format,
+    raw_status <- format_status_tokens(snapshot, summary, chain_format,
                                        spread_active = hints$spread_active)
 
     status <- style_progress_status(raw_status, color = progress_supports_color())
