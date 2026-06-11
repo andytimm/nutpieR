@@ -526,8 +526,8 @@ maybe_grad_hint <- function(hints, avg) {
   hints$warned_grad <- TRUE
   depth <- as.integer(round(log2(avg + 1)))
   emit_progress_hint(hints, "info", sprintf(
-    paste0("high (~%d) gradient evaluations per draw (tree depth ~ %d) — often a ",
-           "sign of difficult posterior geometry; worth a sanity check if unexpected."),
+    paste0("grad/draw: high (~%d) gradient evaluations per draw (tree depth ~ %d) — ",
+           "often a sign of difficult posterior geometry; worth a sanity check if unexpected."),
     as.integer(round(avg)), depth
   ))
 }

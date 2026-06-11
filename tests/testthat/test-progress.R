@@ -147,7 +147,7 @@ test_that("grad hint fires once above the threshold with rounded depth", {
   expect_length(testthat::capture_messages(nutpieR:::maybe_grad_hint(hints, 50)), 0L)
 
   m <- testthat::capture_messages(nutpieR:::maybe_grad_hint(hints, 210))
-  expect_match(m, "high \\(~210\\) gradient evaluations per draw", all = FALSE)
+  expect_match(m, "grad/draw: high \\(~210\\) gradient evaluations per draw", all = FALSE)
   expect_match(m, "tree depth ~ 8", all = FALSE)  # round(log2(211)) = 8
 
   # Once only.
