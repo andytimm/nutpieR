@@ -170,7 +170,8 @@ format_status_tokens <- function(snapshot, summary, max_treedepth, format_str) {
 }
 
 #' @noRd
-summarize_progress_snapshot <- function(snapshot, max_treedepth = 10L) {
+summarize_progress_snapshot <- function(snapshot, max_treedepth = 10L,
+                                        num_warmup = 0L) {
   if (length(snapshot) == 0L) {
     return(list(
       total_finished = 0, total_draws = 0, phase = "warmup",
@@ -198,13 +199,18 @@ summarize_progress_snapshot <- function(snapshot, max_treedepth = 10L) {
   min_step <- if (length(finite_steps) > 0L) min(finite_steps) else NA_real_
   avg_steps <- if (sum(finished) > 0) sum(total_steps) / sum(finished) else NA_real_
 
+  # `divergent_draws` indices from nuts-rs are warmup-inclusive and 0-based
+  # (the `finished_draws` counter at divergence time, which already excludes
+  # warmup divergences via nuts-rs's `!tuning` gate). Convert to the 1-indexed,
+  # sample-phase-relative draw number used everywhere else in nutpieR.
   first_div <- NA_character_
   div_chains <- which(divergences > 0L)
   if (length(div_chains) > 0L) {
     candidates <- lapply(div_chains, function(i) {
       draws <- snapshot[[i]]$divergent_draws
       if (is.null(draws) || length(draws) == 0L) return(NULL)
-      list(chain = chains[i], draw = min(as.integer(draws)))
+      list(chain = chains[i],
+           draw = min(as.integer(draws)) - as.integer(num_warmup) + 1L)
     })
     candidates <- Filter(Negate(is.null), candidates)
     if (length(candidates) > 0L) {
@@ -388,6 +394,47 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed) 
   invisible(NULL)
 }
 
+#' Shared one-shot hint state for the cli and text callbacks. Each hint fires at
+#' most once per run; `mode` selects how it renders. cli mode uses
+#' `cli::cli_alert_*` (the `!`/`i` symbols and their ASCII fallbacks come free);
+#' text mode writes a plain `message()` line with an ASCII prefix. The trigger
+#' flags live here so both callbacks fire each hint exactly once.
+#' @noRd
+new_progress_hints <- function(mode = c("cli", "text")) {
+  env <- new.env(parent = emptyenv())
+  env$mode <- match.arg(mode)
+  env$warned_div <- FALSE
+  env$warned_grad <- FALSE
+  env
+}
+
+#' Emit a one-time hint. `level` is "warning" or "info". The message is passed to
+#' cli via `{msg}` interpolation so any backticks/braces in it stay literal.
+#' @noRd
+emit_progress_hint <- function(hints, level, msg) {
+  if (identical(hints$mode, "cli")) {
+    fn <- switch(level, warning = cli::cli_alert_warning, info = cli::cli_alert_info)
+    try(fn("{msg}"), silent = TRUE)
+  } else {
+    prefix <- switch(level, warning = "! ", info = "i ")
+    try(message(prefix, msg), silent = TRUE)
+  }
+  invisible(NULL)
+}
+
+#' One-shot post-warmup divergence hint. `total_post_warmup_divs` is already
+#' post-warmup-only — nuts-rs records divergences only outside tuning — so any
+#' positive count means a post-warmup divergence has been observed.
+#' @noRd
+maybe_div_hint <- function(hints, total_post_warmup_divs) {
+  if (hints$warned_div || total_post_warmup_divs <= 0L) return(invisible(NULL))
+  hints$warned_div <- TRUE
+  emit_progress_hint(
+    hints, "warning",
+    "div: divergent transitions detected — try increasing `target_accept` or reparameterizing."
+  )
+}
+
 #' @noRd
 make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
                                        max_treedepth = 10L,
@@ -422,23 +469,19 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
   last_status <- ""
   last_summary <- NULL
   last_snapshot <- NULL
-  warned_div <- FALSE
+  hints <- new_progress_hints("cli")
   warned_treedepth <- FALSE
   callback_failed <- FALSE
 
   callback <- function(snapshot) {
     if (callback_failed) return(invisible(NULL))
-    summary <- summarize_progress_snapshot(snapshot, max_treedepth = max_treedepth)
+    summary <- summarize_progress_snapshot(snapshot, max_treedepth = max_treedepth,
+                                           num_warmup = num_warmup)
     last_summary <<- summary
     last_snapshot <<- snapshot
     total_now <- min(summary$total_finished, total_steps)
 
-    if (!warned_div && summary$total_divergences > 0L) {
-      warned_div <<- TRUE
-      try(cli::cli_alert_info(
-        "! div = divergent transitions — try increasing target_accept or reparameterizing."
-      ), silent = TRUE)
-    }
+    maybe_div_hint(hints, summary$total_divergences)
 
     raw_status <- format_status_tokens(snapshot, summary, max_treedepth, chain_format)
 
@@ -487,11 +530,19 @@ make_text_progress_callback <- function(num_chains, num_warmup, num_draws,
   }
   last_printed <- rep(0L, num_chains)
   start_time <- proc.time()[["elapsed"]]
+  hints <- new_progress_hints("text")
 
   callback <- function(snapshot) {
     if (length(snapshot) == 0L) return(invisible(NULL))
     elapsed_secs <- proc.time()[["elapsed"]] - start_time
     elapsed_str <- format_progress_time(elapsed_secs)
+
+    # Post-warmup divergence hint (once). Each chain's `divergences` is already
+    # post-warmup-only, so the sum across chains is the post-warmup total.
+    total_divs <- sum(vapply(
+      snapshot, function(s) as.integer(as_progress_num(s$divergences)), integer(1)
+    ))
+    maybe_div_hint(hints, total_divs)
 
     for (s in snapshot) {
       chain_idx <- as.integer(as_progress_num(s$chain, NA_real_))

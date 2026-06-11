@@ -47,7 +47,9 @@ test_that("progress snapshot summary exposes useful sampler diagnostics", {
     )
   )
 
-  summary <- nutpieR:::summarize_progress_snapshot(snapshot)
+  # divergent_draws are warmup-inclusive 0-based indices; with num_warmup = 10
+  # the earliest (absolute 17) is sample-relative 1-indexed draw 17 - 10 + 1 = 8.
+  summary <- nutpieR:::summarize_progress_snapshot(snapshot, num_warmup = 10L)
 
   expect_equal(summary$total_finished, 210)
   expect_equal(summary$total_draws, 400)
@@ -55,11 +57,53 @@ test_that("progress snapshot summary exposes useful sampler diagnostics", {
   expect_equal(summary$total_divergences, 2L)
   expect_equal(summary$min_step_size, 0.015)
   expect_equal(summary$max_latest_num_steps, 63L)
-  expect_equal(summary$first_divergence, "chain 2 draw 17")
+  expect_equal(summary$first_divergence, "chain 2 draw 8")
   # status is "! div: 2 | <grad>" — divergence indicator present
   expect_match(summary$status, "div: 2", fixed = TRUE)
   # avg_num_steps = (900+1800)/(120+90) = 2700/210 ~= 12.86
   expect_match(summary$status, "grad/draw", fixed = TRUE)
+})
+
+test_that("div hint fires exactly once and only post-warmup", {
+  hints <- nutpieR:::new_progress_hints("text")
+  m1 <- testthat::capture_messages(nutpieR:::maybe_div_hint(hints, 3L))
+  expect_match(m1, "div: divergent transitions detected", all = FALSE)
+
+  # already warned -> no repeat
+  m2 <- testthat::capture_messages(nutpieR:::maybe_div_hint(hints, 5L))
+  expect_length(m2, 0L)
+
+  # zero post-warmup divergences never fires
+  hints2 <- nutpieR:::new_progress_hints("text")
+  expect_length(
+    testthat::capture_messages(nutpieR:::maybe_div_hint(hints2, 0L)),
+    0L
+  )
+})
+
+test_that("text callback emits the div hint once across calls", {
+  div_snapshot <- list(
+    list(chain = 1L, finished_draws = 50L, total_draws = 100L,
+         divergences = 0L, tuning = FALSE, started = TRUE,
+         latest_num_steps = 3L, total_num_steps = 150L,
+         step_size = 0.5, runtime = 1.0, divergent_draws = integer()),
+    list(chain = 2L, finished_draws = 50L, total_draws = 100L,
+         divergences = 2L, tuning = FALSE, started = TRUE,
+         latest_num_steps = 3L, total_num_steps = 150L,
+         step_size = 0.5, runtime = 1.0, divergent_draws = c(40L, 45L))
+  )
+  cb <- nutpieR:::make_text_progress_callback(
+    num_chains = 2L, num_warmup = 0L, num_draws = 100L,
+    max_treedepth = 10L, refresh = 1L
+  )
+  msgs <- testthat::capture_messages(cb(div_snapshot))
+  expect_equal(sum(grepl("divergent transitions detected", msgs)), 1L)
+
+  # advance draws so per-chain lines print again, but the hint must not repeat
+  div_snapshot[[1]]$finished_draws <- 80L
+  div_snapshot[[2]]$finished_draws <- 80L
+  msgs2 <- testthat::capture_messages(cb(div_snapshot))
+  expect_equal(sum(grepl("divergent transitions detected", msgs2)), 0L)
 })
 
 test_that("format_status_tokens replaces div and grad tokens", {
@@ -163,10 +207,10 @@ test_that("make_text_progress_callback prints one line per chain at refresh inte
     ),
     list(
       chain = 2L, finished_draws = 100L, total_draws = 1000L,
-      divergences = 1L, tuning = TRUE, started = TRUE,
+      divergences = 0L, tuning = TRUE, started = TRUE,
       latest_num_steps = 3L, total_num_steps = 300L,
       step_size = 0.5, runtime = 5.0,
-      divergent_draws = c(50L)
+      divergent_draws = integer()
     )
   )
 
@@ -175,6 +219,8 @@ test_that("make_text_progress_callback prints one line per chain at refresh inte
     max_treedepth = 10L, refresh = 50L
   )
   # Text-mode lines go to stderr via message(); each chain is one message.
+  # No divergences here, so only the two per-chain lines appear (the div hint
+  # has its own test).
   out <- capture_messages(callback(snapshot))
 
   # Should print 2 lines (one per chain), since finished=100 >= refresh=50
