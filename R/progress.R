@@ -1,16 +1,9 @@
-#' @noRd
-in_with_progress <- function() {
-  if (!requireNamespace("progressr", quietly = TRUE)) return(FALSE)
-  target <- progressr::with_progress
-  for (i in seq_len(sys.nframe())) {
-    if (identical(sys.function(i), target)) return(TRUE)
-  }
-  FALSE
-}
-
+#' cli routing depends only on the environment: an interactive session that
+#' isn't rendering a knitr document. cli itself is a hard dependency, so there
+#' is no package-availability check to make.
 #' @noRd
 should_use_cli_progress <- function() {
-  interactive() && requireNamespace("cli", quietly = TRUE)
+  interactive() && !isTRUE(getOption("knitr.in.progress"))
 }
 
 #' @noRd
@@ -18,21 +11,8 @@ resolve_progress_mode <- function(progress, refresh) {
   if (isTRUE(refresh <= 0L) || identical(progress, "none")) return("none")
   switch(
     progress,
-    "auto" = if (!should_use_cli_progress()) "text" else "cli",
-    "cli" = {
-      if (!requireNamespace("cli", quietly = TRUE)) {
-        stop("`progress = \"cli\"` requires the 'cli' package. ",
-             "Install it or set `progress = \"text\"`.", call. = FALSE)
-      }
-      "cli"
-    },
-    "progressr" = {
-      if (!requireNamespace("progressr", quietly = TRUE)) {
-        stop("`progress = \"progressr\"` requires the 'progressr' package. ",
-             "Install it or set `progress = \"cli\"`/`\"text\"`.", call. = FALSE)
-      }
-      "progressr"
-    },
+    "auto" = if (should_use_cli_progress()) "cli" else "text",
+    "cli" = "cli",
     "text" = "text",
     "none" = "none"
   )
@@ -71,8 +51,7 @@ format_draw_count_compact <- function(x) {
 #' @noRd
 format_divergence_status <- function(total_divs) {
   if (total_divs == 0L) return("div: 0")
-  warn_sym <- if (requireNamespace("cli", quietly = TRUE)) cli::symbol$warning else "!"
-  sprintf("%s div: %d", warn_sym, as.integer(total_divs))
+  sprintf("%s div: %d", cli::symbol$warning, as.integer(total_divs))
 }
 
 #' @noRd
@@ -83,7 +62,7 @@ infer_tree_depth <- function(n_steps) {
 
 #' @noRd
 style_progress_status <- function(status, color = FALSE) {
-  if (!isTRUE(color) || !requireNamespace("cli", quietly = TRUE)) return(status)
+  if (!isTRUE(color)) return(status)
   color_match <- function(s, pattern, fn) {
     m <- regexpr(pattern, s)
     if (m[[1]] > 0L) regmatches(s, m) <- fn(regmatches(s, m))
@@ -123,6 +102,29 @@ format_chain_draw_range <- function(snapshot) {
 }
 
 #' @noRd
+#' Gap-from-leader sparkline: one glyph per chain (in chain order), where the
+#' glyph height is how far that chain trails the front-runner — NOT its absolute
+#' progress. Chains that are together read as a flat baseline (all ▁); a laggard
+#' shows up as a tall bar. Returns "" for single-chain runs.
+format_chain_spread <- function(snapshot) {
+  if (length(snapshot) <= 1L) return("")
+  finished <- vapply(snapshot, function(s) as_progress_num(s$finished_draws), numeric(1))
+  totals <- vapply(snapshot, function(s) as_progress_num(s$total_draws), numeric(1))
+  total <- max(totals)
+  if (!is.finite(total) || total <= 0) return("")
+  chain_vals <- vapply(snapshot, function(s) as.integer(as_progress_num(s$chain, NA_real_)), integer(1))
+  ord <- order(ifelse(is.na(chain_vals), seq_along(snapshot), chain_vals))
+  gaps <- max(finished) - finished[ord]
+  ratio <- gaps / total
+  glyphs <- strsplit("▁▂▃▄▅▆▇█", "")[[1]]
+  lo <- 0.02  # deadzone: within 2% of the leader reads as caught up (flat)
+  hi <- 0.20  # saturate the bar once a chain trails by 20% of total draws
+  frac <- pmin(1, pmax(0, (ratio - lo) / (hi - lo)))
+  level <- 1L + as.integer(round(frac * 7))
+  paste(glyphs[level], collapse = "")
+}
+
+#' @noRd
 format_chain_lag <- function(snapshot) {
   if (length(snapshot) <= 1L) return("")
   finished <- vapply(snapshot, function(s) as_progress_num(s$finished_draws), numeric(1))
@@ -154,6 +156,8 @@ format_status_tokens <- function(snapshot, summary, max_treedepth, format_str) {
                    result, fixed = TRUE)
   if (grepl("{draws}", format_str, fixed = TRUE))
     result <- gsub("{draws}", format_chain_draw_range(snapshot), result, fixed = TRUE)
+  if (grepl("{spread}", format_str, fixed = TRUE))
+    result <- gsub("{spread}", format_chain_spread(snapshot), result, fixed = TRUE)
   if (grepl("{lag}", format_str, fixed = TRUE))
     result <- gsub("{lag}", format_chain_lag(snapshot), result, fixed = TRUE)
   if (grepl("{step}", format_str, fixed = TRUE))
@@ -292,7 +296,7 @@ format_progress_value <- function(x, digits = NULL) {
 
 #' @noRd
 progress_supports_color <- function() {
-  requireNamespace("cli", quietly = TRUE) && cli::num_ansi_colors() > 1L
+  cli::num_ansi_colors() > 1L
 }
 
 #' @noRd
@@ -365,37 +369,21 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed) 
   table <- do.call(rbind, rows)
   total_divs <- sum(table$div, na.rm = TRUE)
 
-  if (requireNamespace("cli", quietly = TRUE)) {
-    if (total_divs > 0L) {
-      cli::cli_alert_warning("Sampling complete in {elapsed_label} with {total_divs} divergent transition{?s}.")
-    } else {
-      cli::cli_alert_success("Sampling complete in {elapsed_label} with no divergences.")
-    }
-    display <- table
-    if (progress_supports_color() && any(display$div > 0L)) {
-      display$div <- ifelse(display$div > 0L, cli::col_red(display$div), display$div)
-    }
-    message(paste(render_progress_table(display), collapse = "\n"))
+  if (total_divs > 0L) {
+    cli::cli_alert_warning("Sampling complete in {elapsed_label} with {total_divs} divergent transition{?s}.")
   } else {
-    message(
-      "Sampling complete in ", elapsed_label,
-      if (total_divs > 0L) paste0(" with ", total_divs, " divergences.") else " with no divergences."
-    )
-    rows <- apply(table, 1, function(row) {
-      sprintf(
-        "  %s: %s draws, grad/draw %s, tdepth %s, step %s, div %s",
-        row[["chain"]], row[["draws"]], row[["grad/draw"]],
-        row[["tdepth"]], row[["step"]], row[["div"]]
-      )
-    })
-    message(paste(rows, collapse = "\n"))
+    cli::cli_alert_success("Sampling complete in {elapsed_label} with no divergences.")
   }
+  display <- table
+  if (progress_supports_color() && any(display$div > 0L)) {
+    display$div <- ifelse(display$div > 0L, cli::col_red(display$div), display$div)
+  }
+  message(paste(render_progress_table(display), collapse = "\n"))
 
   if (total_divs > 0L) {
-    msg <- paste0(
+    cli::cli_alert_info(
       "Try increasing `target_accept`, inspecting pairs, or reparameterizing."
     )
-    if (requireNamespace("cli", quietly = TRUE)) cli::cli_alert_info(msg) else message(msg)
   }
   invisible(NULL)
 }
@@ -417,16 +405,14 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
       total = total_steps,
       type = "custom",
       clear = FALSE,
-      extra = list(phase = "warmup"),
+      extra = list(phase = "warmup", draws = "", spread = ""),
       format = paste(
         "{cli::pb_spin} {cli::pb_extra$phase} {cli::pb_percent} |{cli::pb_bar}|",
-        "{cli::pb_current}/{cli::pb_total} {cli::pb_eta_str}",
-        "| {cli::pb_status}"
+        "draws {cli::pb_extra$draws} {cli::pb_extra$spread} {cli::pb_eta_str} | {cli::pb_status}"
       ),
       format_done = paste(
         "{cli::pb_percent} |{cli::pb_bar}|",
-        "{cli::pb_current}/{cli::pb_total}",
-        "| {cli::pb_status}"
+        "draws {cli::pb_extra$draws} | {cli::pb_status}"
       ),
       .auto_close = FALSE
     )
@@ -475,7 +461,8 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
     ok <- try(update(
       set = total_now,
       status = status,
-      extra = list(phase = summary$phase_label),
+      extra = list(phase = summary$phase_label, draws = format_chain_draw_range(snapshot),
+                   spread = format_chain_spread(snapshot)),
       id = id,
       force = TRUE
     ), silent = TRUE)
@@ -543,28 +530,6 @@ make_text_progress_callback <- function(num_chains, num_warmup, num_draws,
 
   attr(callback, "finish") <- function() invisible(NULL)
   callback
-}
-
-#' @noRd
-make_progressr_callback <- function(num_chains, num_warmup, num_draws,
-                                    max_treedepth = 10L) {
-  total_steps <- as.numeric(num_chains) * (as.numeric(num_warmup) + as.numeric(num_draws))
-  p <- progressr::progressor(steps = total_steps, on_exit = FALSE)
-  last_total <- 0
-  last_status <- ""
-  callback_failed <- FALSE
-  function(snapshot) {
-    if (callback_failed) return(invisible(NULL))
-    summary <- summarize_progress_snapshot(snapshot, max_treedepth = max_treedepth)
-    delta <- max(0, min(summary$total_finished, total_steps) - last_total)
-    last_total <<- min(summary$total_finished, total_steps)
-    full_status <- paste0(summary$phase_label, " ", summary$status)
-    if (delta == 0 && identical(full_status, last_status)) return(invisible(NULL))
-    last_status <<- full_status
-    ok <- try(p(amount = delta, message = full_status), silent = TRUE)
-    if (inherits(ok, "try-error")) callback_failed <<- TRUE
-    invisible(NULL)
-  }
 }
 
 #' @noRd

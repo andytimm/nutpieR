@@ -10,14 +10,13 @@ License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 Imports:
+    cli,
     digest,
     jsonlite,
     posterior
 Suggests:
     bayesplot,
-    cli,
     posteriordb,
-    progressr,
     reticulate,
     testthat (>= 3.0.0),
     withr

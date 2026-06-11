@@ -29,9 +29,8 @@
 #' @param refresh How often to print text progress updates, in draws per chain.
 #'   Set to `0` to suppress progress output. Default is `100`.
 #' @param progress Progress rendering mode. `"auto"` uses a `cli` progress bar
-#'   in interactive sessions when the `cli` package is installed, otherwise the
-#'   line-oriented text log. `"cli"` shows a compact sampler-aware bar,
-#'   `"progressr"` emits progressr signals for custom handlers, `"text"` prints
+#'   in interactive sessions (outside knitr), otherwise the line-oriented text
+#'   log. `"cli"` shows a compact sampler-aware bar, `"text"` prints
 #'   line-oriented updates (one line per chain, every `refresh` draws), and
 #'   `"none"` suppresses progress. `refresh = 0` always disables progress.
 #' @param chain_format A format string controlling what the status field of the
@@ -167,7 +166,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           target_accept = NULL, max_energy_error = NULL,
                           extra_doublings = NULL,
                           refresh = 100L,
-                          progress = c("auto", "cli", "progressr", "text", "none"),
+                          progress = c("auto", "cli", "text", "none"),
                           chain_format = NULL,
                           init = NULL,
                           init_mean = NULL,
@@ -224,8 +223,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     resolved_progress,
     "none" = 0L,
     "text" = as.integer(refresh),
-    "cli" = 1L,
-    "progressr" = 1L
+    "cli" = 1L
   )
   progress_max_treedepth <- if (is.null(max_treedepth)) {
     10L
@@ -293,19 +291,6 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
       attr(raw, "progress_elapsed") <- as.numeric(difftime(Sys.time(), progress_started, units = "secs"))
       raw
     },
-    "progressr" = {
-      progress_started <- Sys.time()
-      run_with_progressr <- function() {
-        progress_callback <- make_progressr_callback(
-          num_chains, num_warmup, num_draws,
-          max_treedepth = progress_max_treedepth
-        )
-        call_sample_stan(progress_callback)
-      }
-      raw <- if (in_with_progress()) run_with_progressr() else progressr::with_progress(run_with_progressr())
-      attr(raw, "progress_elapsed") <- as.numeric(difftime(Sys.time(), progress_started, units = "secs"))
-      raw
-    },
     call_sample_stan(NULL)
   )
   draws <- matrix_to_draws_array(raw$draws, num_draws, num_chains)
@@ -316,7 +301,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   attr(draws, "num_draws") <- num_draws
   attr(draws, "sampler_config") <- rename_sampler_config(raw$sampler_config)
 
-  if (resolved_progress %in% c("cli", "text", "progressr")) {
+  if (resolved_progress %in% c("cli", "text")) {
     print_sampling_diagnostic_summary(
       attr(draws, "diagnostics"),
       num_chains = num_chains,

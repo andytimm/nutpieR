@@ -17,7 +17,8 @@ nutpie_sample(
   max_energy_error = NULL,
   extra_doublings = NULL,
   refresh = 100L,
-  progress = c("auto", "cli", "progressr", "text", "none"),
+  progress = c("auto", "cli", "text", "none"),
+  chain_format = NULL,
   init = NULL,
   init_mean = NULL,
   save_warmup = FALSE,
@@ -76,11 +77,18 @@ turning point is reached. Default \code{NULL} keeps the nuts-rs default
 Set to \code{0} to suppress progress output. Default is \code{100}.}
 
 \item{progress}{Progress rendering mode. \code{"auto"} uses a \code{cli} progress bar
-in interactive sessions when the \code{cli} package is installed, otherwise the
-line-oriented text log. \code{"cli"} shows a compact sampler-aware bar,
-\code{"progressr"} emits progressr signals for custom handlers, \code{"text"} prints
-line-oriented updates, and \code{"none"} suppresses progress. \code{refresh = 0}
-always disables progress.}
+in interactive sessions (outside knitr), otherwise the line-oriented text
+log. \code{"cli"} shows a compact sampler-aware bar, \code{"text"} prints
+line-oriented updates (one line per chain, every \code{refresh} draws), and
+\code{"none"} suppresses progress. \code{refresh = 0} always disables progress.}
+
+\item{chain_format}{A format string controlling what the status field of the
+progress bar shows. Use \code{{token}} placeholders. Available tokens for
+\code{"cli"} mode: \code{{div}} (divergence count), \code{{grad}} (grad/draw),
+\code{{draws}} (per-chain draw range), \code{{lag}} (slow chain indicator),
+\code{{step}} (min step size). For \code{"text"} mode, per-chain tokens are also
+available: \code{{chain}}, \code{{phase}}, \code{{pct}}, \code{{draws}}, \code{{total}},
+\code{{elapsed}}, \code{{div}}, \code{{grad}}. \code{NULL} uses the mode-appropriate default.}
 
 \item{init}{Initial values for each chain. Single entry point that
 dispatches on the input shape:

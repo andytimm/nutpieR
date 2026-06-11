@@ -3,7 +3,7 @@ test_that("progress mode resolves to cli in interactive auto mode", {
     interactive = function() TRUE,
     .package = "base"
   )
-  skip_if_not_installed("cli")
+  withr::local_options(knitr.in.progress = NULL)
 
   expect_equal(nutpieR:::resolve_progress_mode("auto", refresh = 100L), "cli")
   expect_equal(nutpieR:::resolve_progress_mode("auto", refresh = 0L), "none")
@@ -15,6 +15,16 @@ test_that("progress mode falls back to text outside interactive sessions", {
     interactive = function() FALSE,
     .package = "base"
   )
+
+  expect_equal(nutpieR:::resolve_progress_mode("auto", refresh = 100L), "text")
+})
+
+test_that("auto mode falls back to text when rendering a knitr document", {
+  testthat::local_mocked_bindings(
+    interactive = function() TRUE,
+    .package = "base"
+  )
+  withr::local_options(knitr.in.progress = TRUE)
 
   expect_equal(nutpieR:::resolve_progress_mode("auto", refresh = 100L), "text")
 })
@@ -207,24 +217,6 @@ test_that("cli callback only advances by new draws", {
   expect_equal(updates[[1]]$set, 5)
   expect_equal(updates[[1]]$extra$phase, "warmup")  # all chains still tuning
 })
-
-test_that("explicit progressr progress samples successfully", {
-  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-  skip_if_not_installed("progressr")
-  progressr::handlers("void")
-  capture.output(
-    capture_messages(
-      draws <- nutpie_sample(
-        test_models$bernoulli, data = bernoulli_data(),
-        num_draws = 30, num_warmup = 30, num_chains = 2,
-        seed = 1L, refresh = 1L, progress = "progressr"
-      )
-    ),
-    type = "output"
-  )
-  expect_s3_class(draws, "draws_array")
-})
-
 
 test_that("explicit cli progress samples successfully", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
