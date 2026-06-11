@@ -523,7 +523,9 @@ make_text_progress_callback <- function(num_chains, num_warmup, num_draws,
       line <- gsub("{div}", format_divergence_status(div_count), line, fixed = TRUE)
       line <- gsub("{grad}", format_gradient_status(avg_lf, max_treedepth), line, fixed = TRUE)
 
-      cat(line, "\n", sep = "")
+      # stderr via message() so text lines interleave correctly with hints and
+      # the end summary, and suppressMessages() silences the whole stream.
+      message(line)
     }
     invisible(NULL)
   }

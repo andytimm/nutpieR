@@ -277,6 +277,13 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
         refresh = refresh,
         chain_format = chain_format
       )
+      # Start banner: the cli bar carries its own header, but text mode has no
+      # frame, so announce the run from R (the Rust-side banner is gone).
+      message(sprintf(
+        "Sampling %d chain%s, %s draws each (%s warmup)",
+        num_chains, if (num_chains == 1L) "" else "s",
+        format_draw_count(num_draws), format_draw_count(num_warmup)
+      ))
       progress_started <- Sys.time()
       on.exit(finish_progress_callback(progress_callback), add = TRUE)
       raw <- call_sample_stan(progress_callback)

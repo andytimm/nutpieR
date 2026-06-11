@@ -153,11 +153,6 @@ test_that("format_gradient_status uses triangle symbol when treedepth cap hit", 
 })
 
 test_that("make_text_progress_callback prints one line per chain at refresh interval", {
-  output_lines <- character(0)
-  local_cat <- function(..., sep = " ") {
-    output_lines <<- c(output_lines, paste(..., sep = sep))
-  }
-
   snapshot <- list(
     list(
       chain = 1L, finished_draws = 100L, total_draws = 1000L,
@@ -179,8 +174,8 @@ test_that("make_text_progress_callback prints one line per chain at refresh inte
     num_chains = 2L, num_warmup = 400L, num_draws = 1000L,
     max_treedepth = 10L, refresh = 50L
   )
-  # Capture cat output
-  out <- capture.output(callback(snapshot), type = "output")
+  # Text-mode lines go to stderr via message(); each chain is one message.
+  out <- capture_messages(callback(snapshot))
 
   # Should print 2 lines (one per chain), since finished=100 >= refresh=50
   expect_length(out, 2L)
@@ -190,7 +185,7 @@ test_that("make_text_progress_callback prints one line per chain at refresh inte
   expect_match(out[2], "div:", fixed = TRUE)
 
   # Second call with same snapshot should not print (since_last = 0 < 50)
-  out2 <- capture.output(callback(snapshot), type = "output")
+  out2 <- capture_messages(callback(snapshot))
   expect_length(out2, 0L)
 })
 
