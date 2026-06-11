@@ -457,14 +457,12 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
 }
 
 #' Shared one-shot hint state for the cli and text callbacks. Each hint fires at
-#' most once per run; `mode` selects how it renders. cli mode uses
-#' `cli::cli_alert_*` (the `!`/`i` symbols and their ASCII fallbacks come free);
-#' text mode writes a plain `message()` line with an ASCII prefix. The trigger
-#' flags live here so both callbacks fire each hint exactly once.
+#' most once per run; the trigger flags live here so both callbacks fire each
+#' hint exactly once. Emission is identical in both modes (see
+#' [emit_progress_hint()]).
 #' @noRd
-new_progress_hints <- function(mode = c("cli", "text")) {
+new_progress_hints <- function() {
   env <- new.env(parent = emptyenv())
-  env$mode <- match.arg(mode)
   env$warned_div <- FALSE
   env$warned_grad <- FALSE
   env$warned_spread <- FALSE
@@ -528,9 +526,8 @@ maybe_grad_hint <- function(hints, avg) {
   hints$warned_grad <- TRUE
   depth <- as.integer(round(log2(avg + 1)))
   emit_progress_hint(hints, "info", sprintf(
-    paste0("grad/draw: ~%d gradient evaluations per draw (tree depth ~ %d) ",
-           "— usually a sign of difficult posterior geometry. If that's ",
-           "unexpected for your model, it's worth a sanity check."),
+    paste0("high (~%d) gradient evaluations per draw (tree depth ~ %d) — often a ",
+           "sign of difficult posterior geometry; worth a sanity check if unexpected."),
     as.integer(round(avg)), depth
   ))
 }
@@ -552,17 +549,16 @@ maybe_spread_hint <- function(hints, snapshot) {
   ))
 }
 
-#' Emit a one-time hint. `level` is "warning" or "info". The message is passed to
-#' cli via `{msg}` interpolation so any backticks/braces in it stay literal.
+#' Emit a one-time hint to stderr. `level` picks the leading glyph: "warning"
+#' uses `cli::symbol$warning` (⚠, ASCII "!"), "info" uses `cli::symbol$info`
+#' (ℹ, ASCII "i") — the same glyphs the status-line tokens use, so the bar and
+#' the hints share one symbol vocabulary. Both cli and text modes go through
+#' `message()`, keeping the whole progress stream on stderr and silenceable with
+#' `suppressMessages()`.
 #' @noRd
 emit_progress_hint <- function(hints, level, msg) {
-  if (identical(hints$mode, "cli")) {
-    fn <- switch(level, warning = cli::cli_alert_warning, info = cli::cli_alert_info)
-    try(fn("{msg}"), silent = TRUE)
-  } else {
-    prefix <- switch(level, warning = "! ", info = "i ")
-    try(message(prefix, msg), silent = TRUE)
-  }
+  sym <- switch(level, warning = cli::symbol$warning, info = cli::symbol$info)
+  try(message(sym, " ", msg), silent = TRUE)
   invisible(NULL)
 }
 
@@ -615,7 +611,7 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
   last_status <- ""
   last_summary <- NULL
   last_snapshot <- NULL
-  hints <- new_progress_hints("cli")
+  hints <- new_progress_hints()
   callback_failed <- FALSE
 
   callback <- function(snapshot) {
@@ -678,7 +674,7 @@ make_text_progress_callback <- function(num_chains, num_warmup, num_draws,
   }
   last_printed <- rep(0L, num_chains)
   start_time <- proc.time()[["elapsed"]]
-  hints <- new_progress_hints("text")
+  hints <- new_progress_hints()
 
   callback <- function(snapshot) {
     if (length(snapshot) == 0L) return(invisible(NULL))

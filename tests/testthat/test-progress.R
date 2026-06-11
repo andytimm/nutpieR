@@ -65,7 +65,7 @@ test_that("progress snapshot summary exposes useful sampler diagnostics", {
 })
 
 test_that("div hint fires exactly once and only post-warmup", {
-  hints <- nutpieR:::new_progress_hints("text")
+  hints <- nutpieR:::new_progress_hints()
   m1 <- testthat::capture_messages(nutpieR:::maybe_div_hint(hints, 3L))
   expect_match(m1, "div: divergent transitions detected", all = FALSE)
 
@@ -74,7 +74,7 @@ test_that("div hint fires exactly once and only post-warmup", {
   expect_length(m2, 0L)
 
   # zero post-warmup divergences never fires
-  hints2 <- nutpieR:::new_progress_hints("text")
+  hints2 <- nutpieR:::new_progress_hints()
   expect_length(
     testthat::capture_messages(nutpieR:::maybe_div_hint(hints2, 0L)),
     0L
@@ -107,7 +107,7 @@ test_that("text callback emits the div hint once across calls", {
 })
 
 test_that("grad/draw baseline anchors at late warmup and pools exactly", {
-  hints <- nutpieR:::new_progress_hints("cli")
+  hints <- nutpieR:::new_progress_hints()
   num_warmup <- 100L  # late-warmup threshold = 0.75 * 100 = 75
 
   # Below threshold: no baseline yet, pooled average is NA.
@@ -142,12 +142,12 @@ test_that("grad/draw baseline anchors at late warmup and pools exactly", {
 })
 
 test_that("grad hint fires once above the threshold with rounded depth", {
-  hints <- nutpieR:::new_progress_hints("text")
+  hints <- nutpieR:::new_progress_hints()
   # Below GRAD_HINT_THRESHOLD (128): nothing.
   expect_length(testthat::capture_messages(nutpieR:::maybe_grad_hint(hints, 50)), 0L)
 
   m <- testthat::capture_messages(nutpieR:::maybe_grad_hint(hints, 210))
-  expect_match(m, "grad/draw: ~210 gradient evaluations per draw", all = FALSE)
+  expect_match(m, "high \\(~210\\) gradient evaluations per draw", all = FALSE)
   expect_match(m, "tree depth ~ 8", all = FALSE)  # round(log2(211)) = 8
 
   # Once only.
