@@ -458,11 +458,13 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
 
 #' Shared one-shot hint state for the cli and text callbacks. Each hint fires at
 #' most once per run; the trigger flags live here so both callbacks fire each
-#' hint exactly once. Emission is identical in both modes (see
+#' hint exactly once. `cli_bar_id` is the active cli progress bar id (cli mode),
+#' so hints can coordinate with it; `NULL` in text mode (see
 #' [emit_progress_hint()]).
 #' @noRd
-new_progress_hints <- function() {
+new_progress_hints <- function(cli_bar_id = NULL) {
   env <- new.env(parent = emptyenv())
+  env$cli_bar_id <- cli_bar_id
   env$warned_div <- FALSE
   env$warned_grad <- FALSE
   env$warned_spread <- FALSE
@@ -552,13 +554,27 @@ maybe_spread_hint <- function(hints, snapshot) {
 #' Emit a one-time hint to stderr. `level` picks the leading glyph: "warning"
 #' uses `cli::symbol$warning` (⚠, ASCII "!"), "info" uses `cli::symbol$info`
 #' (ℹ, ASCII "i") — the same glyphs the status-line tokens use, so the bar and
-#' the hints share one symbol vocabulary. Both cli and text modes go through
-#' `message()`, keeping the whole progress stream on stderr and silenceable with
+#' the hints share one symbol vocabulary.
+#'
+#' When a cli progress bar is active (`hints$cli_bar_id` set), route through
+#' `cli::cli_progress_output()` so the bar is cleared, the hint printed above it,
+#' and the bar redrawn on one line — otherwise a bare `message()` strands the
+#' bar line. Falls back to `message()` when there's no bar (text mode) or the id
+#' is unusable. Everything stays on stderr and is silenceable with
 #' `suppressMessages()`.
 #' @noRd
 emit_progress_hint <- function(hints, level, msg) {
   sym <- switch(level, warning = cli::symbol$warning, info = cli::symbol$info)
-  try(message(sym, " ", msg), silent = TRUE)
+  line <- paste0(sym, " ", msg)
+  if (!is.null(hints$cli_bar_id)) {
+    # `{line}` interpolation keeps any backticks/braces in the hint literal.
+    ok <- tryCatch({
+      cli::cli_progress_output("{line}", id = hints$cli_bar_id)
+      TRUE
+    }, error = function(e) FALSE)
+    if (isTRUE(ok)) return(invisible(NULL))
+  }
+  try(message(line), silent = TRUE)
   invisible(NULL)
 }
 
@@ -571,7 +587,7 @@ maybe_div_hint <- function(hints, total_post_warmup_divs) {
   hints$warned_div <- TRUE
   emit_progress_hint(
     hints, "warning",
-    "div: divergent transitions detected — try increasing `target_accept` or reparameterizing."
+    "div: divergent transitions detected — these can bias your results; try increasing `target_accept` or reparameterizing."
   )
 }
 
@@ -611,7 +627,7 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
   last_status <- ""
   last_summary <- NULL
   last_snapshot <- NULL
-  hints <- new_progress_hints()
+  hints <- new_progress_hints(cli_bar_id = id)
   callback_failed <- FALSE
 
   callback <- function(snapshot) {
