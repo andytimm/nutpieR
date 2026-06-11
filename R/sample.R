@@ -35,10 +35,14 @@
 #'   `"none"` suppresses progress. `refresh = 0` always disables progress.
 #' @param chain_format A format string controlling what the status field of the
 #'   progress bar shows. Use `{token}` placeholders. Available tokens for
-#'   `"cli"` mode: `{div}` (divergence count), `{grad}` (grad/draw),
-#'   `{draws}` (per-chain draw range), `{lag}` (slow chain indicator),
-#'   `{step}` (min step size). For `"text"` mode, per-chain tokens are also
-#'   available: `{chain}`, `{phase}`, `{pct}`, `{draws}`, `{total}`,
+#'   `"cli"` mode: `{div}` (post-warmup divergence count, red when positive),
+#'   `{grad}` (grad/draw, accented once it crosses the high-gradient
+#'   threshold), `{spread}` (percent-range spread across chains, e.g.
+#'   `spread 23-78%`, shown only once chains diverge enough), `{draws}`
+#'   (per-chain draw range), `{spark}` (gap-from-leader sparkline), `{lag}`
+#'   (slow chain indicator), `{step}` (min step size). The default is
+#'   `"{div} | {grad} | {spread}"`. For `"text"` mode, per-chain tokens are
+#'   also available: `{chain}`, `{phase}`, `{pct}`, `{draws}`, `{total}`,
 #'   `{elapsed}`, `{div}`, `{grad}`. `NULL` uses the mode-appropriate default.
 #' @param init Initial values for each chain. Single entry point that
 #'   dispatches on the input shape:

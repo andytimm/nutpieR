@@ -1,3 +1,28 @@
+# nutpieR 1.8.0
+
+* Progress reporting overhaul. `progress = "auto"` now shows a compact,
+  sampler-aware `cli` bar in interactive sessions (outside knitr) and a
+  line-oriented text log otherwise. The bar's status field defaults to
+  `"{div} | {grad} | {spread}"`:
+  * `{div}` — post-warmup divergence count (red when positive).
+  * `{grad}` — grad/draw, reported from a late-warmup baseline so the
+    early-warmup transient doesn't inflate it; accented once it crosses a
+    high-gradient threshold.
+  * `{spread}` — percent-range chain spread (e.g. `spread 23-78%`), shown
+    only once the started chains diverge enough.
+  * Opt-in tokens: `{spark}` (gap-from-leader sparkline), `{draws}`,
+    `{lag}`, `{step}`.
+* One-time hints explain divergences, high grad/draw, and chain spread the
+  first time each is observed, then stay out of the way.
+* The end-of-run summary reports the exact percentage of draws that hit the
+  `max_treedepth` cap and advises increasing it when that share is high.
+* All progress output (bar, hints, text-mode chain lines, end summary) now
+  goes to `stderr`, so `suppressMessages()` silences it as one stream.
+* `cli` moves from Suggests to Imports (it is now always available).
+* **Breaking:** `progress = "progressr"` is removed. Use `"cli"`, `"text"`,
+  or `"none"`. The R-callback architecture leaves room for a future custom
+  progress hook.
+
 # nutpieR 1.7.5
 
 * `save_warmup = FALSE` no longer stores warmup draws in Arrow memory before dropping them.

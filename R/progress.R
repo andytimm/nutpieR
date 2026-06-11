@@ -28,8 +28,10 @@ resolve_progress_mode <- function(progress, refresh) {
 
 #' @noRd
 as_progress_num <- function(x, default = 0) {
-  if (is.null(x) || length(x) == 0L || is.na(x)) return(default)
-  as.numeric(x)
+  # `x[[1]]` keeps the is.na() guard scalar: a length > 1 input would otherwise
+  # make `if (is.na(x))` error ("condition has length > 1").
+  if (is.null(x) || length(x) == 0L || is.na(x[[1]])) return(default)
+  as.numeric(x[[1]])
 }
 
 #' @noRd
@@ -80,12 +82,12 @@ style_progress_status <- function(status, color = FALSE) {
   color_match(status, "[▲^] [0-9.]+ grad/draw", cli::col_yellow)
 }
 
-#' @noRd
 #' Accent the grad/draw token once the average crosses GRAD_HINT_THRESHOLD (an
 #' absolute leapfrog-steps-per-draw count, not a fraction of the treedepth cap —
 #' %-at-cap advice lives in the end summary). The `▲` glyph falls back to `^`
 #' when the console can't render UTF-8; style_progress_status()'s regex matches
 #' both.
+#' @noRd
 format_gradient_status <- function(avg_lf) {
   if (!is.finite(avg_lf)) return("- grad/draw")
   label <- sprintf("%.1f grad/draw", avg_lf)
@@ -322,37 +324,6 @@ summarize_progress_snapshot <- function(snapshot, max_treedepth = 10L,
     max_runtime = max_runtime,
     status = status
   )
-}
-
-#' @noRd
-print_progress_summary <- function(summary, snapshot, elapsed = NULL) {
-  if (is.null(summary) || length(snapshot) == 0L) return(invisible(NULL))
-  elapsed <- elapsed %||% summary$max_runtime
-  message("Sampling complete in ", format_progress_time(elapsed))
-
-  rows <- lapply(snapshot, function(s) {
-    finished <- as_progress_num(s$finished_draws)
-    total_steps <- as_progress_num(s$total_num_steps)
-    avg_steps <- if (finished > 0) total_steps / finished else NA_real_
-    sprintf(
-      "  Chain %d: %d draws, %s, step %.3g, avg leapfrog %.1f, %d divergences",
-      as.integer(as_progress_num(s$chain, 0)),
-      as.integer(finished),
-      format_progress_time(as_progress_num(s$runtime)),
-      as_progress_num(s$step_size, NA_real_),
-      avg_steps,
-      as.integer(as_progress_num(s$divergences))
-    )
-  })
-  message(paste(rows, collapse = "\n"))
-  if (summary$total_divergences > 0L) {
-    message(
-      "Warning: ", summary$total_divergences,
-      " divergent transition", if (summary$total_divergences == 1L) "" else "s",
-      " after warmup. Try increasing `target_accept`, inspecting pairs, or reparameterizing."
-    )
-  }
-  invisible(NULL)
 }
 
 #' @noRd

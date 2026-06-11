@@ -84,10 +84,14 @@ line-oriented updates (one line per chain, every \code{refresh} draws), and
 
 \item{chain_format}{A format string controlling what the status field of the
 progress bar shows. Use \code{{token}} placeholders. Available tokens for
-\code{"cli"} mode: \code{{div}} (divergence count), \code{{grad}} (grad/draw),
-\code{{draws}} (per-chain draw range), \code{{lag}} (slow chain indicator),
-\code{{step}} (min step size). For \code{"text"} mode, per-chain tokens are also
-available: \code{{chain}}, \code{{phase}}, \code{{pct}}, \code{{draws}}, \code{{total}},
+\code{"cli"} mode: \code{{div}} (post-warmup divergence count, red when positive),
+\code{{grad}} (grad/draw, accented once it crosses the high-gradient
+threshold), \code{{spread}} (percent-range spread across chains, e.g.
+\verb{spread 23-78\%}, shown only once chains diverge enough), \code{{draws}}
+(per-chain draw range), \code{{spark}} (gap-from-leader sparkline), \code{{lag}}
+(slow chain indicator), \code{{step}} (min step size). The default is
+\code{"{div} | {grad} | {spread}"}. For \code{"text"} mode, per-chain tokens are
+also available: \code{{chain}}, \code{{phase}}, \code{{pct}}, \code{{draws}}, \code{{total}},
 \code{{elapsed}}, \code{{div}}, \code{{grad}}. \code{NULL} uses the mode-appropriate default.}
 
 \item{init}{Initial values for each chain. Single entry point that
