@@ -11,16 +11,20 @@ DIV_SEVERE_THRESHOLD  <- 0.10  # divergence share that means the fit is unreliab
 #' isn't rendering a knitr document. cli itself is a hard dependency, so there
 #' is no package-availability check to make.
 #' @noRd
-should_use_cli_progress <- function() {
-  interactive() && !isTRUE(getOption("knitr.in.progress"))
+should_use_cli_progress <- function(interactive = base::interactive()) {
+  interactive && !isTRUE(getOption("knitr.in.progress"))
 }
 
+#' `use_cli` is injectable so the dispatch can be tested without mocking
+#' `base::interactive()` — that mock does not take effect under `R CMD check`'s
+#' non-interactive `test_check()` run.
 #' @noRd
-resolve_progress_mode <- function(progress, refresh) {
+resolve_progress_mode <- function(progress, refresh,
+                                  use_cli = should_use_cli_progress()) {
   if (isTRUE(refresh <= 0L) || identical(progress, "none")) return("none")
   switch(
     progress,
-    "auto" = if (should_use_cli_progress()) "cli" else "text",
+    "auto" = if (use_cli) "cli" else "text",
     "cli" = "cli",
     "text" = "text",
     "none" = "none"
@@ -130,7 +134,7 @@ style_progress_status <- function(status, color = FALSE) {
     s
   }
   status <- color_match(status, "[^ ]+ div: [1-9][0-9]*", cli::col_red)
-  color_match(status, "[▲^] [0-9.]+ grad/draw", cli::col_yellow)
+  color_match(status, "[\u25b2^] [0-9.]+ grad/draw", cli::col_yellow)
 }
 
 #' Accent the grad/draw token once the average crosses GRAD_HINT_THRESHOLD (an
@@ -143,7 +147,7 @@ format_gradient_status <- function(avg_lf) {
   if (!is.finite(avg_lf)) return("- grad/draw")
   label <- sprintf("%.1f grad/draw", avg_lf)
   if (avg_lf >= GRAD_HINT_THRESHOLD) {
-    accent <- if (cli::is_utf8_output()) "▲" else "^"
+    accent <- if (cli::is_utf8_output()) "\u25b2" else "^"
     paste(accent, label)
   } else {
     label
@@ -200,7 +204,7 @@ format_chain_spark <- function(snapshot) {
   ord <- order(ifelse(is.na(chain_vals), seq_along(snapshot), chain_vals))
   gaps <- max(finished) - finished[ord]
   ratio <- gaps / total
-  glyphs <- strsplit("▁▂▃▄▅▆▇█", "")[[1]]
+  glyphs <- strsplit("\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588", "")[[1]]
   lo <- 0.02  # deadzone: within 2% of the leader reads as caught up (flat)
   hi <- 0.20  # saturate the bar once a chain trails by 20% of total draws
   frac <- pmin(1, pmax(0, (ratio - lo) / (hi - lo)))
@@ -459,7 +463,7 @@ sampling_summary_table <- function(diagnostics) {
     idx <- as.integer(diagnostics$chain) == ch
     n <- sum(idx)
     step <- if (!is.null(diagnostics$step_size)) {
-      tail(stats::na.omit(as.numeric(diagnostics$step_size[idx])), 1)
+      utils::tail(stats::na.omit(as.numeric(diagnostics$step_size[idx])), 1)
     } else {
       numeric()
     }
@@ -576,7 +580,7 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
     cli::cli_alert_warning(
       paste0(
         "Sampling complete in {elapsed_label} with no divergences, but {cap_pct} ",
-        "of draws hit the max_treedepth cap — increasing `max_treedepth` may ",
+        "of draws hit the max_treedepth cap \u2014 increasing `max_treedepth` may ",
         "help, but also check geometry if trajectories stay long."
       )
     )
@@ -600,7 +604,7 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
   if (total_divs > 0L && is.finite(cap_frac) && cap_frac >= CAP_SUMMARY_THRESHOLD) {
     cli::cli_alert_info(
       paste0(
-        "{cap_pct} of draws hit the max_treedepth cap — increasing ",
+        "{cap_pct} of draws hit the max_treedepth cap \u2014 increasing ",
         "`max_treedepth` may help, but also check geometry if trajectories ",
         "stay long."
       )
@@ -697,7 +701,7 @@ maybe_grad_hint <- function(hints, avg) {
   hints$warned_grad <- TRUE
   depth <- as.integer(round(log2(avg + 1)))
   emit_progress_hint(hints, "info", sprintf(
-    paste0("grad/draw: ~%d gradient evaluations per draw (tree depth ~%d) — ",
+    paste0("grad/draw: ~%d gradient evaluations per draw (tree depth ~%d) \u2014 ",
            "sampling is taking long trajectories; often a sign of difficult ",
            "geometry or incomplete adaptation, ",
            "worth checking if unexpected."),
@@ -715,7 +719,7 @@ maybe_spread_hint <- function(hints, snapshot) {
   if (length(fracs) < 2L) return(invisible(NULL))
   hints$warned_spread <- TRUE
   emit_progress_hint(hints, "info", sprintf(
-    paste0("spread: chain progress is uneven (slowest %d%%, fastest %d%%) — often ",
+    paste0("spread: chain progress is uneven (slowest %d%%, fastest %d%%) \u2014 often ",
            "one chain adapted a smaller step size or is in a harder region of ",
            "the posterior. Adding to status line."),
     as.integer(round(100 * min(fracs))), as.integer(round(100 * max(fracs)))
@@ -758,7 +762,7 @@ maybe_div_hint <- function(hints, total_post_warmup_divs) {
   hints$warned_div <- TRUE
   emit_progress_hint(
     hints, "warning",
-    "div: divergent transitions detected — these can bias your results; try increasing `target_accept` or reparameterizing."
+    "div: divergent transitions detected \u2014 these can bias your results; try increasing `target_accept` or reparameterizing."
   )
 }
 

@@ -1,32 +1,39 @@
-test_that("progress mode resolves to cli in interactive auto mode", {
-  testthat::local_mocked_bindings(
-    interactive = function() TRUE,
-    .package = "base"
+test_that("progress mode resolves to cli when the session supports it", {
+  expect_equal(
+    nutpieR:::resolve_progress_mode("auto", refresh = 100L, use_cli = TRUE),
+    "cli"
   )
+  expect_equal(
+    nutpieR:::resolve_progress_mode("auto", refresh = 0L, use_cli = TRUE),
+    "none"
+  )
+  expect_equal(
+    nutpieR:::resolve_progress_mode("none", refresh = 100L, use_cli = TRUE),
+    "none"
+  )
+})
+
+test_that("progress mode falls back to text when cli is unavailable", {
+  expect_equal(
+    nutpieR:::resolve_progress_mode("auto", refresh = 100L, use_cli = FALSE),
+    "text"
+  )
+})
+
+test_that("cli is enabled interactively but disabled while knitting", {
   withr::local_options(knitr.in.progress = NULL)
+  expect_true(nutpieR:::should_use_cli_progress(interactive = TRUE))
+  expect_false(nutpieR:::should_use_cli_progress(interactive = FALSE))
 
-  expect_equal(nutpieR:::resolve_progress_mode("auto", refresh = 100L), "cli")
-  expect_equal(nutpieR:::resolve_progress_mode("auto", refresh = 0L), "none")
-  expect_equal(nutpieR:::resolve_progress_mode("none", refresh = 100L), "none")
-})
-
-test_that("progress mode falls back to text outside interactive sessions", {
-  testthat::local_mocked_bindings(
-    interactive = function() FALSE,
-    .package = "base"
-  )
-
-  expect_equal(nutpieR:::resolve_progress_mode("auto", refresh = 100L), "text")
-})
-
-test_that("auto mode falls back to text when rendering a knitr document", {
-  testthat::local_mocked_bindings(
-    interactive = function() TRUE,
-    .package = "base"
-  )
   withr::local_options(knitr.in.progress = TRUE)
-
-  expect_equal(nutpieR:::resolve_progress_mode("auto", refresh = 100L), "text")
+  expect_false(nutpieR:::should_use_cli_progress(interactive = TRUE))
+  expect_equal(
+    nutpieR:::resolve_progress_mode(
+      "auto", refresh = 100L,
+      use_cli = nutpieR:::should_use_cli_progress(interactive = TRUE)
+    ),
+    "text"
+  )
 })
 
 test_that("chain_format must be a scalar string with mode-specific tokens", {
