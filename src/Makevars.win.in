@@ -8,7 +8,11 @@ export PATH := $(CARGO_BIN):$(PATH)
 TARGET_DIR = $(TEMP)/nutpieR-rust-target
 LIBDIR = $(TARGET_DIR)/$(TARGET)/@LIBDIR@
 STATLIB = $(LIBDIR)/libnutpieR.a
-PKG_LIBS = -L$(LIBDIR) -lnutpieR -lws2_32 -ladvapi32 -luserenv -lbcrypt -lntdll
+# -lcrypt32 resolves the Windows CryptoAPI `Cert*` symbols pulled in by
+# rustls-platform-verifier / ureq (via bridgestan's download-bridgestan-src
+# feature). The mingw (x86_64-pc-windows-gnu) toolchain does not auto-emit this
+# link flag the way MSVC does, so it must be listed explicitly.
+PKG_LIBS = -L$(LIBDIR) -lnutpieR -lws2_32 -ladvapi32 -luserenv -lbcrypt -lntdll -lcrypt32
 
 all: $(SHLIB) rust_clean
 

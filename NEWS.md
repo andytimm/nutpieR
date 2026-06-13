@@ -22,6 +22,8 @@
 * **Breaking:** `progress = "progressr"` is removed. Use `"cli"`, `"text"`,
   or `"none"`. The R-callback architecture leaves room for a future custom
   progress hook.
+* Windows build fix: link `crypt32` so the CryptoAPI symbols pulled in by
+  bridgestan's source-download path resolve under the mingw toolchain.
 
 # nutpieR 1.7.5
 
