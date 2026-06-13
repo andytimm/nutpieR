@@ -118,7 +118,7 @@ format_divergence_status <- function(total_divs) {
 #' @noRd
 infer_tree_depth <- function(n_steps) {
   if (!is.finite(n_steps) || n_steps <= 0) return(NA_integer_)
-  as.integer(ceiling(log2(n_steps + 1)))
+  as.integer(floor(log2(n_steps)))
 }
 
 #' @noRd
@@ -511,7 +511,7 @@ sampling_summary_table <- function(diagnostics) {
 #' Fraction of sampled draws that hit the max tree depth cap. Prefers nuts-rs's
 #' own `maxdepth_reached` flag — the same field `print.nutpie_diagnostics()`
 #' reports — so the two never disagree. Falls back to `depth >= max_treedepth`,
-#' then `n_steps >= 2^max_treedepth - 1`, when that flag is absent. Returns `NA`
+#' then `n_steps >= 2^max_treedepth`, when that flag is absent. Returns `NA`
 #' when none is available.
 #' @noRd
 fraction_at_treedepth_cap <- function(diagnostics, max_treedepth) {
@@ -522,7 +522,7 @@ fraction_at_treedepth_cap <- function(diagnostics, max_treedepth) {
   } else if (!is.null(diagnostics$depth)) {
     at_cap <- as.numeric(diagnostics$depth) >= as.numeric(max_treedepth)
   } else if (!is.null(diagnostics$n_steps)) {
-    at_cap <- as.numeric(diagnostics$n_steps) >= (2^as.numeric(max_treedepth) - 1)
+    at_cap <- as.numeric(diagnostics$n_steps) >= 2^as.numeric(max_treedepth)
   } else {
     return(NA_real_)
   }
@@ -574,7 +574,11 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
     )
   } else if (is.finite(cap_frac) && cap_frac >= CAP_SUMMARY_THRESHOLD) {
     cli::cli_alert_warning(
-      "Sampling complete in {elapsed_label} with no divergences, but {cap_pct} of draws hit the max_treedepth cap — consider increasing `max_treedepth`."
+      paste0(
+        "Sampling complete in {elapsed_label} with no divergences, but {cap_pct} ",
+        "of draws hit the max_treedepth cap — increasing `max_treedepth` may ",
+        "help, but also check geometry if trajectories stay long."
+      )
     )
   } else {
     cli::cli_alert_success("Sampling complete in {elapsed_label} with no divergences.")
@@ -595,7 +599,11 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
   # divergence headlines do not, so the standalone cap line fires only there.
   if (total_divs > 0L && is.finite(cap_frac) && cap_frac >= CAP_SUMMARY_THRESHOLD) {
     cli::cli_alert_info(
-      "{cap_pct} of draws hit the max_treedepth cap — consider increasing `max_treedepth`."
+      paste0(
+        "{cap_pct} of draws hit the max_treedepth cap — increasing ",
+        "`max_treedepth` may help, but also check geometry if trajectories ",
+        "stay long."
+      )
     )
   }
   invisible(NULL)

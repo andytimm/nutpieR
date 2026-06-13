@@ -332,10 +332,17 @@ test_that("end summary escalates severe divergence fractions", {
   expect_false(grepl("Try increasing `target_accept`", joined, fixed = TRUE))
 })
 
+test_that("inferred treedepth matches nuts-rs n_steps scale", {
+  expect_equal(nutpieR:::infer_tree_depth(7L), 2L)
+  expect_equal(nutpieR:::infer_tree_depth(63L), 5L)
+  expect_equal(nutpieR:::infer_tree_depth(255L), 7L)
+  expect_equal(nutpieR:::infer_tree_depth(271L), 8L)
+})
+
 test_that("fraction_at_treedepth_cap falls back to n_steps when no depth column", {
   diags <- list(
     chain = rep(1L, 10),
-    n_steps = c(rep(1023, 2), rep(7, 8))  # 2/10 >= 2^10 - 1 = 1023
+    n_steps = c(rep(1024, 2), rep(7, 8))  # 2/10 >= 2^10
   )
   expect_equal(nutpieR:::fraction_at_treedepth_cap(diags, 10L), 0.2)
   expect_true(is.na(nutpieR:::fraction_at_treedepth_cap(list(chain = 1L), 10L)))
@@ -622,7 +629,7 @@ test_that("text progress supports the treedepth token", {
     step_size = 0.5, runtime = 1, divergent_draws = integer()
   ))
   out <- testthat::capture_messages(callback(snapshot))
-  expect_match(out, "c1 tdepth: 3", fixed = TRUE)
+  expect_match(out, "c1 tdepth: 2", fixed = TRUE)
 })
 
 test_that("text grad token switches to per-chain late-warmup baseline", {
