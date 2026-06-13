@@ -52,10 +52,12 @@ compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__
 #'   when expanding each draw. Setting this `FALSE` skips the GQ block
 #'   (including any `*_rng` calls) entirely. Must imply `include_tp = TRUE`
 #'   when `TRUE`, since GQ may reference TP.
+#' @param progress_callback NULL or an R closure invoked on each poll wakeup
+#'   with one argument: a list of per-chain progress snapshots.
 #' @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 #'   sampler_config (JSON), and optionally warmup_draws and warmup_diagnostics.
 #' @noRd
-sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq) .Call(wrap__sample_stan, handle, num_draws, num_warmup, num_chains, seed, refresh, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq)
+sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq, progress_callback) .Call(wrap__sample_stan, handle, num_draws, num_warmup, num_chains, seed, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq, progress_callback)
 
 #' Open a BridgeStan model and return an `ExternalPtr<BSHandle>` that caches
 #' parameter-name metadata. The handle may be used by any of the `bs_*`

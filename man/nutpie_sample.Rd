@@ -17,6 +17,8 @@ nutpie_sample(
   max_energy_error = NULL,
   extra_doublings = NULL,
   refresh = 100L,
+  progress = c("auto", "cli", "text", "none"),
+  chain_format = NULL,
   init = NULL,
   init_mean = NULL,
   save_warmup = FALSE,
@@ -71,8 +73,30 @@ is treated as a divergence. Default \code{NULL} keeps the nuts-rs default.}
 turning point is reached. Default \code{NULL} keeps the nuts-rs default
 (currently 0).}
 
-\item{refresh}{How often to print progress updates, in draws per chain.
+\item{refresh}{How often to print text progress updates, in draws per chain.
 Set to \code{0} to suppress progress output. Default is \code{100}.}
+
+\item{progress}{Progress rendering mode. \code{"auto"} uses a \code{cli} progress bar
+in interactive sessions (outside knitr), otherwise the line-oriented text
+log. \code{"cli"} shows a compact sampler-aware bar, \code{"text"} prints
+line-oriented updates (one line per chain, every \code{refresh} draws), and
+\code{"none"} suppresses progress. \code{refresh = 0} always disables progress.
+In non-interactive scripts, use \code{"text"} for live log output; forced
+\code{"cli"} output may only render the final summary.}
+
+\item{chain_format}{A format string controlling what the status field of the
+progress bar shows. Use \code{{token}} placeholders. Available tokens for
+\code{"cli"} mode: \code{{div}} (post-warmup divergence count, red when positive),
+\code{{grad}} (grad/draw, accented once it crosses the high-gradient
+threshold), \code{{spread}} (percent-range spread across chains, e.g.
+\verb{spread 23-78\%}, shown only once chains diverge enough), \code{{draws}}
+(per-chain draw range), \code{{spark}} (gap-from-leader sparkline), \code{{lag}}
+(slow chain indicator), \code{{step}} (min step size), \code{{tdepth}} (latest
+treedepth). The default is \code{"{div} | {grad} | {spread}"}. For \code{"text"}
+mode, per-chain tokens are
+also available: \code{{chain}}, \code{{phase}}, \code{{pct}}, \code{{draws}}, \code{{total}},
+\code{{elapsed}}, \code{{div}}, \code{{grad}}, \code{{tdepth}}. \code{NULL} uses the
+mode-appropriate default.}
 
 \item{init}{Initial values for each chain. Single entry point that
 dispatches on the input shape:

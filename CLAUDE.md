@@ -45,7 +45,7 @@ Rust layer (extendr crate)
     │  - Sampler::new() runs parallel chains via rayon
     │  - returns draws via Arrow (zero-copy to R via nanoarrow)
     │
-    ├── nuts-rs 0.17.x (NUTS sampler, "arrow" feature)
+    ├── nuts-rs 0.18.x (NUTS sampler, "arrow" feature)
     ├── bridgestan 2.7.x (patched — pre-generated bindings, no bindgen)
     └── arrow-extendr (Arrow C Data Interface for R ↔ Rust)
 ```
@@ -93,7 +93,23 @@ devtools::check()
 
 See `tests/README.md` for the full list of optional test env vars and the cross-implementation comparison script.
 
-**Important:** `devtools::load_all()` doesn't work well — debug builds are ~269MB and `pkgload::load_dll()` can't handle them. Always use `devtools::install()`.
+**Testing notes:** `devtools::test()` (which uses `load_all()`) is the normal
+loop; `devtools::test(filter = "progress")` iterates fast on one file. Two
+caveats:
+
+- A **full** `devtools::test()` can abort with a Rust panic in
+  `test-compile-cache.R` — extendr-api 0.9.0 trips a debug-only
+  `slice::from_raw_parts` precondition on an empty `Strings`. It's a debug-build
+  artifact; the shipped `--release` build is unaffected. Filter around it, or
+  validate the whole suite against a release install:
+  `NOT_CRAN=TRUE devtools::install(quick = TRUE)` then
+  `Rscript -e 'library(nutpieR); library(testthat); test_dir("tests/testthat")'`
+  (note: `local_mocked_bindings` of base `interactive()` doesn't take effect
+  under `test_dir`, so the `resolve_progress_mode("auto")` cli test skips/fails
+  spuriously there — it passes under `load_all`).
+- Every `devtools::install` recompiles from scratch — the Makevars wipes
+  `rust/target` after each build — so it takes minutes. Use `cargo check` in
+  `src/rust/` for fast Rust-only feedback before the full package build.
 
 ## System Requirements
 
@@ -172,7 +188,7 @@ match sampler.wait_timeout(duration) {
 ### Rust
 | Crate | Role |
 |-------|------|
-| `nuts-rs` (~0.17, features: arrow) | NUTS sampler + Arrow trace |
+| `nuts-rs` (~0.18.2, features: arrow) | NUTS sampler + Arrow trace |
 | `extendr-api` (0.8.1) | R ↔ Rust FFI |
 | `bridgestan` (~2.7, features: download-bridgestan-src) | Stan model compile + load (patched) |
 | `arrow` (~57) | Arrow arrays (must match nuts-rs) |
