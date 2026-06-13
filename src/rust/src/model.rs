@@ -52,10 +52,13 @@ fn add_tbb_to_path() {
             .join("lib")
             .join("tbb");
         if tbb_dir.exists() {
-            let Ok(current_path) = std::env::var("PATH") else { return };
-            let tbb_str = tbb_dir.to_string_lossy();
-            if !current_path.contains(&*tbb_str) {
-                std::env::set_var("PATH", format!("{};{}", tbb_str, current_path));
+            let current_path = std::env::var_os("PATH").unwrap_or_default();
+            let mut paths: Vec<PathBuf> = std::env::split_paths(&current_path).collect();
+            if !paths.iter().any(|p| p == &tbb_dir) {
+                paths.insert(0, tbb_dir);
+                if let Ok(joined) = std::env::join_paths(paths) {
+                    std::env::set_var("PATH", joined);
+                }
             }
             TBB_FOUND.store(true, Ordering::Release);
             return;
@@ -113,6 +116,63 @@ impl BSHandle {
             ndim_block_tp,
             ndim_full,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::add_tbb_to_path;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn add_tbb_to_path_uses_platform_path_separator() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let home = std::env::temp_dir().join(format!("nutpier-tbb-path-{nonce}"));
+        let tbb_dir: PathBuf = home
+            .join(".bridgestan")
+            .join("bridgestan-test")
+            .join("stan")
+            .join("lib")
+            .join("stan_math")
+            .join("lib")
+            .join("tbb");
+        std::fs::create_dir_all(&tbb_dir).unwrap();
+
+        let old_home = std::env::var_os("HOME");
+        let old_userprofile = std::env::var_os("USERPROFILE");
+        let old_path = std::env::var_os("PATH");
+
+        std::env::set_var("HOME", &home);
+        std::env::remove_var("USERPROFILE");
+        std::env::set_var("PATH", std::env::join_paths(["/usr/bin", "/bin"]).unwrap());
+
+        add_tbb_to_path();
+
+        let joined = std::env::var_os("PATH").unwrap();
+        let paths: Vec<PathBuf> = std::env::split_paths(&joined).collect();
+        assert_eq!(paths.first(), Some(&tbb_dir));
+        assert!(paths.iter().any(|p| p == PathBuf::from("/usr/bin").as_path()));
+        assert!(paths.iter().any(|p| p == PathBuf::from("/bin").as_path()));
+
+        if let Some(v) = old_home {
+            std::env::set_var("HOME", v);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(v) = old_userprofile {
+            std::env::set_var("USERPROFILE", v);
+        } else {
+            std::env::remove_var("USERPROFILE");
+        }
+        if let Some(v) = old_path {
+            std::env::set_var("PATH", v);
+        } else {
+            std::env::remove_var("PATH");
+        }
     }
 }
 

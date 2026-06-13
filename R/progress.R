@@ -164,6 +164,16 @@ format_chain_draw_range <- function(snapshot) {
   }
 }
 
+#' @noRd
+running_chain_snapshot <- function(snapshot) {
+  Filter(function(s) {
+    if (!isTRUE(s$started)) return(FALSE)
+    total <- as_progress_num(s$total_draws)
+    finished <- as_progress_num(s$finished_draws)
+    is.finite(total) && total > 0 && finished < total
+  }, snapshot)
+}
+
 #' Gap-from-leader sparkline: one glyph per chain (in chain order), where the
 #' glyph height is how far that chain trails the front-runner — NOT its absolute
 #' progress. Chains that are together read as a flat baseline (all ▁); a laggard
@@ -171,6 +181,7 @@ format_chain_draw_range <- function(snapshot) {
 #' token (never in the default format); the percent-range token is `{spread}`.
 #' @noRd
 format_chain_spark <- function(snapshot) {
+  snapshot <- running_chain_snapshot(snapshot)
   if (length(snapshot) <= 1L) return("")
   finished <- vapply(snapshot, function(s) as_progress_num(s$finished_draws), numeric(1))
   totals <- vapply(snapshot, function(s) as_progress_num(s$total_draws), numeric(1))
@@ -188,13 +199,13 @@ format_chain_spark <- function(snapshot) {
   paste(glyphs[level], collapse = "")
 }
 
-#' Per-chain progress fraction (finished/total) over *started* chains only.
-#' Unstarted chains — queued when cores < num_chains — are excluded so they
-#' don't read as a false spread at 0%.
+#' Per-chain progress fraction (finished/total) over chains that are currently
+#' running. Unstarted and already-finished chains are excluded so `cores <
+#' num_chains` queueing doesn't read as sampler pathology.
 #' @noRd
 started_chain_fractions <- function(snapshot) {
+  snapshot <- running_chain_snapshot(snapshot)
   fracs <- vapply(snapshot, function(s) {
-    if (!isTRUE(s$started)) return(NA_real_)
     total <- as_progress_num(s$total_draws)
     if (!is.finite(total) || total <= 0) return(NA_real_)
     as_progress_num(s$finished_draws) / total
@@ -231,9 +242,10 @@ format_chain_spread <- function(snapshot, active = FALSE) {
 
 #' @noRd
 format_chain_lag <- function(snapshot) {
+  snapshot <- running_chain_snapshot(snapshot)
   if (length(snapshot) <= 1L) return("")
   finished <- vapply(snapshot, function(s) as_progress_num(s$finished_draws), numeric(1))
-  med <- median(finished)
+  med <- stats::median(finished)
   if (med == 0) return("")
   lag_idx <- which(finished < med * 0.9)
   if (length(lag_idx) == 0L) return("")
@@ -567,6 +579,22 @@ pooled_grad_per_draw <- function(hints, snapshot) {
   steps_delta / draws_delta
 }
 
+#' @noRd
+chain_grad_per_draw <- function(hints, snapshot) {
+  chain <- as.integer(as_progress_num(snapshot$chain, NA_real_))
+  finished <- as_progress_num(snapshot$finished_draws)
+  if (!is.na(chain)) {
+    base <- hints$grad_baseline[[as.character(chain)]]
+    if (!is.null(base)) {
+      draws_delta <- finished - base$finished
+      if (draws_delta > 0) {
+        return((as_progress_num(snapshot$total_num_steps) - base$total) / draws_delta)
+      }
+    }
+  }
+  if (finished > 0) as_progress_num(snapshot$total_num_steps) / finished else NA_real_
+}
+
 #' One-shot grad/draw hint (informational). Fires when the late-warmup-baseline
 #' pooled average reaches GRAD_HINT_THRESHOLD. Tree depth is `round(log2(avg+1))`.
 #' max_treedepth advice deliberately lives only in the end summary, where the
@@ -695,7 +723,7 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
     update_grad_baselines(hints, snapshot, num_warmup)
     baseline_avg <- pooled_grad_per_draw(hints, snapshot)
     if (is.finite(baseline_avg)) summary$avg_num_steps <- baseline_avg
-    maybe_grad_hint(hints, summary$avg_num_steps)
+    maybe_grad_hint(hints, baseline_avg)
 
     # Spread: latch on once the started chains diverge enough, then keep the
     # {spread} token for the rest of the run (it collapses honestly as chains
@@ -764,26 +792,36 @@ make_text_progress_callback <- function(num_chains, num_warmup, num_draws,
 
       finished <- as.integer(as_progress_num(s$finished_draws))
       since_last <- finished - last_printed[chain_idx]
-      if (since_last < as.integer(refresh)) next
+      total <- as.integer(as_progress_num(s$total_draws))
+      is_finished <- total > 0L && finished >= total
+      if (since_last < as.integer(refresh) &&
+          !(is_finished && last_printed[chain_idx] < total)) {
+        next
+      }
       last_printed[chain_idx] <<- finished
 
-      total <- as.integer(as_progress_num(s$total_draws))
-      pct <- if (total > 0L) {
-        sprintf("%d%%", as.integer(round(100 * finished / total)))
+      tuning <- isTRUE(s$tuning)
+      phase_total <- if (tuning) as.integer(num_warmup) else as.integer(num_draws)
+      phase_finished <- if (tuning) {
+        min(finished, phase_total)
+      } else {
+        max(0L, min(finished - as.integer(num_warmup), phase_total))
+      }
+      pct <- if (phase_total > 0L) {
+        sprintf("%d%%", as.integer(round(100 * phase_finished / phase_total)))
       } else {
         "0%"
       }
-      phase_str <- if (isTRUE(s$tuning)) "warmup" else "sample"
-      total_steps_chain <- as_progress_num(s$total_num_steps)
-      avg_lf <- if (finished > 0L) total_steps_chain / finished else NA_real_
+      phase_str <- if (tuning) "warmup" else "sample"
+      avg_lf <- chain_grad_per_draw(hints, s)
       div_count <- as.integer(as_progress_num(s$divergences))
 
       line <- chain_format
       line <- gsub("{chain}", chain_idx, line, fixed = TRUE)
       line <- gsub("{phase}", phase_str, line, fixed = TRUE)
       line <- gsub("{pct}", pct, line, fixed = TRUE)
-      line <- gsub("{draws}", format_draw_count(finished), line, fixed = TRUE)
-      line <- gsub("{total}", format_draw_count(total), line, fixed = TRUE)
+      line <- gsub("{draws}", format_draw_count(phase_finished), line, fixed = TRUE)
+      line <- gsub("{total}", format_draw_count(phase_total), line, fixed = TRUE)
       line <- gsub("{elapsed}", elapsed_str, line, fixed = TRUE)
       line <- gsub("{div}", format_divergence_status(div_count), line, fixed = TRUE)
       line <- gsub("{grad}", format_gradient_status(avg_lf), line, fixed = TRUE)

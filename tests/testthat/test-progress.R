@@ -199,6 +199,44 @@ test_that("grad hint fires once above the threshold with rounded depth", {
   expect_length(testthat::capture_messages(nutpieR:::maybe_grad_hint(hints, 300)), 0L)
 })
 
+test_that("cli grad hint waits for the late-warmup baseline", {
+  updates <- list()
+  fake_update <- function(set = NULL, status = NULL, extra = NULL, id = NULL, force = FALSE) {
+    updates[[length(updates) + 1L]] <<- list(set = set, status = status, extra = extra)
+  }
+  callback <- nutpieR:::make_cli_progress_callback(
+    num_chains = 1L, num_warmup = 100L, num_draws = 100L,
+    id = "fake", update = fake_update, done = function(...) TRUE
+  )
+
+  early_high <- list(list(
+    chain = 1L, finished_draws = 20L, total_draws = 200L,
+    divergences = 0L, tuning = TRUE, started = TRUE,
+    latest_num_steps = 200L, total_num_steps = 4000L,
+    step_size = 0.5, runtime = 1, divergent_draws = integer()
+  ))
+  expect_equal(
+    sum(grepl("grad/draw:", testthat::capture_messages(callback(early_high)))),
+    0L
+  )
+
+  baseline <- early_high
+  baseline[[1]]$finished_draws <- 80L
+  baseline[[1]]$total_num_steps <- 16000L
+  expect_equal(
+    sum(grepl("grad/draw:", testthat::capture_messages(callback(baseline)))),
+    0L
+  )
+
+  settled_high <- baseline
+  settled_high[[1]]$finished_draws <- 100L
+  settled_high[[1]]$total_num_steps <- 20000L
+  expect_equal(
+    sum(grepl("grad/draw:", testthat::capture_messages(callback(settled_high)))),
+    1L
+  )
+})
+
 test_that("end summary reports %-at-cap from per-draw diagnostics", {
   # depth column present -> cap is depth >= max_treedepth; 4 of 20 draws = 20%.
   diags <- list(
@@ -358,6 +396,30 @@ test_that("spread token: sticky, started-chains-only, percent range", {
   )
   expect_false(nutpieR:::spread_triggered(queued_snap))
   expect_equal(nutpieR:::format_chain_spread(queued_snap, active = TRUE), "")
+
+  # Finished chains are also ignored, so an 8-on-4 style queued second wave
+  # does not look like sampler-induced spread.
+  second_wave <- list(
+    list(chain = 1L, finished_draws = 100L, total_draws = 100L, started = TRUE),
+    list(chain = 2L, finished_draws = 100L, total_draws = 100L, started = TRUE),
+    list(chain = 3L, finished_draws = 13L, total_draws = 100L, started = TRUE),
+    list(chain = 4L, finished_draws = 5L, total_draws = 100L, started = TRUE)
+  )
+  expect_false(nutpieR:::spread_triggered(second_wave))
+  expect_equal(nutpieR:::format_chain_spread(second_wave, active = TRUE), "spread 5-13%")
+})
+
+test_that("lag and spark ignore finished chains from queued earlier waves", {
+  second_wave <- list(
+    list(chain = 1L, finished_draws = 100L, total_draws = 100L, started = TRUE),
+    list(chain = 2L, finished_draws = 100L, total_draws = 100L, started = TRUE),
+    list(chain = 3L, finished_draws = 13L, total_draws = 100L, started = TRUE),
+    list(chain = 4L, finished_draws = 13L, total_draws = 100L, started = TRUE)
+  )
+
+  expect_equal(nutpieR:::format_chain_lag(second_wave), "")
+  expect_equal(nchar(nutpieR:::format_chain_spark(second_wave)), 2L)
+  expect_true(grepl("▁▁", nutpieR:::format_chain_spark(second_wave), fixed = TRUE))
 })
 
 test_that("spread hint fires once via the cli callback", {
@@ -384,16 +446,16 @@ test_that("spread hint fires once via the cli callback", {
 
 test_that("format_chain_spark renders a glyph per chain, flat when together", {
   together <- list(
-    list(chain = 1L, finished_draws = 100L, total_draws = 200L),
-    list(chain = 2L, finished_draws = 100L, total_draws = 200L)
+    list(chain = 1L, finished_draws = 100L, total_draws = 200L, started = TRUE),
+    list(chain = 2L, finished_draws = 100L, total_draws = 200L, started = TRUE)
   )
   spark <- nutpieR:::format_chain_spark(together)
   expect_equal(nchar(spark), 2L)
   expect_true(grepl("▁", spark))  # both at baseline
 
   laggard <- list(
-    list(chain = 1L, finished_draws = 200L, total_draws = 200L),
-    list(chain = 2L, finished_draws = 20L, total_draws = 200L)
+    list(chain = 1L, finished_draws = 180L, total_draws = 200L, started = TRUE),
+    list(chain = 2L, finished_draws = 20L, total_draws = 200L, started = TRUE)
   )
   spark2 <- nutpieR:::format_chain_spark(laggard)
   expect_equal(nchar(spark2), 2L)
@@ -451,6 +513,55 @@ test_that("make_text_progress_callback prints one line per chain at refresh inte
   # Second call with same snapshot should not print (since_last = 0 < 50)
   out2 <- capture_messages(callback(snapshot))
   expect_length(out2, 0L)
+})
+
+test_that("text progress reports phase-relative draws and forces final line", {
+  callback <- nutpieR:::make_text_progress_callback(
+    num_chains = 1L, num_warmup = 100L, num_draws = 80L,
+    max_treedepth = 10L, refresh = 70L
+  )
+  warmup <- list(list(
+    chain = 1L, finished_draws = 70L, total_draws = 180L,
+    divergences = 0L, tuning = TRUE, started = TRUE,
+    latest_num_steps = 3L, total_num_steps = 210L,
+    step_size = 0.5, runtime = 1, divergent_draws = integer()
+  ))
+  out1 <- capture_messages(callback(warmup))
+  expect_match(out1, "warmup 70%  70/100", fixed = TRUE)
+
+  sample <- warmup
+  sample[[1]]$finished_draws <- 140L
+  sample[[1]]$tuning <- FALSE
+  sample[[1]]$total_num_steps <- 420L
+  out2 <- capture_messages(callback(sample))
+  expect_match(out2, "sample 50%  40/80", fixed = TRUE)
+
+  done <- sample
+  done[[1]]$finished_draws <- 180L
+  done[[1]]$total_num_steps <- 540L
+  out3 <- capture_messages(callback(done))
+  expect_match(out3, "sample 100%  80/80", fixed = TRUE)
+})
+
+test_that("text grad token switches to per-chain late-warmup baseline", {
+  callback <- nutpieR:::make_text_progress_callback(
+    num_chains = 1L, num_warmup = 100L, num_draws = 100L,
+    max_treedepth = 10L, refresh = 1L
+  )
+  baseline <- list(list(
+    chain = 1L, finished_draws = 80L, total_draws = 200L,
+    divergences = 0L, tuning = TRUE, started = TRUE,
+    latest_num_steps = 200L, total_num_steps = 16000L,
+    step_size = 0.5, runtime = 1, divergent_draws = integer()
+  ))
+  invisible(capture_messages(callback(baseline)))
+
+  settled <- baseline
+  settled[[1]]$finished_draws <- 100L
+  settled[[1]]$total_num_steps <- 16140L
+  out <- capture_messages(callback(settled))
+  expect_match(out, "7.0 grad/draw", fixed = TRUE)
+  expect_false(grepl("161.4 grad/draw", paste(out, collapse = "\n"), fixed = TRUE))
 })
 
 test_that("cli callback only advances by new draws", {
