@@ -6,6 +6,7 @@ SPREAD_TRIGGER_POINTS <- 15    # percentage-point chain spread to trigger the hi
 SPREAD_MEDIAN_FLOOR   <- 0.10  # median chain must be past this fraction first
 CAP_SUMMARY_THRESHOLD <- 0.05  # %-at-cap gate for the end-of-run advice line
 DIV_SEVERE_THRESHOLD  <- 0.10  # divergence share that means the fit is unreliable
+EBFMI_THRESHOLD       <- 0.3   # per-chain E-BFMI floor (CmdStanR check_ebfmi default)
 
 #' cli routing depends only on the environment: an interactive session that
 #' isn't rendering a knitr document. cli itself is a hard dependency, so there
@@ -609,6 +610,21 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
         "stay long."
       )
     )
+  }
+
+  # E-BFMI flag — independent of the divergence/cap branches above. Energy-
+  # direction inefficiency coexists with clean within-trajectory geometry, so
+  # this is its own block, not an `else if`. Flag-only (silent when every chain
+  # is healthy), framed as "N of M chains" to match CmdStanR.
+  ebfmi <- ebfmi_per_chain(diagnostics)
+  if (!is.null(ebfmi)) {
+    n_low <- sum(is.finite(ebfmi) & ebfmi < EBFMI_THRESHOLD)
+    if (n_low > 0L) {
+      n_chains_e <- length(ebfmi)
+      cli::cli_alert_warning(
+        "{n_low} of {n_chains_e} chains had an E-BFMI below 0.3 — the posterior may have heavy tails the sampler explores inefficiently. Consider reparameterizing."
+      )
+    }
   }
   invisible(NULL)
 }

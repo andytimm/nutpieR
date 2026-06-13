@@ -1,3 +1,12 @@
+# nutpieR 1.8.1
+
+* The post-run summary flags low E-BFMI (any chain below `0.3`) with one warning
+  line; silent when every chain is healthy.
+* `nutpie_diagnostics()` now reports max R-hat, min ESS, and min E-BFMI, and
+  flags non-convergence (R-hat > `1.01`, ESS < `400`, E-BFMI < `0.3`), naming
+  the offending parameter and pointing to `posterior::summarize_draws()` for the
+  full table. Its print method drops the developer field dump.
+
 # nutpieR 1.8.0
 
 * Progress reporting overhaul. `progress = "auto"` now shows a compact,
