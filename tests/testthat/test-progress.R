@@ -36,8 +36,16 @@ test_that("chain_format must be a scalar string with mode-specific tokens", {
     "{div} | {grad}"
   )
   expect_equal(
+    nutpieR:::validate_chain_format("{div} | {tdepth}", "cli"),
+    "{div} | {tdepth}"
+  )
+  expect_equal(
     nutpieR:::validate_chain_format("[{elapsed}] c{chain}", "text"),
     "[{elapsed}] c{chain}"
+  )
+  expect_equal(
+    nutpieR:::validate_chain_format("[{elapsed}] {tdepth}", "text"),
+    "[{elapsed}] {tdepth}"
   )
   expect_error(
     nutpieR:::validate_chain_format(c("{div}", "{grad}"), "cli"),
@@ -192,11 +200,17 @@ test_that("grad hint fires once above the threshold with rounded depth", {
   expect_length(testthat::capture_messages(nutpieR:::maybe_grad_hint(hints, 50)), 0L)
 
   m <- testthat::capture_messages(nutpieR:::maybe_grad_hint(hints, 210))
-  expect_match(m, "grad/draw: high \\(~210\\) gradient evaluations per draw", all = FALSE)
-  expect_match(m, "tree depth ~ 8", all = FALSE)  # round(log2(211)) = 8
+  expect_match(m, "grad/draw: ~210 gradient evaluations per draw", all = FALSE)
+  expect_match(m, "tree depth ~8", all = FALSE)  # round(log2(211)) = 8
 
   # Once only.
   expect_length(testthat::capture_messages(nutpieR:::maybe_grad_hint(hints, 300)), 0L)
+})
+
+test_that("short elapsed times render as less than one tenth second", {
+  expect_equal(nutpieR:::format_progress_time(0), "0.0s")
+  expect_equal(nutpieR:::format_progress_time(0.04), "<0.1s")
+  expect_equal(nutpieR:::format_progress_time(0.1), "0.1s")
 })
 
 test_that("cli grad hint waits for the late-warmup baseline", {
@@ -267,6 +281,46 @@ test_that("end summary reports %-at-cap from per-draw diagnostics", {
   expect_false(grepl("max_treedepth cap", paste(msgs_low, collapse = "")))
 })
 
+test_that("end summary headline warns when treedepth cap is high without divergences", {
+  diags <- list(
+    chain = rep(1:2, each = 10),
+    n_steps = rep(3, 20),
+    depth = c(rep(10L, 4L), rep(2L, 16L)),
+    step_size = rep(0.5, 20),
+    diverging = rep(FALSE, 20)
+  )
+
+  msgs <- testthat::capture_messages(
+    nutpieR:::print_sampling_diagnostic_summary(
+      diags, num_chains = 2L, elapsed = 1, max_treedepth = 10L
+    )
+  )
+  joined <- paste(msgs, collapse = "\n")
+  expect_match(joined, "20% hit the max_treedepth cap; no divergences", fixed = TRUE)
+  expect_false(grepl("with no divergences", msgs[[1]], fixed = TRUE))
+})
+
+test_that("end summary escalates severe divergence fractions", {
+  diags <- list(
+    chain = rep(1:2, each = 10),
+    n_steps = rep(3, 20),
+    depth = rep(2L, 20),
+    step_size = rep(0.5, 20),
+    diverging = c(rep(TRUE, 3L), rep(FALSE, 17L))
+  )
+
+  msgs <- testthat::capture_messages(
+    nutpieR:::print_sampling_diagnostic_summary(
+      diags, num_chains = 2L, elapsed = 1, max_treedepth = 10L
+    )
+  )
+  joined <- paste(msgs, collapse = "\n")
+  expect_match(joined, "15.0% of post-warmup draws", fixed = TRUE)
+  expect_match(joined, "results are not reliable", fixed = TRUE)
+  expect_match(joined, "deeper problem, not just a tuning issue", fixed = TRUE)
+  expect_false(grepl("Try increasing `target_accept`", joined, fixed = TRUE))
+})
+
 test_that("fraction_at_treedepth_cap falls back to n_steps when no depth column", {
   diags <- list(
     chain = rep(1L, 10),
@@ -306,9 +360,10 @@ test_that("format_status_tokens replaces div and grad tokens", {
   )
   summary <- nutpieR:::summarize_progress_snapshot(snapshot)
 
-  result <- nutpieR:::format_status_tokens(snapshot, summary, "{div} | {grad}")
+  result <- nutpieR:::format_status_tokens(snapshot, summary, "{div} | {grad} | {tdepth}")
   expect_match(result, "div:", fixed = TRUE)
   expect_match(result, "grad/draw", fixed = TRUE)
+  expect_match(result, "tdepth:", fixed = TRUE)
 
   # div-only format
   div_only <- nutpieR:::format_status_tokens(snapshot, summary, "{div}")
@@ -541,6 +596,22 @@ test_that("text progress reports phase-relative draws and forces final line", {
   done[[1]]$total_num_steps <- 540L
   out3 <- capture_messages(callback(done))
   expect_match(out3, "sample 100%  80/80", fixed = TRUE)
+})
+
+test_that("text progress supports the treedepth token", {
+  callback <- nutpieR:::make_text_progress_callback(
+    num_chains = 1L, num_warmup = 10L, num_draws = 10L,
+    max_treedepth = 10L, refresh = 1L,
+    chain_format = "c{chain} {tdepth}"
+  )
+  snapshot <- list(list(
+    chain = 1L, finished_draws = 5L, total_draws = 20L,
+    divergences = 0L, tuning = TRUE, started = TRUE,
+    latest_num_steps = 7L, total_num_steps = 35L,
+    step_size = 0.5, runtime = 1, divergent_draws = integer()
+  ))
+  out <- testthat::capture_messages(callback(snapshot))
+  expect_match(out, "c1 tdepth: 3", fixed = TRUE)
 })
 
 test_that("text grad token switches to per-chain late-warmup baseline", {

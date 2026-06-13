@@ -5,6 +5,7 @@ GRAD_HINT_THRESHOLD   <- 128   # avg grad/draw at/above this triggers the hint +
 SPREAD_TRIGGER_POINTS <- 15    # percentage-point chain spread to trigger the hint
 SPREAD_MEDIAN_FLOOR   <- 0.10  # median chain must be past this fraction first
 CAP_SUMMARY_THRESHOLD <- 0.05  # %-at-cap gate for the end-of-run advice line
+DIV_SEVERE_THRESHOLD  <- 0.10  # divergence share that means the fit is unreliable
 
 #' cli routing depends only on the environment: an interactive session that
 #' isn't rendering a knitr document. cli itself is a hard dependency, so there
@@ -38,8 +39,8 @@ validate_chain_format <- function(chain_format, mode) {
 
   allowed <- switch(
     mode,
-    cli = c("div", "grad", "spread", "draws", "spark", "lag", "step"),
-    text = c("chain", "phase", "pct", "draws", "total", "elapsed", "div", "grad"),
+    cli = c("div", "grad", "spread", "draws", "spark", "lag", "step", "tdepth"),
+    text = c("chain", "phase", "pct", "draws", "total", "elapsed", "div", "grad", "tdepth"),
     character()
   )
   matches <- gregexpr("\\{[^{}]+\\}", chain_format, perl = TRUE)
@@ -87,6 +88,7 @@ as_progress_num <- function(x, default = 0) {
 format_progress_time <- function(seconds) {
   seconds <- as_progress_num(seconds, 0)
   if (!is.finite(seconds) || seconds < 0) seconds <- 0
+  if (seconds > 0 && seconds < 0.1) return("<0.1s")
   if (seconds < 60) return(sprintf("%.1fs", seconds))
   mins <- floor(seconds / 60)
   secs <- round(seconds %% 60)
@@ -146,6 +148,13 @@ format_gradient_status <- function(avg_lf) {
   } else {
     label
   }
+}
+
+#' @noRd
+format_treedepth_status <- function(n_steps) {
+  depth <- infer_tree_depth(as_progress_num(n_steps, NA_real_))
+  if (!is.finite(depth)) return("tdepth: -")
+  paste("tdepth:", depth)
 }
 
 #' @noRd
@@ -283,6 +292,9 @@ format_status_tokens <- function(snapshot, summary, format_str,
     result <- gsub("{lag}", format_chain_lag(snapshot), result, fixed = TRUE)
   if (grepl("{step}", format_str, fixed = TRUE))
     result <- gsub("{step}", format_min_step(snapshot), result, fixed = TRUE)
+  if (grepl("{tdepth}", format_str, fixed = TRUE))
+    result <- gsub("{tdepth}", format_treedepth_status(summary$max_latest_num_steps),
+                   result, fixed = TRUE)
   # Collapse empty segments left by tokens that returned "". Multi-pass: a run
   # of three or more empty tokens (e.g. "{div} | {spread} | {spark}") needs more
   # than one sweep because each gsub consumes a pipe non-overlapping.
@@ -491,9 +503,49 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
   })
   table <- do.call(rbind, rows)
   total_divs <- sum(table$div, na.rm = TRUE)
+  total_draws <- length(diagnostics$chain)
+  div_frac <- if (total_draws > 0L) total_divs / total_draws else NA_real_
+  per_chain_div_frac <- vapply(chains, function(ch) {
+    idx <- as.integer(diagnostics$chain) == ch
+    n <- sum(idx)
+    if (n == 0L) return(NA_real_)
+    divs <- if (!is.null(diagnostics$diverging)) {
+      sum(as.logical(diagnostics$diverging[idx]), na.rm = TRUE)
+    } else {
+      0L
+    }
+    divs / n
+  }, numeric(1))
+  severe_divergences <- is.finite(div_frac) &&
+    (div_frac >= DIV_SEVERE_THRESHOLD ||
+       any(per_chain_div_frac >= DIV_SEVERE_THRESHOLD, na.rm = TRUE))
 
-  if (total_divs > 0L) {
-    cli::cli_alert_warning("Sampling complete in {elapsed_label} with {total_divs} divergent transition{?s}.")
+  cap_frac <- fraction_at_treedepth_cap(diagnostics, max_treedepth)
+  cap_pct <- if (is.finite(cap_frac)) {
+    sprintf("%d%%", as.integer(round(100 * cap_frac)))
+  } else {
+    NA_character_
+  }
+
+  if (severe_divergences) {
+    div_pct <- sprintf("%.1f%%", 100 * div_frac)
+    cli::cli_alert_warning(
+      paste0(
+        "Sampling complete in {elapsed_label} with {total_divs} divergent transition{?s} ",
+        "({div_pct} of post-warmup draws); results are not reliable. This usually means ",
+        "the model geometry is exposing a deeper problem, not just a tuning issue. Check ",
+        "parameterization, constraints, priors, and initialization before relying on the fit."
+      )
+    )
+  } else if (total_divs > 0L) {
+    div_pct <- sprintf("%.1f%%", 100 * div_frac)
+    cli::cli_alert_warning(
+      "Sampling complete in {elapsed_label} with {total_divs} divergent transition{?s} ({div_pct} of post-warmup draws)."
+    )
+  } else if (is.finite(cap_frac) && cap_frac >= CAP_SUMMARY_THRESHOLD) {
+    cli::cli_alert_warning(
+      "Sampling complete in {elapsed_label}: {cap_pct} hit the max_treedepth cap; no divergences."
+    )
   } else {
     cli::cli_alert_success("Sampling complete in {elapsed_label} with no divergences.")
   }
@@ -503,15 +555,13 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
   }
   message(paste(render_progress_table(display), collapse = "\n"))
 
-  if (total_divs > 0L) {
+  if (total_divs > 0L && !severe_divergences) {
     cli::cli_alert_info(
-      "Try increasing `target_accept`, inspecting pairs, or reparameterizing."
+      "Try increasing `target_accept`, inspecting pairs plots, or reparameterizing."
     )
   }
 
-  cap_frac <- fraction_at_treedepth_cap(diagnostics, max_treedepth)
   if (is.finite(cap_frac) && cap_frac >= CAP_SUMMARY_THRESHOLD) {
-    cap_pct <- sprintf("%d%%", as.integer(round(100 * cap_frac)))
     cli::cli_alert_info(
       "{cap_pct} of draws hit the max_treedepth cap — consider increasing `max_treedepth`."
     )
@@ -607,8 +657,9 @@ maybe_grad_hint <- function(hints, avg) {
   hints$warned_grad <- TRUE
   depth <- as.integer(round(log2(avg + 1)))
   emit_progress_hint(hints, "info", sprintf(
-    paste0("grad/draw: high (~%d) gradient evaluations per draw (tree depth ~ %d) — ",
-           "often a sign of difficult posterior geometry; worth a sanity check if unexpected."),
+    paste0("grad/draw: ~%d gradient evaluations per draw (tree depth ~%d) — ",
+           "sampling is taking long trajectories; often geometry/adaptation, ",
+           "worth checking if unexpected."),
     as.integer(round(avg)), depth
   ))
 }
@@ -825,6 +876,7 @@ make_text_progress_callback <- function(num_chains, num_warmup, num_draws,
       line <- gsub("{elapsed}", elapsed_str, line, fixed = TRUE)
       line <- gsub("{div}", format_divergence_status(div_count), line, fixed = TRUE)
       line <- gsub("{grad}", format_gradient_status(avg_lf), line, fixed = TRUE)
+      line <- gsub("{tdepth}", format_treedepth_status(s$latest_num_steps), line, fixed = TRUE)
 
       # stderr via message() so text lines interleave correctly with hints and
       # the end summary, and suppressMessages() silences the whole stream.

@@ -13,5 +13,6 @@
 ^src/Makevars$
 ^src/Makevars\.win$
 ^benchmarks$
+^scratch$
 ^.*-plan\.md$
 ^tests/testthat/test_models/.*_model\.(so|cache_meta)$

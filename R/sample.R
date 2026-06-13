@@ -33,6 +33,8 @@
 #'   log. `"cli"` shows a compact sampler-aware bar, `"text"` prints
 #'   line-oriented updates (one line per chain, every `refresh` draws), and
 #'   `"none"` suppresses progress. `refresh = 0` always disables progress.
+#'   In non-interactive scripts, use `"text"` for live log output; forced
+#'   `"cli"` output may only render the final summary.
 #' @param chain_format A format string controlling what the status field of the
 #'   progress bar shows. Use `{token}` placeholders. Available tokens for
 #'   `"cli"` mode: `{div}` (post-warmup divergence count, red when positive),
@@ -40,10 +42,12 @@
 #'   threshold), `{spread}` (percent-range spread across chains, e.g.
 #'   `spread 23-78%`, shown only once chains diverge enough), `{draws}`
 #'   (per-chain draw range), `{spark}` (gap-from-leader sparkline), `{lag}`
-#'   (slow chain indicator), `{step}` (min step size). The default is
-#'   `"{div} | {grad} | {spread}"`. For `"text"` mode, per-chain tokens are
+#'   (slow chain indicator), `{step}` (min step size), `{tdepth}` (latest
+#'   treedepth). The default is `"{div} | {grad} | {spread}"`. For `"text"`
+#'   mode, per-chain tokens are
 #'   also available: `{chain}`, `{phase}`, `{pct}`, `{draws}`, `{total}`,
-#'   `{elapsed}`, `{div}`, `{grad}`. `NULL` uses the mode-appropriate default.
+#'   `{elapsed}`, `{div}`, `{grad}`, `{tdepth}`. `NULL` uses the
+#'   mode-appropriate default.
 #' @param init Initial values for each chain. Single entry point that
 #'   dispatches on the input shape:
 #'   \describe{

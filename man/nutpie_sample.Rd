@@ -80,7 +80,9 @@ Set to \code{0} to suppress progress output. Default is \code{100}.}
 in interactive sessions (outside knitr), otherwise the line-oriented text
 log. \code{"cli"} shows a compact sampler-aware bar, \code{"text"} prints
 line-oriented updates (one line per chain, every \code{refresh} draws), and
-\code{"none"} suppresses progress. \code{refresh = 0} always disables progress.}
+\code{"none"} suppresses progress. \code{refresh = 0} always disables progress.
+In non-interactive scripts, use \code{"text"} for live log output; forced
+\code{"cli"} output may only render the final summary.}
 
 \item{chain_format}{A format string controlling what the status field of the
 progress bar shows. Use \code{{token}} placeholders. Available tokens for
@@ -89,10 +91,12 @@ progress bar shows. Use \code{{token}} placeholders. Available tokens for
 threshold), \code{{spread}} (percent-range spread across chains, e.g.
 \verb{spread 23-78\%}, shown only once chains diverge enough), \code{{draws}}
 (per-chain draw range), \code{{spark}} (gap-from-leader sparkline), \code{{lag}}
-(slow chain indicator), \code{{step}} (min step size). The default is
-\code{"{div} | {grad} | {spread}"}. For \code{"text"} mode, per-chain tokens are
+(slow chain indicator), \code{{step}} (min step size), \code{{tdepth}} (latest
+treedepth). The default is \code{"{div} | {grad} | {spread}"}. For \code{"text"}
+mode, per-chain tokens are
 also available: \code{{chain}}, \code{{phase}}, \code{{pct}}, \code{{draws}}, \code{{total}},
-\code{{elapsed}}, \code{{div}}, \code{{grad}}. \code{NULL} uses the mode-appropriate default.}
+\code{{elapsed}}, \code{{div}}, \code{{grad}}, \code{{tdepth}}. \code{NULL} uses the
+mode-appropriate default.}
 
 \item{init}{Initial values for each chain. Single entry point that
 dispatches on the input shape:
