@@ -271,7 +271,6 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     "cli" = {
       progress_callback <- make_cli_progress_callback(
         num_chains, num_warmup, num_draws,
-        max_treedepth = progress_max_treedepth,
         chain_format = chain_format
       )
       progress_started <- Sys.time()
@@ -284,7 +283,6 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     "text" = {
       progress_callback <- make_text_progress_callback(
         num_chains, num_warmup, num_draws,
-        max_treedepth = progress_max_treedepth,
         refresh = refresh,
         chain_format = chain_format
       )

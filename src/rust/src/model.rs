@@ -127,6 +127,9 @@ mod tests {
 
     #[test]
     fn add_tbb_to_path_uses_platform_path_separator() {
+        // This exercises the first successful scan path; if another test opens
+        // a model first, `TBB_FOUND` may already be set and this test should be
+        // moved into an isolated helper that can reset the cache.
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

@@ -414,7 +414,9 @@ progress_supports_color <- function() {
 #'
 #' This must run before entering the Rust sampling call. R message handlers
 #' installed around `nutpie_sample()` are not visible from the later Rust-invoked
-#' progress callback, so the callback closures capture this value up front.
+#' progress callback, so the callback closures capture this value up front. The
+#' empty probe condition is observable to non-muffling message handlers, but it
+#' has no default output.
 #' @noRd
 progress_messages_muffled <- function() {
   muffled <- FALSE
@@ -450,6 +452,63 @@ render_progress_table <- function(table) {
   c(header, sep, body)
 }
 
+#' @noRd
+sampling_summary_table <- function(diagnostics) {
+  chains <- sort(unique(as.integer(diagnostics$chain)))
+  counts <- lapply(chains, function(ch) {
+    idx <- as.integer(diagnostics$chain) == ch
+    n <- sum(idx)
+    step <- if (!is.null(diagnostics$step_size)) {
+      tail(stats::na.omit(as.numeric(diagnostics$step_size[idx])), 1)
+    } else {
+      numeric()
+    }
+    step <- if (length(step) == 0L) NA_real_ else step[1]
+    avg_grad <- if (!is.null(diagnostics$n_steps)) {
+      mean(as.numeric(diagnostics$n_steps[idx]), na.rm = TRUE)
+    } else {
+      NA_real_
+    }
+    max_tdepth <- if (!is.null(diagnostics$depth)) {
+      max(as.numeric(diagnostics$depth[idx]), na.rm = TRUE)
+    } else if (!is.null(diagnostics$n_steps)) {
+      infer_tree_depth(max(as.numeric(diagnostics$n_steps[idx]), na.rm = TRUE))
+    } else {
+      NA_real_
+    }
+    divs <- if (!is.null(diagnostics$diverging)) {
+      sum(as.logical(diagnostics$diverging[idx]), na.rm = TRUE)
+    } else {
+      0L
+    }
+    list(
+      chain = ch,
+      draws = n,
+      avg_grad = avg_grad,
+      max_tdepth = max_tdepth,
+      step = step,
+      divs = as.integer(divs)
+    )
+  })
+  table <- do.call(rbind, lapply(counts, function(x) {
+    data.frame(
+      chain = paste0("c", x$chain),
+      draws = format_draw_count(x$draws),
+      `grad/draw` = format_progress_value(x$avg_grad, digits = 1),
+      tdepth = format_progress_value(x$max_tdepth),
+      step = if (is.finite(x$step)) sprintf("%.3g", x$step) else "NA",
+      div = x$divs,
+      check.names = FALSE
+    )
+  }))
+  list(
+    table = table,
+    chains = chains,
+    draws = vapply(counts, `[[`, integer(1), "draws"),
+    divs = vapply(counts, `[[`, integer(1), "divs")
+  )
+}
+
 #' Fraction of sampled draws that hit the max tree depth cap. Prefers nuts-rs's
 #' own `maxdepth_reached` flag — the same field `print.nutpie_diagnostics()`
 #' reports — so the two never disagree. Falls back to `depth >= max_treedepth`,
@@ -482,58 +541,12 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
     return(invisible(NULL))
   }
 
-  chains <- sort(unique(as.integer(diagnostics$chain)))
-  rows <- lapply(chains, function(ch) {
-    idx <- as.integer(diagnostics$chain) == ch
-    n <- sum(idx)
-    step <- if (!is.null(diagnostics$step_size)) {
-      tail(stats::na.omit(as.numeric(diagnostics$step_size[idx])), 1)
-    } else {
-      numeric()
-    }
-    step <- if (length(step) == 0L) NA_real_ else step[1]
-    avg_grad <- if (!is.null(diagnostics$n_steps)) {
-      mean(as.numeric(diagnostics$n_steps[idx]), na.rm = TRUE)
-    } else {
-      NA_real_
-    }
-    max_tdepth <- if (!is.null(diagnostics$depth)) {
-      max(as.numeric(diagnostics$depth[idx]), na.rm = TRUE)
-    } else if (!is.null(diagnostics$n_steps)) {
-      infer_tree_depth(max(as.numeric(diagnostics$n_steps[idx]), na.rm = TRUE))
-    } else {
-      NA_real_
-    }
-    divs <- if (!is.null(diagnostics$diverging)) {
-      sum(as.logical(diagnostics$diverging[idx]), na.rm = TRUE)
-    } else {
-      0L
-    }
-    data.frame(
-      chain = paste0("c", ch),
-      draws = format_draw_count(n),
-      `grad/draw` = format_progress_value(avg_grad, digits = 1),
-      tdepth = format_progress_value(max_tdepth),
-      step = if (is.finite(step)) sprintf("%.3g", step) else "NA",
-      div = as.integer(divs),
-      check.names = FALSE
-    )
-  })
-  table <- do.call(rbind, rows)
-  total_divs <- sum(table$div, na.rm = TRUE)
-  total_draws <- length(diagnostics$chain)
+  summary <- sampling_summary_table(diagnostics)
+  table <- summary$table
+  total_divs <- sum(summary$divs, na.rm = TRUE)
+  total_draws <- sum(summary$draws, na.rm = TRUE)
   div_frac <- if (total_draws > 0L) total_divs / total_draws else NA_real_
-  per_chain_div_frac <- vapply(chains, function(ch) {
-    idx <- as.integer(diagnostics$chain) == ch
-    n <- sum(idx)
-    if (n == 0L) return(NA_real_)
-    divs <- if (!is.null(diagnostics$diverging)) {
-      sum(as.logical(diagnostics$diverging[idx]), na.rm = TRUE)
-    } else {
-      0L
-    }
-    divs / n
-  }, numeric(1))
+  per_chain_div_frac <- ifelse(summary$draws > 0L, summary$divs / summary$draws, NA_real_)
   severe_divergences <- is.finite(div_frac) &&
     (div_frac >= DIV_SEVERE_THRESHOLD ||
        any(per_chain_div_frac >= DIV_SEVERE_THRESHOLD, na.rm = TRUE))
@@ -552,7 +565,7 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
         "Sampling complete in {elapsed_label} with {total_divs} divergent transition{?s} ",
         "({div_pct} of post-warmup draws); results are not reliable. This usually means ",
         "the model geometry is exposing a deeper problem, not just a tuning issue. Check ",
-        "parameterization, constraints, priors, and initialization before relying on the fit."
+        "parameterization, constraints, and priors before relying on the fit."
       )
     )
   } else if (total_divs > 0L) {
@@ -562,7 +575,7 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
     )
   } else if (is.finite(cap_frac) && cap_frac >= CAP_SUMMARY_THRESHOLD) {
     cli::cli_alert_warning(
-      "Sampling complete in {elapsed_label}: {cap_pct} hit the max_treedepth cap; no divergences."
+      "Sampling complete in {elapsed_label} with no divergences, but {cap_pct} of draws hit the max_treedepth cap."
     )
   } else {
     cli::cli_alert_success("Sampling complete in {elapsed_label} with no divergences.")
@@ -676,7 +689,8 @@ maybe_grad_hint <- function(hints, avg) {
   depth <- as.integer(round(log2(avg + 1)))
   emit_progress_hint(hints, "info", sprintf(
     paste0("grad/draw: ~%d gradient evaluations per draw (tree depth ~%d) — ",
-           "sampling is taking long trajectories; often geometry/adaptation, ",
+           "sampling is taking long trajectories; often a sign of difficult ",
+           "geometry or incomplete adaptation, ",
            "worth checking if unexpected."),
     as.integer(round(avg)), depth
   ))
@@ -741,7 +755,6 @@ maybe_div_hint <- function(hints, total_post_warmup_divs) {
 
 #' @noRd
 make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
-                                       max_treedepth = 10L,
                                        chain_format = NULL,
                                        id = NULL,
                                        update = NULL,
@@ -830,7 +843,6 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
 
 #' @noRd
 make_text_progress_callback <- function(num_chains, num_warmup, num_draws,
-                                        max_treedepth = 10L,
                                         refresh = 10L,
                                         chain_format = NULL) {
   if (is.null(chain_format)) {

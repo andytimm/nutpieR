@@ -147,7 +147,7 @@ test_that("text callback emits the div hint once across calls", {
   )
   cb <- nutpieR:::make_text_progress_callback(
     num_chains = 2L, num_warmup = 0L, num_draws = 100L,
-    max_treedepth = 10L, refresh = 1L
+    refresh = 1L
   )
   msgs <- testthat::capture_messages(cb(div_snapshot))
   expect_equal(sum(grepl("divergent transitions detected", msgs)), 1L)
@@ -307,8 +307,8 @@ test_that("end summary headline warns when treedepth cap is high without diverge
     )
   )
   joined <- paste(msgs, collapse = "\n")
-  expect_match(joined, "20% hit the max_treedepth cap; no divergences", fixed = TRUE)
-  expect_false(grepl("with no divergences", msgs[[1]], fixed = TRUE))
+  expect_match(joined, "with no divergences, but 20% of draws hit the max_treedepth cap", fixed = TRUE)
+  expect_false(grepl("with no divergences.", msgs[[1]], fixed = TRUE))
 })
 
 test_that("end summary escalates severe divergence fractions", {
@@ -562,7 +562,7 @@ test_that("make_text_progress_callback prints one line per chain at refresh inte
 
   callback <- nutpieR:::make_text_progress_callback(
     num_chains = 2L, num_warmup = 400L, num_draws = 1000L,
-    max_treedepth = 10L, refresh = 50L
+    refresh = 50L
   )
   # Text-mode lines go to stderr via message(); each chain is one message.
   # No divergences here, so only the two per-chain lines appear (the div hint
@@ -584,7 +584,7 @@ test_that("make_text_progress_callback prints one line per chain at refresh inte
 test_that("text progress reports phase-relative draws and forces final line", {
   callback <- nutpieR:::make_text_progress_callback(
     num_chains = 1L, num_warmup = 100L, num_draws = 80L,
-    max_treedepth = 10L, refresh = 70L
+    refresh = 70L
   )
   warmup <- list(list(
     chain = 1L, finished_draws = 70L, total_draws = 180L,
@@ -612,7 +612,7 @@ test_that("text progress reports phase-relative draws and forces final line", {
 test_that("text progress supports the treedepth token", {
   callback <- nutpieR:::make_text_progress_callback(
     num_chains = 1L, num_warmup = 10L, num_draws = 10L,
-    max_treedepth = 10L, refresh = 1L,
+    refresh = 1L,
     chain_format = "c{chain} {tdepth}"
   )
   snapshot <- list(list(
@@ -628,7 +628,7 @@ test_that("text progress supports the treedepth token", {
 test_that("text grad token switches to per-chain late-warmup baseline", {
   callback <- nutpieR:::make_text_progress_callback(
     num_chains = 1L, num_warmup = 100L, num_draws = 100L,
-    max_treedepth = 10L, refresh = 1L
+    refresh = 1L
   )
   baseline <- list(list(
     chain = 1L, finished_draws = 80L, total_draws = 200L,
