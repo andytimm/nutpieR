@@ -503,7 +503,6 @@ sampling_summary_table <- function(diagnostics) {
   }))
   list(
     table = table,
-    chains = chains,
     draws = vapply(counts, `[[`, integer(1), "draws"),
     divs = vapply(counts, `[[`, integer(1), "divs")
   )
@@ -575,7 +574,7 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
     )
   } else if (is.finite(cap_frac) && cap_frac >= CAP_SUMMARY_THRESHOLD) {
     cli::cli_alert_warning(
-      "Sampling complete in {elapsed_label} with no divergences, but {cap_pct} of draws hit the max_treedepth cap."
+      "Sampling complete in {elapsed_label} with no divergences, but {cap_pct} of draws hit the max_treedepth cap — consider increasing `max_treedepth`."
     )
   } else {
     cli::cli_alert_success("Sampling complete in {elapsed_label} with no divergences.")
@@ -592,7 +591,9 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
     )
   }
 
-  if (is.finite(cap_frac) && cap_frac >= CAP_SUMMARY_THRESHOLD) {
+  # The no-divergence headline already states the cap fact and advice; the
+  # divergence headlines do not, so the standalone cap line fires only there.
+  if (total_divs > 0L && is.finite(cap_frac) && cap_frac >= CAP_SUMMARY_THRESHOLD) {
     cli::cli_alert_info(
       "{cap_pct} of draws hit the max_treedepth cap — consider increasing `max_treedepth`."
     )
