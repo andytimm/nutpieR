@@ -122,11 +122,13 @@ caveats:
 
 ## BridgeStan Patch
 
-We carry a patched bridgestan 2.7.0 in `src/rust/patches/bridgestan-2.7.0/`, referenced via `[patch.crates-io]` in Cargo.toml. Two changes from upstream:
+We carry a patched bridgestan 2.7.0 in `src/rust/patches/bridgestan-2.7.0/`, referenced via `[patch.crates-io]` in Cargo.toml. Three changes from upstream:
 
 1. **Pre-generated bindings** (`src/pregenerated_bindings.rs`): bindgen output for 22 `bs_*` FFI symbols, generated once. The `build.rs` copies this file instead of running bindgen. Eliminates LLVM/libclang requirement on all platforms.
 
 2. **Root cause**: upstream bridgestan runs bindgen with `dynamic_link_require_all(true)` and no allowlist. On Windows, system headers inject CRT symbols that `from_library()` then tries to resolve from the Stan model DLL — causing `GetProcAddress` error 127. The allowlist filters (`bs_.*`) fix this. Worth upstreaming.
+
+3. **OS trust store for downloads** (`src/download.rs`): `download_bridgestan_src()` builds a ureq agent with `RootCerts::PlatformVerifier` (ureq `platform-verifier` feature) instead of the bundled webpki-roots, so TLS-intercepting corporate proxies with a system-installed CA work (issue #30). Also worth upstreaming.
 
 **Regenerating bindings**: If bridgestan updates its C API, temporarily restore `bindgen` in the patch's `Cargo.toml`, build, copy `$OUT_DIR/bindings.rs` → `src/pregenerated_bindings.rs`.
 

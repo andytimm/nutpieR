@@ -5,6 +5,7 @@ use log::info;
 use std::io::Read;
 use std::{env::temp_dir, fs, path::PathBuf};
 use tar::Archive;
+use ureq::tls::{RootCerts, TlsConfig};
 
 /// Download and unzip the BridgeStan source distribution for this version
 /// to `~/.bridgestan/bridgestan-$VERSION`.
@@ -29,7 +30,20 @@ pub fn download_bridgestan_src() -> Result<PathBuf> {
         let url = "https://github.com/roualdes/bridgestan/releases/download/".to_owned()
             + format!("v{VERSION}/bridgestan-{VERSION}.tar.gz").as_str();
 
-        let response = ureq::get(url.as_str())
+        // Verify TLS against the OS trust store rather than ureq's bundled
+        // webpki-roots, so corporate-proxy CAs installed on the system are
+        // honored (https://github.com/andytimm/nutpieR/issues/30).
+        let agent = ureq::Agent::new_with_config(
+            ureq::Agent::config_builder()
+                .tls_config(
+                    TlsConfig::builder()
+                        .root_certs(RootCerts::PlatformVerifier)
+                        .build(),
+                )
+                .build(),
+        );
+        let response = agent
+            .get(url.as_str())
             .call()
             .map_err(|e| BridgeStanError::DownloadFailed(e.to_string()))?;
         let len = response

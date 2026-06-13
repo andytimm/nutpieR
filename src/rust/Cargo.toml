@@ -26,6 +26,9 @@ serde_json = '1'
 # On Windows, bindgen picks up CRT symbols from stddef.h/stdbool.h
 # (e.g. _errno, __security_init_cookie) which are not exported by
 # the Stan model DLL, causing GetProcAddress failures at load time.
+# Also patched: download_bridgestan_src() verifies TLS against the OS
+# trust store (ureq platform-verifier) instead of bundled webpki-roots,
+# so corporate-proxy CAs work (issue #30).
 bridgestan = { path = "patches/bridgestan-2.7.0" }
 
 [profile.release]
