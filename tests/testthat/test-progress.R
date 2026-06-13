@@ -803,3 +803,66 @@ test_that("a failing progress callback is disabled instead of killing sampling",
   expect_equal(call_count, 1L)
   expect_false(grepl("Error in", paste(out, collapse = "\n"), fixed = TRUE))
 })
+
+test_that("ebfmi_per_chain matches the hand-computed CmdStanR formula", {
+  # e = c(1, 3, 2, 5): mean squared successive diff = (4+1+9)/4 = 3.5;
+  # var = 8.75/3 = 2.91667; E-BFMI = 3.5 / 2.91667 = 1.2.
+  diags <- list(energy = c(1, 3, 2, 5), chain = rep(1L, 4))
+  out <- nutpieR:::ebfmi_per_chain(diags)
+  expect_equal(unname(out[["1"]]), 1.2)
+
+  # Guards: < 3 draws, NA energy, and absent energy all degrade to NA / NULL.
+  expect_true(is.na(nutpieR:::ebfmi_per_chain(
+    list(energy = c(1, 2), chain = c(1L, 1L))
+  )[["1"]]))
+  expect_true(is.na(nutpieR:::ebfmi_per_chain(
+    list(energy = c(1, NA, 3, 4), chain = rep(1L, 4))
+  )[["1"]]))
+  expect_null(nutpieR:::ebfmi_per_chain(list(chain = rep(1L, 4))))
+})
+
+test_that("end summary flags a low-E-BFMI chain without touching clean geometry", {
+  # Chain 1: energy is a slow drift (1:20) -> tiny successive diffs vs a large
+  # variance -> E-BFMI well below 0.3. Chain 2: energy alternates 0/10 -> large
+  # successive diffs vs modest variance -> E-BFMI ~4 (healthy). Geometry is
+  # clean throughout (no divergences, low treedepth) so only the E-BFMI block
+  # should fire.
+  diags <- list(
+    chain     = rep(1:2, each = 20),
+    n_steps   = rep(3, 40),
+    depth     = rep(2L, 40),
+    step_size = rep(0.5, 40),
+    diverging = rep(FALSE, 40),
+    energy    = c(seq_len(20), rep(c(0, 10), 10))
+  )
+  ebfmi <- nutpieR:::ebfmi_per_chain(diags)
+  expect_true(ebfmi[["1"]] < 0.3)
+  expect_true(ebfmi[["2"]] >= 0.3)
+
+  msgs <- testthat::capture_messages(
+    nutpieR:::print_sampling_diagnostic_summary(
+      diags, num_chains = 2L, elapsed = 1, max_treedepth = 10L
+    )
+  )
+  joined <- paste(msgs, collapse = "")
+  expect_match(joined, "1 of 2 chains had an E-BFMI below 0.3", fixed = TRUE)
+  # Clean geometry: the honest completion line still fires, no false flags.
+  expect_match(joined, "no divergences", fixed = TRUE)
+})
+
+test_that("end summary stays silent on E-BFMI when every chain is healthy", {
+  diags <- list(
+    chain     = rep(1:2, each = 20),
+    n_steps   = rep(3, 40),
+    depth     = rep(2L, 40),
+    step_size = rep(0.5, 40),
+    diverging = rep(FALSE, 40),
+    energy    = rep(c(0, 10), 20)   # both chains alternate -> high E-BFMI
+  )
+  msgs <- testthat::capture_messages(
+    nutpieR:::print_sampling_diagnostic_summary(
+      diags, num_chains = 2L, elapsed = 1, max_treedepth = 10L
+    )
+  )
+  expect_false(grepl("E-BFMI", paste(msgs, collapse = "")))
+})
