@@ -410,6 +410,24 @@ progress_supports_color <- function() {
   cli::num_ansi_colors() > 1L
 }
 
+#' Detect whether message conditions are currently being muffled.
+#'
+#' This must run before entering the Rust sampling call. R message handlers
+#' installed around `nutpie_sample()` are not visible from the later Rust-invoked
+#' progress callback, so the callback closures capture this value up front.
+#' @noRd
+progress_messages_muffled <- function() {
+  muffled <- FALSE
+  withRestarts({
+    signalCondition(simpleMessage(""))
+    FALSE
+  }, muffleMessage = function() {
+    muffled <<- TRUE
+    TRUE
+  })
+  muffled
+}
+
 #' @noRd
 render_progress_table <- function(table) {
   headers <- names(table)
@@ -759,9 +777,10 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
   last_snapshot <- NULL
   hints <- new_progress_hints(cli_bar_id = id)
   callback_failed <- FALSE
+  muted <- progress_messages_muffled()
 
   callback <- function(snapshot) {
-    if (callback_failed) return(invisible(NULL))
+    if (muted || callback_failed) return(invisible(NULL))
     summary <- summarize_progress_snapshot(snapshot, num_warmup = num_warmup)
     last_summary <<- summary
     last_snapshot <<- snapshot
@@ -820,8 +839,10 @@ make_text_progress_callback <- function(num_chains, num_warmup, num_draws,
   last_printed <- rep(0L, num_chains)
   start_time <- proc.time()[["elapsed"]]
   hints <- new_progress_hints()
+  muted <- progress_messages_muffled()
 
   callback <- function(snapshot) {
+    if (muted) return(invisible(NULL))
     if (length(snapshot) == 0L) return(invisible(NULL))
     elapsed_secs <- proc.time()[["elapsed"]] - start_time
     elapsed_str <- format_progress_time(elapsed_secs)

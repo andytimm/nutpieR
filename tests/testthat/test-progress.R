@@ -213,6 +213,17 @@ test_that("short elapsed times render as less than one tenth second", {
   expect_equal(nutpieR:::format_progress_time(0.1), "0.1s")
 })
 
+test_that("progress_messages_muffled detects active message handlers", {
+  expect_false(nutpieR:::progress_messages_muffled())
+  expect_true(suppressMessages(nutpieR:::progress_messages_muffled()))
+  muffled <- FALSE
+  msgs <- testthat::capture_messages(
+    muffled <- nutpieR:::progress_messages_muffled()
+  )
+  expect_true(muffled)
+  expect_equal(msgs, "")
+})
+
 test_that("cli grad hint waits for the late-warmup baseline", {
   updates <- list()
   fake_update <- function(set = NULL, status = NULL, extra = NULL, id = NULL, force = FALSE) {
@@ -731,6 +742,25 @@ test_that("progress = 'none' produces no console output", {
     )
   )
   expect_s3_class(draws, "draws_array")
+})
+
+test_that("suppressMessages silences text progress callbacks", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  out <- capture.output(
+    msgs <- testthat::capture_messages(
+      suppressMessages(
+        draws <- nutpie_sample(
+          test_models$bernoulli, data = bernoulli_data(),
+          num_draws = 30, num_warmup = 30, num_chains = 2,
+          seed = 1L, refresh = 1L, progress = "text"
+        )
+      )
+    ),
+    type = "output"
+  )
+  expect_s3_class(draws, "draws_array")
+  expect_equal(msgs, character())
+  expect_false(grepl("sample 100%", paste(out, collapse = "\n"), fixed = TRUE))
 })
 
 test_that("a failing progress callback is disabled instead of killing sampling", {
