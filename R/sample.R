@@ -190,54 +190,51 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           mass_matrix_eigval_cutoff = NULL) {
   lib_path <- resolve_model(model)
   data_json <- resolve_data(data)
-  if (is.null(seed)) {
-    seed <- sample.int(.Machine$integer.max, 1L)
-  } else {
-    seed <- check_count(seed, "seed", min = 0L, max = .Machine$integer.max)
-  }
-  adaptation <- match.arg(adaptation)
-  if (identical(adaptation, "low-rank")) adaptation <- "low_rank"
-  progress <- match.arg(progress)
-  low_rank_modified_mass_matrix <- check_flag(
-    low_rank_modified_mass_matrix, "low_rank_modified_mass_matrix"
+  cfg <- resolve_sample_config(
+    seed = seed,
+    adaptation = adaptation,
+    low_rank_modified_mass_matrix = low_rank_modified_mass_matrix,
+    progress = progress,
+    save_warmup = save_warmup,
+    include = include,
+    store_divergences = store_divergences,
+    store_mass_matrix = store_mass_matrix,
+    store_unconstrained = store_unconstrained,
+    store_gradient = store_gradient,
+    num_draws = num_draws,
+    num_warmup = num_warmup,
+    num_chains = num_chains,
+    refresh = refresh,
+    cores = cores,
+    max_treedepth = max_treedepth,
+    mindepth = mindepth,
+    extra_doublings = extra_doublings,
+    target_accept = target_accept,
+    max_energy_error = max_energy_error,
+    mass_matrix_gamma = mass_matrix_gamma,
+    mass_matrix_eigval_cutoff = mass_matrix_eigval_cutoff
   )
-  save_warmup <- check_flag(save_warmup, "save_warmup")
-  include <- check_flag(include, "include")
-  store_divergences <- check_flag(store_divergences, "store_divergences")
-  store_mass_matrix <- check_flag(store_mass_matrix, "store_mass_matrix")
-  store_unconstrained <- check_flag(store_unconstrained, "store_unconstrained")
-  store_gradient <- check_flag(store_gradient, "store_gradient")
-
-  if (low_rank_modified_mass_matrix) {
-    warning(
-      "`low_rank_modified_mass_matrix` is deprecated; use ",
-      "`adaptation = \"low_rank\"` instead. ",
-      "`low_rank_modified_mass_matrix` will be removed in a future version.",
-      call. = FALSE
-    )
-    adaptation <- "low_rank"
-  }
-  num_draws <- check_count(num_draws, "num_draws", min = 1L)
-  num_warmup <- check_count(num_warmup, "num_warmup", min = 0L)
-  num_chains <- check_count(num_chains, "num_chains", min = 1L)
-  refresh <- check_count(refresh, "refresh", min = 0L)
-  max_treedepth <- check_optional_count(max_treedepth, "max_treedepth", min = 1L)
-  mindepth <- check_optional_count(mindepth, "mindepth", min = 0L)
-  extra_doublings <- check_optional_count(extra_doublings, "extra_doublings", min = 0L)
-  target_accept <- check_optional_probability(target_accept, "target_accept")
-  max_energy_error <- check_optional_positive(max_energy_error, "max_energy_error")
-  if (identical(adaptation, "low_rank")) {
-    mass_matrix_gamma <- check_optional_positive(mass_matrix_gamma, "mass_matrix_gamma")
-    mass_matrix_eigval_cutoff <- check_optional_positive(
-      mass_matrix_eigval_cutoff, "mass_matrix_eigval_cutoff"
-    )
-  }
-
-  if (is.null(cores)) {
-    cores <- min(num_chains, parallel::detectCores())
-    if (is.na(cores)) cores <- 1L
-  }
-  cores <- check_count(cores, "cores", min = 1L)
+  seed <- cfg$seed
+  adaptation <- cfg$adaptation
+  progress <- cfg$progress
+  save_warmup <- cfg$save_warmup
+  include <- cfg$include
+  store_divergences <- cfg$store_divergences
+  store_mass_matrix <- cfg$store_mass_matrix
+  store_unconstrained <- cfg$store_unconstrained
+  store_gradient <- cfg$store_gradient
+  num_draws <- cfg$num_draws
+  num_warmup <- cfg$num_warmup
+  num_chains <- cfg$num_chains
+  refresh <- cfg$refresh
+  cores <- cfg$cores
+  max_treedepth <- cfg$max_treedepth
+  mindepth <- cfg$mindepth
+  extra_doublings <- cfg$extra_doublings
+  target_accept <- cfg$target_accept
+  max_energy_error <- cfg$max_energy_error
+  mass_matrix_gamma <- cfg$mass_matrix_gamma
+  mass_matrix_eigval_cutoff <- cfg$mass_matrix_eigval_cutoff
 
   handle <- bs_open(lib_path, data_json, as.integer(seed))
   init_resolved <- resolve_init(init, init_mean, handle, num_chains,
@@ -319,6 +316,26 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     },
     call_sample_stan(NULL)
   )
+  draws <- assemble_sample_result(
+    raw,
+    num_draws = num_draws,
+    num_warmup = num_warmup,
+    num_chains = num_chains,
+    save_warmup = save_warmup
+  )
+  maybe_print_sampling_summary(
+    draws,
+    raw,
+    resolved_progress = resolved_progress,
+    num_chains = num_chains
+  )
+  warn_on_expand_errors(raw$expand_errors %||% 0L)
+
+  draws
+}
+
+assemble_sample_result <- function(raw, num_draws, num_warmup, num_chains,
+                                   save_warmup) {
   draws <- matrix_to_draws_array(raw$draws, num_draws, num_chains)
   attr(draws, "diagnostics") <- reindex_diagnostics(raw$diagnostics,
                                                     num_warmup, "sample")
@@ -327,28 +344,6 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   attr(draws, "num_draws") <- num_draws
   attr(draws, "sampler_config") <- rename_sampler_config(raw$sampler_config)
 
-  if (resolved_progress %in% c("cli", "text")) {
-    # Use the sampler's effective maxdepth for %-at-cap advice, falling back to
-    # nuts-rs's documented default only when the config is unreadable.
-    progress_max_treedepth <- 10L
-    tryCatch(
-      {
-        cfg <- jsonlite::fromJSON(attr(draws, "sampler_config"), simplifyVector = TRUE)
-        if (!is.null(cfg$maxdepth)) {
-          progress_max_treedepth <- as.integer(cfg$maxdepth)
-        }
-      },
-      error = function(e) NULL
-    )
-
-    print_sampling_diagnostic_summary(
-      attr(draws, "diagnostics"),
-      num_chains = num_chains,
-      elapsed = attr(raw, "progress_elapsed") %||% 0,
-      max_treedepth = progress_max_treedepth
-    )
-  }
-
   if (save_warmup && !is.null(raw$warmup_draws)) {
     warmup <- matrix_to_draws_array(raw$warmup_draws, num_warmup, num_chains)
     attr(draws, "warmup_draws") <- warmup
@@ -356,19 +351,148 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
       raw$warmup_diagnostics, num_warmup, "warmup"
     )
   }
+  draws
+}
 
-  n_expand_errors <- raw$expand_errors %||% 0L
-  if (n_expand_errors > 0L) {
-    warning(
-      n_expand_errors, " draw(s) had generated quantities that could not be ",
-      "computed (filled with NaN). This typically happens when the sampler ",
-      "explores extreme unconstrained values where parameter constraints ",
-      "(e.g. bounds) are violated during transformation.",
-      call. = FALSE
-    )
+maybe_print_sampling_summary <- function(draws, raw, resolved_progress, num_chains) {
+  if (!resolved_progress %in% c("cli", "text")) return(invisible(NULL))
+  print_sampling_diagnostic_summary(
+    attr(draws, "diagnostics"),
+    num_chains = num_chains,
+    elapsed = attr(raw, "progress_elapsed") %||% 0,
+    max_treedepth = progress_max_treedepth(attr(draws, "sampler_config"))
+  )
+}
+
+progress_max_treedepth <- function(sampler_config_json) {
+  # Use the sampler's effective maxdepth for %-at-cap advice, falling back to
+  # nuts-rs's documented default only when the config is unreadable.
+  out <- 10L
+  tryCatch(
+    {
+      cfg <- jsonlite::fromJSON(sampler_config_json, simplifyVector = TRUE)
+      if (!is.null(cfg$maxdepth)) {
+        out <- as.integer(cfg$maxdepth)
+      }
+    },
+    error = function(e) NULL
+  )
+  out
+}
+
+warn_on_expand_errors <- function(n_expand_errors) {
+  if (n_expand_errors <= 0L) return(invisible(NULL))
+  warning(
+    n_expand_errors, " draw(s) had generated quantities that could not be ",
+    "computed (filled with NaN). This typically happens when the sampler ",
+    "explores extreme unconstrained values where parameter constraints ",
+    "(e.g. bounds) are violated during transformation.",
+    call. = FALSE
+  )
+}
+
+resolve_sample_config <- function(seed, adaptation, low_rank_modified_mass_matrix,
+                                  progress, save_warmup, include,
+                                  store_divergences, store_mass_matrix,
+                                  store_unconstrained, store_gradient,
+                                  num_draws, num_warmup, num_chains, refresh,
+                                  cores, max_treedepth, mindepth,
+                                  extra_doublings, target_accept,
+                                  max_energy_error, mass_matrix_gamma,
+                                  mass_matrix_eigval_cutoff) {
+  if (is.null(seed)) {
+    seed <- sample.int(.Machine$integer.max, 1L)
+  } else {
+    seed <- check_count(seed, "seed", min = 0L, max = .Machine$integer.max)
   }
 
-  draws
+  adaptation <- match.arg(adaptation, c("diag", "low_rank", "low-rank"))
+  if (identical(adaptation, "low-rank")) adaptation <- "low_rank"
+  progress <- match.arg(progress, c("auto", "cli", "text", "none"))
+
+  low_rank_modified_mass_matrix <- check_flag(
+    low_rank_modified_mass_matrix, "low_rank_modified_mass_matrix"
+  )
+  if (low_rank_modified_mass_matrix) {
+    warning(
+      "`low_rank_modified_mass_matrix` is deprecated; use ",
+      "`adaptation = \"low_rank\"` instead. ",
+      "`low_rank_modified_mass_matrix` will be removed in a future version.",
+      call. = FALSE
+    )
+    adaptation <- "low_rank"
+  }
+
+  num_draws <- check_count(num_draws, "num_draws", min = 1L)
+  num_warmup <- check_count(num_warmup, "num_warmup", min = 0L)
+  num_chains <- check_count(num_chains, "num_chains", min = 1L)
+  refresh <- check_count(refresh, "refresh", min = 0L)
+  if (is.null(cores)) {
+    cores <- min(num_chains, parallel::detectCores())
+    if (is.na(cores)) cores <- 1L
+  }
+  cores <- check_count(cores, "cores", min = 1L)
+
+  tuning <- validate_tuning_options(
+    adaptation = adaptation,
+    max_treedepth = max_treedepth,
+    mindepth = mindepth,
+    extra_doublings = extra_doublings,
+    target_accept = target_accept,
+    max_energy_error = max_energy_error,
+    mass_matrix_gamma = mass_matrix_gamma,
+    mass_matrix_eigval_cutoff = mass_matrix_eigval_cutoff
+  )
+
+  c(
+    list(
+      seed = seed,
+      adaptation = adaptation,
+      progress = progress,
+      save_warmup = check_flag(save_warmup, "save_warmup"),
+      include = check_flag(include, "include"),
+      store_divergences = check_flag(store_divergences, "store_divergences"),
+      store_mass_matrix = check_flag(store_mass_matrix, "store_mass_matrix"),
+      store_unconstrained = check_flag(store_unconstrained, "store_unconstrained"),
+      store_gradient = check_flag(store_gradient, "store_gradient"),
+      num_draws = num_draws,
+      num_warmup = num_warmup,
+      num_chains = num_chains,
+      refresh = refresh,
+      cores = cores
+    ),
+    tuning
+  )
+}
+
+validate_tuning_options <- function(adaptation, ...) {
+  values <- list(...)
+  specs <- list(
+    max_treedepth = list(type = "count", min = 1L, applies = "all"),
+    mindepth = list(type = "count", min = 0L, applies = "all"),
+    extra_doublings = list(type = "count", min = 0L, applies = "all"),
+    target_accept = list(type = "probability", applies = "all"),
+    max_energy_error = list(type = "positive", applies = "all"),
+    mass_matrix_gamma = list(type = "positive", applies = "low_rank"),
+    mass_matrix_eigval_cutoff = list(type = "positive", applies = "low_rank")
+  )
+  lapply(names(specs), function(name) {
+    spec <- specs[[name]]
+    if (!identical(spec$applies, "all") && !identical(spec$applies, adaptation)) {
+      return(NULL)
+    }
+    check_tuning_option(values[[name]], name, spec)
+  }) |>
+    stats::setNames(names(specs))
+}
+
+check_tuning_option <- function(x, name, spec) {
+  switch(spec$type,
+    count = check_optional_count(x, name, min = spec$min),
+    positive = check_optional_positive(x, name),
+    probability = check_optional_probability(x, name),
+    stop("Unknown sampler option type: ", spec$type, call. = FALSE)
+  )
 }
 
 check_flag <- function(x, name) {
