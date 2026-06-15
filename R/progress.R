@@ -279,27 +279,27 @@ format_min_step <- function(snapshot) {
 #' @noRd
 format_status_tokens <- function(snapshot, summary, format_str,
                                  spread_active = FALSE) {
+  # Token -> producer table. Thunks (not values) so a token's formatter runs
+  # only when that `{token}` is present — `{spark}`/`{spread}` are opt-in and
+  # absent from the default format, so they must not be computed every refresh.
+  # Add a row to support a new token.
+  producers <- list(
+    div    = function() format_divergence_status(summary$total_divergences),
+    grad   = function() format_gradient_status(summary$avg_num_steps),
+    draws  = function() format_chain_draw_range(snapshot),
+    spread = function() format_chain_spread(snapshot, active = spread_active),
+    spark  = function() format_chain_spark(snapshot),
+    lag    = function() format_chain_lag(snapshot),
+    step   = function() format_min_step(snapshot),
+    tdepth = function() format_treedepth_status(summary$max_latest_num_steps)
+  )
   result <- format_str
-  if (grepl("{div}", format_str, fixed = TRUE))
-    result <- gsub("{div}", format_divergence_status(summary$total_divergences),
-                   result, fixed = TRUE)
-  if (grepl("{grad}", format_str, fixed = TRUE))
-    result <- gsub("{grad}", format_gradient_status(summary$avg_num_steps),
-                   result, fixed = TRUE)
-  if (grepl("{draws}", format_str, fixed = TRUE))
-    result <- gsub("{draws}", format_chain_draw_range(snapshot), result, fixed = TRUE)
-  if (grepl("{spread}", format_str, fixed = TRUE))
-    result <- gsub("{spread}", format_chain_spread(snapshot, active = spread_active),
-                   result, fixed = TRUE)
-  if (grepl("{spark}", format_str, fixed = TRUE))
-    result <- gsub("{spark}", format_chain_spark(snapshot), result, fixed = TRUE)
-  if (grepl("{lag}", format_str, fixed = TRUE))
-    result <- gsub("{lag}", format_chain_lag(snapshot), result, fixed = TRUE)
-  if (grepl("{step}", format_str, fixed = TRUE))
-    result <- gsub("{step}", format_min_step(snapshot), result, fixed = TRUE)
-  if (grepl("{tdepth}", format_str, fixed = TRUE))
-    result <- gsub("{tdepth}", format_treedepth_status(summary$max_latest_num_steps),
-                   result, fixed = TRUE)
+  for (name in names(producers)) {
+    token <- paste0("{", name, "}")
+    if (grepl(token, result, fixed = TRUE)) {
+      result <- gsub(token, producers[[name]](), result, fixed = TRUE)
+    }
+  }
   # Collapse empty segments left by tokens that returned "". Multi-pass: a run
   # of three or more empty tokens (e.g. "{div} | {spread} | {spark}") needs more
   # than one sweep because each gsub consumes a pipe non-overlapping.
@@ -551,9 +551,7 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
   total_draws <- sum(summary$draws, na.rm = TRUE)
   div_frac <- if (total_draws > 0L) total_divs / total_draws else NA_real_
   per_chain_div_frac <- ifelse(summary$draws > 0L, summary$divs / summary$draws, NA_real_)
-  severe_divergences <- is.finite(div_frac) &&
-    (div_frac >= DIV_SEVERE_THRESHOLD ||
-       any(per_chain_div_frac >= DIV_SEVERE_THRESHOLD, na.rm = TRUE))
+  severe_divergences <- divergence_is_severe(div_frac, per_chain_div_frac)
 
   cap_frac <- fraction_at_treedepth_cap(diagnostics, max_treedepth)
   cap_pct <- if (is.finite(cap_frac)) {
@@ -616,15 +614,9 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
   # direction inefficiency coexists with clean within-trajectory geometry, so
   # this is its own block, not an `else if`. Flag-only (silent when every chain
   # is healthy), framed as "N of M chains" to match CmdStanR.
-  ebfmi <- ebfmi_per_chain(diagnostics)
-  if (!is.null(ebfmi)) {
-    n_low <- sum(is.finite(ebfmi) & ebfmi < EBFMI_THRESHOLD)
-    if (n_low > 0L) {
-      n_chains_e <- length(ebfmi)
-      cli::cli_alert_warning(
-        "{n_low} of {n_chains_e} chains had an E-BFMI below 0.3 — the posterior may have heavy tails the sampler explores inefficiently. Consider reparameterizing."
-      )
-    }
+  ebfmi_msg <- ebfmi_warning_msg(ebfmi_per_chain(diagnostics))
+  if (!is.null(ebfmi_msg)) {
+    cli::cli_alert_warning("{ebfmi_msg}")
   }
   invisible(NULL)
 }

@@ -97,8 +97,9 @@ nutpie_compile_model <- function(stan_file = NULL, code = NULL,
     )
   }
 
-  verbose <- as.integer(verbose)
-  use_cache <- isTRUE(cache) &&
+  verbose <- check_count(verbose, "verbose", min = 0L)
+  cache <- check_flag(cache, "cache")
+  use_cache <- cache &&
     !identical(Sys.getenv("NUTPIER_DISABLE_COMPILE_CACHE"), "1")
 
   bundle <- if (!is.null(code)) {

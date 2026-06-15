@@ -1,3 +1,12 @@
+# nutpieR 1.8.2
+
+* `nutpie_sample()` and `nutpie_compile_model()` now reject malformed arguments
+  (non-`TRUE`/`FALSE` flags, out-of-range tuning values) with a clear error
+  instead of silently coercing them.
+* The post-run treedepth-cap advice uses the sampler's effective `max_treedepth`
+  rather than assuming `10`.
+* Fixed a debug-build abort when compiling with no extra `stanc`/`make` args.
+
 # nutpieR 1.8.1
 
 * The post-run summary flags low E-BFMI (any chain below `0.3`) with one warning

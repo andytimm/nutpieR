@@ -95,9 +95,17 @@ fn compile_stan_model_impl(
     let bs_path = bridgestan::download_bridgestan_src().map_err(r_err)?;
     let stan_path = PathBuf::from(stan_file);
 
-    let stanc_vec: Vec<String> = stanc_args.iter().map(|s| s.to_string()).collect();
+    let stanc_vec: Vec<String> = if stanc_args.is_empty() {
+        Vec::new()
+    } else {
+        stanc_args.iter().map(|s| s.to_string()).collect()
+    };
     let stanc_refs: Vec<&str> = stanc_vec.iter().map(String::as_str).collect();
-    let compile_vec: Vec<String> = compile_args.iter().map(|s| s.to_string()).collect();
+    let compile_vec: Vec<String> = if compile_args.is_empty() {
+        Vec::new()
+    } else {
+        compile_args.iter().map(|s| s.to_string()).collect()
+    };
     let compile_refs: Vec<&str> = compile_vec.iter().map(String::as_str).collect();
 
     let lib_path = bridgestan::compile_model(&bs_path, &stan_path, &stanc_refs, &compile_refs)
@@ -319,6 +327,7 @@ fn build_progress_snapshot(state: &[ChainState]) -> List {
 /// @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 ///   sampler_config (JSON), and optionally warmup_draws and warmup_diagnostics.
 /// @noRd
+#[allow(clippy::too_many_arguments)]
 #[extendr]
 fn sample_stan(
     handle: ExternalPtr<model::BSHandle>,
@@ -582,7 +591,7 @@ fn opt_finite_f64(robj: &Robj, name: &str) -> Result<Option<f64>> {
 fn opt_finite_positive_f64(robj: &Robj, name: &str) -> Result<Option<f64>> {
     let v = opt_finite_f64(robj, name)?;
     if let Some(x) = v {
-        if !(x > 0.0) {
+        if x <= 0.0 {
             return Err(Error::Other(format!("`{}` must be > 0, got {}.", name, x)));
         }
     }
@@ -592,7 +601,7 @@ fn opt_finite_positive_f64(robj: &Robj, name: &str) -> Result<Option<f64>> {
 fn opt_finite_in_open_unit(robj: &Robj, name: &str) -> Result<Option<f64>> {
     let v = opt_finite_f64(robj, name)?;
     if let Some(x) = v {
-        if !(x > 0.0 && x < 1.0) {
+        if x <= 0.0 || x >= 1.0 {
             return Err(Error::Other(format!(
                 "`{}` must be in (0, 1), got {}.",
                 name, x
@@ -635,7 +644,13 @@ fn run_with_settings<S: Settings + serde::Serialize>(
 ) -> Result<(Vec<ArrowTrace>, String)> {
     let json = serde_json::to_string(&settings)
         .map_err(|e| Error::Other(format!("failed to serialize sampler settings: {}", e)))?;
-    let traces = run_sampler(stan_model, settings, num_cores, save_warmup, progress_callback)?;
+    let traces = run_sampler(
+        stan_model,
+        settings,
+        num_cores,
+        save_warmup,
+        progress_callback,
+    )?;
     Ok((traces, json))
 }
 

@@ -198,7 +198,17 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   adaptation <- match.arg(adaptation)
   if (identical(adaptation, "low-rank")) adaptation <- "low_rank"
   progress <- match.arg(progress)
-  if (isTRUE(low_rank_modified_mass_matrix)) {
+  low_rank_modified_mass_matrix <- check_flag(
+    low_rank_modified_mass_matrix, "low_rank_modified_mass_matrix"
+  )
+  save_warmup <- check_flag(save_warmup, "save_warmup")
+  include <- check_flag(include, "include")
+  store_divergences <- check_flag(store_divergences, "store_divergences")
+  store_mass_matrix <- check_flag(store_mass_matrix, "store_mass_matrix")
+  store_unconstrained <- check_flag(store_unconstrained, "store_unconstrained")
+  store_gradient <- check_flag(store_gradient, "store_gradient")
+
+  if (low_rank_modified_mass_matrix) {
     warning(
       "`low_rank_modified_mass_matrix` is deprecated; use ",
       "`adaptation = \"low_rank\"` instead. ",
@@ -211,6 +221,15 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   num_warmup <- check_count(num_warmup, "num_warmup", min = 0L)
   num_chains <- check_count(num_chains, "num_chains", min = 1L)
   refresh <- check_count(refresh, "refresh", min = 0L)
+  max_treedepth <- check_optional_count(max_treedepth, "max_treedepth", min = 1L)
+  mindepth <- check_optional_count(mindepth, "mindepth", min = 0L)
+  extra_doublings <- check_optional_count(extra_doublings, "extra_doublings", min = 0L)
+  target_accept <- check_optional_probability(target_accept, "target_accept")
+  max_energy_error <- check_optional_positive(max_energy_error, "max_energy_error")
+  mass_matrix_gamma <- check_optional_positive(mass_matrix_gamma, "mass_matrix_gamma")
+  mass_matrix_eigval_cutoff <- check_optional_positive(
+    mass_matrix_eigval_cutoff, "mass_matrix_eigval_cutoff"
+  )
 
   if (is.null(cores)) {
     cores <- min(num_chains, parallel::detectCores())
@@ -229,11 +248,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
 
   resolved_progress <- resolve_progress_mode(progress, refresh)
   chain_format <- validate_chain_format(chain_format, resolved_progress)
-  progress_max_treedepth <- if (is.null(max_treedepth)) {
-    10L
-  } else {
-    check_count(max_treedepth, "max_treedepth", min = 1L)
-  }
+  # Will be replaced with the effective maxdepth from sampler_config after sampling.
 
   call_sample_stan <- function(progress_callback) {
     progress_callback <- protect_progress_callback(progress_callback)
@@ -244,13 +259,13 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
       num_chains,
       as.integer(seed),
       init_resolved$positions,
-      isTRUE(init_resolved$jitter),
-      isTRUE(save_warmup),
+      init_resolved$jitter,
+      save_warmup,
       cores,
-      isTRUE(store_divergences),
-      isTRUE(store_mass_matrix),
-      isTRUE(store_unconstrained),
-      isTRUE(store_gradient),
+      store_divergences,
+      store_mass_matrix,
+      store_unconstrained,
+      store_gradient,
       adaptation,
       opt_double(max_treedepth, "max_treedepth"),
       opt_double(mindepth, "mindepth"),
@@ -260,8 +275,8 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
       opt_double(mass_matrix_gamma, "mass_matrix_gamma"),
       opt_double(mass_matrix_eigval_cutoff, "mass_matrix_eigval_cutoff"),
       keep_indices,
-      isTRUE(flags$include_tp),
-      isTRUE(flags$include_gq),
+      flags$include_tp,
+      flags$include_gq,
       progress_callback
     )
   }
@@ -310,6 +325,19 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   attr(draws, "num_draws") <- num_draws
   attr(draws, "sampler_config") <- rename_sampler_config(raw$sampler_config)
 
+  # Use the sampler's effective maxdepth for %-at-cap advice, falling back to
+  # nuts-rs's documented default only when the config is unreadable.
+  progress_max_treedepth <- 10L
+  tryCatch(
+    {
+      cfg <- jsonlite::fromJSON(attr(draws, "sampler_config"), simplifyVector = TRUE)
+      if (!is.null(cfg$maxdepth)) {
+        progress_max_treedepth <- as.integer(cfg$maxdepth)
+      }
+    },
+    error = function(e) NULL
+  )
+
   if (resolved_progress %in% c("cli", "text")) {
     print_sampling_diagnostic_summary(
       attr(draws, "diagnostics"),
@@ -319,7 +347,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     )
   }
 
-  if (isTRUE(save_warmup) && !is.null(raw$warmup_draws)) {
+  if (save_warmup && !is.null(raw$warmup_draws)) {
     warmup <- matrix_to_draws_array(raw$warmup_draws, num_warmup, num_chains)
     attr(draws, "warmup_draws") <- warmup
     attr(draws, "warmup_diagnostics") <- reindex_diagnostics(
@@ -341,6 +369,13 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   draws
 }
 
+check_flag <- function(x, name) {
+  if (!is.logical(x) || length(x) != 1L || is.na(x)) {
+    stop(sprintf("`%s` must be TRUE or FALSE.", name), call. = FALSE)
+  }
+  x
+}
+
 opt_double <- function(x, name) {
   if (is.null(x)) return(NULL)
   if (!is.numeric(x) || length(x) != 1L || !is.finite(x)) {
@@ -358,6 +393,9 @@ check_count <- function(x, name, min = 0L, max = NULL) {
   if (!is.numeric(x) || !is.finite(x)) {
     stop(sprintf("`%s` must be a finite integer.", name), call. = FALSE)
   }
+  if (is.null(max)) {
+    max <- .Machine$integer.max
+  }
   # Bounds-check before the integer cast: values outside the i32 range
   # coerce to `NA` via `as.integer()`, which would otherwise produce a
   # confusing "missing value where TRUE/FALSE needed" error from the
@@ -366,7 +404,7 @@ check_count <- function(x, name, min = 0L, max = NULL) {
     stop(sprintf("`%s` must be >= %d; got %s.", name, min, format(x)),
          call. = FALSE)
   }
-  if (!is.null(max) && x > max) {
+  if (x > max) {
     stop(sprintf("`%s` must be <= %d; got %s.", name, max, format(x)),
          call. = FALSE)
   }
@@ -375,6 +413,31 @@ check_count <- function(x, name, min = 0L, max = NULL) {
          call. = FALSE)
   }
   as.integer(x)
+}
+
+check_optional_count <- function(x, name, min = 0L, max = NULL) {
+  if (is.null(x)) return(NULL)
+  check_count(x, name, min = min, max = max)
+}
+
+check_optional_positive <- function(x, name) {
+  if (is.null(x)) return(NULL)
+  x <- opt_double(x, name)
+  if (x <= 0) {
+    stop(sprintf("`%s` must be > 0; got %s.", name, format(x)),
+         call. = FALSE)
+  }
+  x
+}
+
+check_optional_probability <- function(x, name) {
+  if (is.null(x)) return(NULL)
+  x <- opt_double(x, name)
+  if (x <= 0 || x >= 1) {
+    stop(sprintf("`%s` must be in (0, 1); got %s.", name, format(x)),
+         call. = FALSE)
+  }
+  x
 }
 
 resolve_model <- function(model) {
