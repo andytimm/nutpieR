@@ -99,6 +99,18 @@ test_that("nutpie_sample validates logical and optional tuning arguments in R", 
                   max_energy_error = 0, refresh = 0),
     "max_energy_error"
   )
+  expect_error(
+    nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                  adaptation = "low_rank", mass_matrix_gamma = 0, refresh = 0),
+    "mass_matrix_gamma"
+  )
+  expect_s3_class(
+    nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                  num_draws = 10, num_warmup = 10, num_chains = 1,
+                  seed = 1L, refresh = 0, adaptation = "diag",
+                  mass_matrix_gamma = 0, mass_matrix_eigval_cutoff = 0),
+    "draws_array"
+  )
 })
 
 test_that("cores defaults to 1 when detectCores returns NA", {

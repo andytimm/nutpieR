@@ -226,10 +226,12 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   extra_doublings <- check_optional_count(extra_doublings, "extra_doublings", min = 0L)
   target_accept <- check_optional_probability(target_accept, "target_accept")
   max_energy_error <- check_optional_positive(max_energy_error, "max_energy_error")
-  mass_matrix_gamma <- check_optional_positive(mass_matrix_gamma, "mass_matrix_gamma")
-  mass_matrix_eigval_cutoff <- check_optional_positive(
-    mass_matrix_eigval_cutoff, "mass_matrix_eigval_cutoff"
-  )
+  if (identical(adaptation, "low_rank")) {
+    mass_matrix_gamma <- check_optional_positive(mass_matrix_gamma, "mass_matrix_gamma")
+    mass_matrix_eigval_cutoff <- check_optional_positive(
+      mass_matrix_eigval_cutoff, "mass_matrix_eigval_cutoff"
+    )
+  }
 
   if (is.null(cores)) {
     cores <- min(num_chains, parallel::detectCores())
@@ -325,20 +327,20 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   attr(draws, "num_draws") <- num_draws
   attr(draws, "sampler_config") <- rename_sampler_config(raw$sampler_config)
 
-  # Use the sampler's effective maxdepth for %-at-cap advice, falling back to
-  # nuts-rs's documented default only when the config is unreadable.
-  progress_max_treedepth <- 10L
-  tryCatch(
-    {
-      cfg <- jsonlite::fromJSON(attr(draws, "sampler_config"), simplifyVector = TRUE)
-      if (!is.null(cfg$maxdepth)) {
-        progress_max_treedepth <- as.integer(cfg$maxdepth)
-      }
-    },
-    error = function(e) NULL
-  )
-
   if (resolved_progress %in% c("cli", "text")) {
+    # Use the sampler's effective maxdepth for %-at-cap advice, falling back to
+    # nuts-rs's documented default only when the config is unreadable.
+    progress_max_treedepth <- 10L
+    tryCatch(
+      {
+        cfg <- jsonlite::fromJSON(attr(draws, "sampler_config"), simplifyVector = TRUE)
+        if (!is.null(cfg$maxdepth)) {
+          progress_max_treedepth <- as.integer(cfg$maxdepth)
+        }
+      },
+      error = function(e) NULL
+    )
+
     print_sampling_diagnostic_summary(
       attr(draws, "diagnostics"),
       num_chains = num_chains,

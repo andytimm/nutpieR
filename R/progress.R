@@ -276,28 +276,31 @@ format_min_step <- function(snapshot) {
   sprintf("%.3g", min(finite_steps))
 }
 
+STATUS_TOKEN_NAMES <- c("div", "grad", "draws", "spread", "spark", "lag", "step", "tdepth")
+
+#' @noRd
+format_status_token <- function(name, snapshot, summary, spread_active) {
+  switch(name,
+    div    = format_divergence_status(summary$total_divergences),
+    grad   = format_gradient_status(summary$avg_num_steps),
+    draws  = format_chain_draw_range(snapshot),
+    spread = format_chain_spread(snapshot, active = spread_active),
+    spark  = format_chain_spark(snapshot),
+    lag    = format_chain_lag(snapshot),
+    step   = format_min_step(snapshot),
+    tdepth = format_treedepth_status(summary$max_latest_num_steps)
+  )
+}
+
 #' @noRd
 format_status_tokens <- function(snapshot, summary, format_str,
                                  spread_active = FALSE) {
-  # Token -> producer table. Thunks (not values) so a token's formatter runs
-  # only when that `{token}` is present — `{spark}`/`{spread}` are opt-in and
-  # absent from the default format, so they must not be computed every refresh.
-  # Add a row to support a new token.
-  producers <- list(
-    div    = function() format_divergence_status(summary$total_divergences),
-    grad   = function() format_gradient_status(summary$avg_num_steps),
-    draws  = function() format_chain_draw_range(snapshot),
-    spread = function() format_chain_spread(snapshot, active = spread_active),
-    spark  = function() format_chain_spark(snapshot),
-    lag    = function() format_chain_lag(snapshot),
-    step   = function() format_min_step(snapshot),
-    tdepth = function() format_treedepth_status(summary$max_latest_num_steps)
-  )
   result <- format_str
-  for (name in names(producers)) {
+  for (name in STATUS_TOKEN_NAMES) {
     token <- paste0("{", name, "}")
     if (grepl(token, result, fixed = TRUE)) {
-      result <- gsub(token, producers[[name]](), result, fixed = TRUE)
+      result <- gsub(token, format_status_token(name, snapshot, summary, spread_active),
+                     result, fixed = TRUE)
     }
   }
   # Collapse empty segments left by tokens that returned "". Multi-pass: a run
