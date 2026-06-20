@@ -42,6 +42,21 @@ fn pump_r_events() {
     }
 }
 
+/// Read and clear a pending R interrupt. Returns `true` if one was pending; the
+/// caller should then return a clean `Err` so extendr raises a normal R error
+/// at the call site ("Sampling interrupted.") rather than longjmp'ing past the
+/// in-flight `Sampler` teardown.
+fn interrupt_pending() -> bool {
+    unsafe {
+        if R_interrupts_pending != 0 {
+            R_interrupts_pending = 0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 mod model;
 
 /// Convert any Display error to an extendr Error. Uses anyhow's alternate
@@ -217,19 +232,24 @@ fn run_sampler<S: Settings>(
             SamplerWaitResult::Trace(traces) => break traces,
             SamplerWaitResult::Timeout(s) => {
                 sampler_opt = Some(s);
-                // Check interrupt BEFORE calling back into R. Clear the flag and
-                // return a normal Err so extendr raises a clean R error at the
-                // call site ("Sampling interrupted."), rather than longjmp'ing past
-                // the assignment and leaving the user with a confusing "object not
-                // found" on the next line.
-                if unsafe { R_interrupts_pending != 0 } {
-                    unsafe { R_interrupts_pending = 0 };
+                // Check interrupt BEFORE calling back into R, so extendr raises a
+                // clean R error at the call site ("Sampling interrupted.") rather
+                // than longjmp'ing past the assignment and leaving the user with a
+                // confusing "object not found" on the next line.
+                if interrupt_pending() {
                     return Err(Error::Other("Sampling interrupted.".into()));
                 }
                 // Repaint the front-end console each poll so progress streams
                 // live instead of appearing all at once when sampling ends
                 // (GitHub #34: RStudio buffers native-call output).
                 pump_r_events();
+                // pump_r_events() suspends interrupts, so R_ProcessEvents() can
+                // latch a pending interrupt without longjmp'ing. Re-check before
+                // the R progress callback runs, or it could service the flag by
+                // longjmp'ing across these Rust frames.
+                if interrupt_pending() {
+                    return Err(Error::Other("Sampling interrupted.".into()));
+                }
                 let state_snapshot: Vec<ChainState> = {
                     let state = progress_state.lock().unwrap();
                     state.clone()
