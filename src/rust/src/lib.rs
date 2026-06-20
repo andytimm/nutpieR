@@ -18,6 +18,28 @@ use std::time::Duration;
 
 extern "C" {
     static mut R_interrupts_pending: std::os::raw::c_int;
+    static mut R_interrupts_suspended: std::os::raw::c_int;
+    // Pump R's event loop. Front-ends (RStudio, Positron) buffer console output
+    // produced during a blocking native call and only repaint when R processes
+    // events, so without this the progress callback's output is invisible until
+    // sample_stan() returns. See `pump_r_events`.
+    fn R_ProcessEvents();
+}
+
+/// Flush front-end consoles mid-sampling by pumping R's event loop.
+///
+/// Interrupts are suspended across the call: on Unix `R_ProcessEvents` longjmps
+/// (via `onintr`) when an interrupt is pending, which would skip the Rust
+/// `Sampler` teardown and corrupt the in-flight result. Suspending lets it
+/// flush output without jumping; the pending flag is left set and handled at the
+/// top of the poll loop, which returns a clean error there instead.
+fn pump_r_events() {
+    unsafe {
+        let prev = R_interrupts_suspended;
+        R_interrupts_suspended = 1;
+        R_ProcessEvents();
+        R_interrupts_suspended = prev;
+    }
 }
 
 mod model;
@@ -204,6 +226,10 @@ fn run_sampler<S: Settings>(
                     unsafe { R_interrupts_pending = 0 };
                     return Err(Error::Other("Sampling interrupted.".into()));
                 }
+                // Repaint the front-end console each poll so progress streams
+                // live instead of appearing all at once when sampling ends
+                // (GitHub #34: RStudio buffers native-call output).
+                pump_r_events();
                 let state_snapshot: Vec<ChainState> = {
                     let state = progress_state.lock().unwrap();
                     state.clone()

@@ -12,8 +12,9 @@ EBFMI_THRESHOLD       <- 0.3   # per-chain E-BFMI floor (CmdStanR check_ebfmi de
 #' isn't rendering a knitr document. cli itself is a hard dependency, so there
 #' is no package-availability check to make.
 #' @noRd
-should_use_cli_progress <- function(interactive = base::interactive()) {
-  interactive && !isTRUE(getOption("knitr.in.progress"))
+should_use_cli_progress <- function(interactive = base::interactive(),
+                                    knitting = isTRUE(getOption("knitr.in.progress"))) {
+  interactive && !knitting
 }
 
 #' `use_cli` is injectable so the dispatch can be tested without mocking
@@ -418,6 +419,21 @@ progress_supports_color <- function() {
   cli::num_ansi_colors() > 1L
 }
 
+#' Is there a *global* message handler installed (`globalCallingHandlers()`)?
+#'
+#' Positron's R kernel (ark) registers a global `message` handler that redirects
+#' message output to the console and invokes the `muffleMessage` restart. That
+#' is a redirect, not suppression: it must not be mistaken for `suppressMessages()`
+#' (see [progress_messages_muffled()]). The query form of `globalCallingHandlers()`
+#' is safe to call with handlers on the stack; only the *setting* form errors.
+#' @noRd
+has_global_message_handler <- function() {
+  handlers <- tryCatch(globalCallingHandlers(), error = function(e) list())
+  # The classes a progress `message()` would match: derived from the same
+  # condition the probe signals so the two can't drift.
+  any(names(handlers) %in% class(simpleMessage("")))
+}
+
 #' Detect whether message conditions are currently being muffled.
 #'
 #' This must run before entering the Rust sampling call. R message handlers
@@ -425,16 +441,23 @@ progress_supports_color <- function() {
 #' progress callback, so the callback closures capture this value up front. The
 #' empty probe condition is observable to non-muffling message handlers, but it
 #' has no default output.
+#'
+#' The probe only exists to honour `suppressMessages()`. A *global* message
+#' handler (e.g. Positron's ark, which redirects output and calls
+#' `muffleMessage`) would otherwise trip the probe and silence all progress even
+#' though the user never asked for it (GitHub #34) -- so when one is present we
+#' report "not muffled" and let the callback emit. The trade-off is that
+#' `suppressMessages()` does not silence *live* progress under such a handler;
+#' the start banner and end summary, emitted at the R top level, are still
+#' suppressed normally.
 #' @noRd
 progress_messages_muffled <- function() {
+  if (has_global_message_handler()) return(FALSE)
   muffled <- FALSE
-  withRestarts({
-    signalCondition(simpleMessage(""))
-    FALSE
-  }, muffleMessage = function() {
-    muffled <<- TRUE
-    TRUE
-  })
+  withRestarts(
+    signalCondition(simpleMessage("")),
+    muffleMessage = function() muffled <<- TRUE
+  )
   muffled
 }
 

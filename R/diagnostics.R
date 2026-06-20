@@ -137,7 +137,7 @@ ebfmi_warning_msg <- function(ebfmi) {
   n_low <- sum(is.finite(ebfmi) & ebfmi < EBFMI_THRESHOLD)
   if (n_low == 0L) return(NULL)
   sprintf(
-    paste0("%d of %d chains had an E-BFMI below 0.3 — the posterior may have ",
+    paste0("%d of %d chains had an E-BFMI below 0.3 \u2014 the posterior may have ",
            "heavy tails the sampler explores inefficiently. Consider ",
            "reparameterizing."),
     n_low, length(ebfmi)
