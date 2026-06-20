@@ -114,6 +114,36 @@ format_div_severity_msg <- function(total_divs, div_frac, severe) {
   }
 }
 
+#' Shared "is this fit's divergence count severe?" test. `div_frac` is the
+#' pooled post-warmup divergence share; `per_chain_frac` a per-chain vector
+#' (NA-tolerant). Severe when either crosses `DIV_SEVERE_THRESHOLD` — the same
+#' rule the post-run summary and the diagnostics print both apply, so they
+#' can't disagree on whether to escalate from a tuning hint to a geometry
+#' warning.
+#' @noRd
+divergence_is_severe <- function(div_frac, per_chain_frac) {
+  is.finite(div_frac) &&
+    (div_frac >= DIV_SEVERE_THRESHOLD ||
+       any(per_chain_frac >= DIV_SEVERE_THRESHOLD, na.rm = TRUE))
+}
+
+#' Shared E-BFMI warning sentence. Returns the "N of M chains ..." string when
+#' any chain falls below `EBFMI_THRESHOLD`, else `NULL`, so the post-run summary
+#' and the diagnostics print never drift on the number (and threshold) users
+#' quote. The returned string carries no glue braces; each surface emits it.
+#' @noRd
+ebfmi_warning_msg <- function(ebfmi) {
+  if (is.null(ebfmi)) return(NULL)
+  n_low <- sum(is.finite(ebfmi) & ebfmi < EBFMI_THRESHOLD)
+  if (n_low == 0L) return(NULL)
+  sprintf(
+    paste0("%d of %d chains had an E-BFMI below 0.3 \u2014 the posterior may have ",
+           "heavy tails the sampler explores inefficiently. Consider ",
+           "reparameterizing."),
+    n_low, length(ebfmi)
+  )
+}
+
 #' Extract sampler diagnostics from nutpie draws
 #'
 #' Diagnostics are extracted directly from the nuts-rs sample-stats schema, so
@@ -252,9 +282,7 @@ print.nutpie_diagnostics <- function(x, ...) {
           mean(dv[ch == c], na.rm = TRUE)
         }, numeric(1))
       }
-      severe <- is.finite(div_frac) &&
-        (div_frac >= DIV_SEVERE_THRESHOLD ||
-           any(per_chain_frac >= DIV_SEVERE_THRESHOLD, na.rm = TRUE))
+      severe <- divergence_is_severe(div_frac, per_chain_frac)
       cli::cli_alert_warning("{format_div_severity_msg(n_div, div_frac, severe)}")
     }
   }
@@ -307,14 +335,9 @@ print.nutpie_diagnostics <- function(x, ...) {
 
   # E-BFMI flag: independent of geometry; energy problems coexist with clean
   # divergence/treedepth.
-  if (!is.null(ebfmi)) {
-    n_low <- sum(is.finite(ebfmi) & ebfmi < EBFMI_THRESHOLD)
-    if (n_low > 0L) {
-      n_chains_e <- length(ebfmi)
-      cli::cli_alert_warning(
-        "{n_low} of {n_chains_e} chains had an E-BFMI below 0.3 — the posterior may have heavy tails the sampler explores inefficiently. Consider reparameterizing."
-      )
-    }
+  ebfmi_msg <- ebfmi_warning_msg(ebfmi)
+  if (!is.null(ebfmi_msg)) {
+    cli::cli_alert_warning("{ebfmi_msg}")
   }
 
   cat("\nFor the full per-parameter table, see posterior::summarize_draws(draws).\n")

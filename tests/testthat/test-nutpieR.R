@@ -45,6 +45,7 @@ test_that("check_count rejects malformed counts", {
   expect_error(nutpieR:::check_count(NA_integer_, "num_chains"), "num_chains")
   expect_error(nutpieR:::check_count(1.5, "num_warmup"), "num_warmup")
   expect_error(nutpieR:::check_count(c(1L, 2L), "num_chains"), "num_chains")
+  expect_error(nutpieR:::check_count(2^32, "num_draws"), "must be <=")
 })
 
 test_that("check_count enforces optional max", {
@@ -73,6 +74,42 @@ test_that("nutpie_sample rejects malformed target_accept", {
     nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
                   target_accept = 1.5),
     "target_accept"
+  )
+})
+
+test_that("nutpie_sample validates logical and optional tuning arguments in R", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  expect_error(
+    nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                  save_warmup = "yes", refresh = 0),
+    "save_warmup"
+  )
+  expect_error(
+    nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                  include = NA, refresh = 0),
+    "include"
+  )
+  expect_error(
+    nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                  mindepth = 1.5, refresh = 0),
+    "mindepth"
+  )
+  expect_error(
+    nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                  max_energy_error = 0, refresh = 0),
+    "max_energy_error"
+  )
+  expect_error(
+    nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                  adaptation = "low_rank", mass_matrix_gamma = 0, refresh = 0),
+    "mass_matrix_gamma"
+  )
+  expect_s3_class(
+    nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                  num_draws = 10, num_warmup = 10, num_chains = 1,
+                  seed = 1L, refresh = 0, adaptation = "diag",
+                  mass_matrix_gamma = 0, mass_matrix_eigval_cutoff = 0),
+    "draws_array"
   )
 })
 

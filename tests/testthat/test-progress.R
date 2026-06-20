@@ -21,16 +21,25 @@ test_that("progress mode falls back to text when cli is unavailable", {
 })
 
 test_that("cli is enabled interactively but disabled while knitting", {
-  withr::local_options(knitr.in.progress = NULL)
-  expect_true(nutpieR:::should_use_cli_progress(interactive = TRUE))
-  expect_false(nutpieR:::should_use_cli_progress(interactive = FALSE))
+  # `knitting` is injected rather than set via `options(knitr.in.progress=)`:
+  # setting that real option makes testthat load knitr mid-test, which is a
+  # cyclic namespace load under `R CMD check` (see GitHub #34 build failures).
+  expect_true(
+    nutpieR:::should_use_cli_progress(interactive = TRUE, knitting = FALSE)
+  )
+  expect_false(
+    nutpieR:::should_use_cli_progress(interactive = FALSE, knitting = FALSE)
+  )
 
-  withr::local_options(knitr.in.progress = TRUE)
-  expect_false(nutpieR:::should_use_cli_progress(interactive = TRUE))
+  expect_false(
+    nutpieR:::should_use_cli_progress(interactive = TRUE, knitting = TRUE)
+  )
   expect_equal(
     nutpieR:::resolve_progress_mode(
       "auto", refresh = 100L,
-      use_cli = nutpieR:::should_use_cli_progress(interactive = TRUE)
+      use_cli = nutpieR:::should_use_cli_progress(
+        interactive = TRUE, knitting = TRUE
+      )
     ),
     "text"
   )

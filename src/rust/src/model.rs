@@ -36,12 +36,14 @@ fn add_tbb_to_path() {
         .or_else(|_| std::env::var("HOME"))
         .ok()
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir());
+        .or_else(dirs::home_dir);
 
     let Some(home) = home else { return };
     // Search for any bridgestan-* directory (not hardcoded version)
     let bs_base = home.join(".bridgestan");
-    let Ok(entries) = std::fs::read_dir(&bs_base) else { return };
+    let Ok(entries) = std::fs::read_dir(&bs_base) else {
+        return;
+    };
 
     for entry in entries.flatten() {
         let tbb_dir = entry
@@ -67,7 +69,10 @@ fn add_tbb_to_path() {
 }
 
 fn split_csv_names(s: &str) -> Vec<String> {
-    s.split(',').filter(|s| !s.is_empty()).map(String::from).collect()
+    s.split(',')
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// Opened BridgeStan model + cached parameter-name metadata.
@@ -97,10 +102,10 @@ impl BSHandle {
             Some(CString::new(data_json)?)
         };
         let mut model = bridgestan::Model::new(lib, data.as_deref(), seed)?;
-        let block_names = split_csv_names(&model.param_names(false, false));
-        let block_tp_names = split_csv_names(&model.param_names(true, false));
-        let full_names = split_csv_names(&model.param_names(true, true));
-        let unc_names = split_csv_names(&model.param_unc_names());
+        let block_names = split_csv_names(model.param_names(false, false));
+        let block_tp_names = split_csv_names(model.param_names(true, false));
+        let full_names = split_csv_names(model.param_names(true, true));
+        let unc_names = split_csv_names(model.param_unc_names());
         let ndim_unc = model.param_unc_num();
         let ndim_block = model.param_num(false, false);
         let ndim_block_tp = model.param_num(true, false);
@@ -158,7 +163,9 @@ mod tests {
         let joined = std::env::var_os("PATH").unwrap();
         let paths: Vec<PathBuf> = std::env::split_paths(&joined).collect();
         assert_eq!(paths.first(), Some(&tbb_dir));
-        assert!(paths.iter().any(|p| p == PathBuf::from("/usr/bin").as_path()));
+        assert!(paths
+            .iter()
+            .any(|p| p == PathBuf::from("/usr/bin").as_path()));
         assert!(paths.iter().any(|p| p == PathBuf::from("/bin").as_path()));
 
         if let Some(v) = old_home {
@@ -272,7 +279,7 @@ impl StanModel {
         include_gq: bool,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
-            !(!include_tp && include_gq),
+            include_tp || !include_gq,
             "include_tp must be true when include_gq is true (GQ may reference TP)"
         );
         let (num_constrained, names) = match (include_tp, include_gq) {
@@ -325,10 +332,7 @@ impl StanModel {
 impl Model for StanModel {
     type Math<'model> = CpuMath<StanDensity<'model>>;
 
-    fn math<R: rand::Rng + ?Sized>(
-        &self,
-        rng: &mut R,
-    ) -> anyhow::Result<Self::Math<'_>> {
+    fn math<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> anyhow::Result<Self::Math<'_>> {
         // Claim a chain id for this worker thread. See MY_CHAIN_ID doc comment.
         let chain_id = self.chain_counter.fetch_add(1, Ordering::SeqCst);
         MY_CHAIN_ID.with(|c| c.set(Some(chain_id)));

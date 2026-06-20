@@ -18,6 +18,43 @@ use std::time::Duration;
 
 extern "C" {
     static mut R_interrupts_pending: std::os::raw::c_int;
+    static mut R_interrupts_suspended: std::os::raw::c_int;
+    // Pump R's event loop. Front-ends (RStudio, Positron) buffer console output
+    // produced during a blocking native call and only repaint when R processes
+    // events, so without this the progress callback's output is invisible until
+    // sample_stan() returns. See `pump_r_events`.
+    fn R_ProcessEvents();
+}
+
+/// Flush front-end consoles mid-sampling by pumping R's event loop.
+///
+/// Interrupts are suspended across the call: on Unix `R_ProcessEvents` longjmps
+/// (via `onintr`) when an interrupt is pending, which would skip the Rust
+/// `Sampler` teardown and corrupt the in-flight result. Suspending lets it
+/// flush output without jumping; the pending flag is left set and handled at the
+/// top of the poll loop, which returns a clean error there instead.
+fn pump_r_events() {
+    unsafe {
+        let prev = R_interrupts_suspended;
+        R_interrupts_suspended = 1;
+        R_ProcessEvents();
+        R_interrupts_suspended = prev;
+    }
+}
+
+/// Read and clear a pending R interrupt. Returns `true` if one was pending; the
+/// caller should then return a clean `Err` so extendr raises a normal R error
+/// at the call site ("Sampling interrupted.") rather than longjmp'ing past the
+/// in-flight `Sampler` teardown.
+fn interrupt_pending() -> bool {
+    unsafe {
+        if R_interrupts_pending != 0 {
+            R_interrupts_pending = 0;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 mod model;
@@ -95,9 +132,17 @@ fn compile_stan_model_impl(
     let bs_path = bridgestan::download_bridgestan_src().map_err(r_err)?;
     let stan_path = PathBuf::from(stan_file);
 
-    let stanc_vec: Vec<String> = stanc_args.iter().map(|s| s.to_string()).collect();
+    let stanc_vec: Vec<String> = if stanc_args.is_empty() {
+        Vec::new()
+    } else {
+        stanc_args.iter().map(|s| s.to_string()).collect()
+    };
     let stanc_refs: Vec<&str> = stanc_vec.iter().map(String::as_str).collect();
-    let compile_vec: Vec<String> = compile_args.iter().map(|s| s.to_string()).collect();
+    let compile_vec: Vec<String> = if compile_args.is_empty() {
+        Vec::new()
+    } else {
+        compile_args.iter().map(|s| s.to_string()).collect()
+    };
     let compile_refs: Vec<&str> = compile_vec.iter().map(String::as_str).collect();
 
     let lib_path = bridgestan::compile_model(&bs_path, &stan_path, &stanc_refs, &compile_refs)
@@ -187,13 +232,22 @@ fn run_sampler<S: Settings>(
             SamplerWaitResult::Trace(traces) => break traces,
             SamplerWaitResult::Timeout(s) => {
                 sampler_opt = Some(s);
-                // Check interrupt BEFORE calling back into R. Clear the flag and
-                // return a normal Err so extendr raises a clean R error at the
-                // call site ("Sampling interrupted."), rather than longjmp'ing past
-                // the assignment and leaving the user with a confusing "object not
-                // found" on the next line.
-                if unsafe { R_interrupts_pending != 0 } {
-                    unsafe { R_interrupts_pending = 0 };
+                // Check interrupt BEFORE calling back into R, so extendr raises a
+                // clean R error at the call site ("Sampling interrupted.") rather
+                // than longjmp'ing past the assignment and leaving the user with a
+                // confusing "object not found" on the next line.
+                if interrupt_pending() {
+                    return Err(Error::Other("Sampling interrupted.".into()));
+                }
+                // Repaint the front-end console each poll so progress streams
+                // live instead of appearing all at once when sampling ends
+                // (GitHub #34: RStudio buffers native-call output).
+                pump_r_events();
+                // pump_r_events() suspends interrupts, so R_ProcessEvents() can
+                // latch a pending interrupt without longjmp'ing. Re-check before
+                // the R progress callback runs, or it could service the flag by
+                // longjmp'ing across these Rust frames.
+                if interrupt_pending() {
                     return Err(Error::Other("Sampling interrupted.".into()));
                 }
                 let state_snapshot: Vec<ChainState> = {
@@ -319,6 +373,7 @@ fn build_progress_snapshot(state: &[ChainState]) -> List {
 /// @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 ///   sampler_config (JSON), and optionally warmup_draws and warmup_diagnostics.
 /// @noRd
+#[allow(clippy::too_many_arguments)]
 #[extendr]
 fn sample_stan(
     handle: ExternalPtr<model::BSHandle>,
@@ -582,7 +637,7 @@ fn opt_finite_f64(robj: &Robj, name: &str) -> Result<Option<f64>> {
 fn opt_finite_positive_f64(robj: &Robj, name: &str) -> Result<Option<f64>> {
     let v = opt_finite_f64(robj, name)?;
     if let Some(x) = v {
-        if !(x > 0.0) {
+        if x <= 0.0 {
             return Err(Error::Other(format!("`{}` must be > 0, got {}.", name, x)));
         }
     }
@@ -592,7 +647,7 @@ fn opt_finite_positive_f64(robj: &Robj, name: &str) -> Result<Option<f64>> {
 fn opt_finite_in_open_unit(robj: &Robj, name: &str) -> Result<Option<f64>> {
     let v = opt_finite_f64(robj, name)?;
     if let Some(x) = v {
-        if !(x > 0.0 && x < 1.0) {
+        if x <= 0.0 || x >= 1.0 {
             return Err(Error::Other(format!(
                 "`{}` must be in (0, 1), got {}.",
                 name, x
@@ -635,7 +690,13 @@ fn run_with_settings<S: Settings + serde::Serialize>(
 ) -> Result<(Vec<ArrowTrace>, String)> {
     let json = serde_json::to_string(&settings)
         .map_err(|e| Error::Other(format!("failed to serialize sampler settings: {}", e)))?;
-    let traces = run_sampler(stan_model, settings, num_cores, save_warmup, progress_callback)?;
+    let traces = run_sampler(
+        stan_model,
+        settings,
+        num_cores,
+        save_warmup,
+        progress_callback,
+    )?;
     Ok((traces, json))
 }
 

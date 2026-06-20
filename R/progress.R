@@ -12,8 +12,9 @@ EBFMI_THRESHOLD       <- 0.3   # per-chain E-BFMI floor (CmdStanR check_ebfmi de
 #' isn't rendering a knitr document. cli itself is a hard dependency, so there
 #' is no package-availability check to make.
 #' @noRd
-should_use_cli_progress <- function(interactive = base::interactive()) {
-  interactive && !isTRUE(getOption("knitr.in.progress"))
+should_use_cli_progress <- function(interactive = base::interactive(),
+                                    knitting = isTRUE(getOption("knitr.in.progress"))) {
+  interactive && !knitting
 }
 
 #' `use_cli` is injectable so the dispatch can be tested without mocking
@@ -276,30 +277,33 @@ format_min_step <- function(snapshot) {
   sprintf("%.3g", min(finite_steps))
 }
 
+STATUS_TOKEN_NAMES <- c("div", "grad", "draws", "spread", "spark", "lag", "step", "tdepth")
+
+#' @noRd
+format_status_token <- function(name, snapshot, summary, spread_active) {
+  switch(name,
+    div    = format_divergence_status(summary$total_divergences),
+    grad   = format_gradient_status(summary$avg_num_steps),
+    draws  = format_chain_draw_range(snapshot),
+    spread = format_chain_spread(snapshot, active = spread_active),
+    spark  = format_chain_spark(snapshot),
+    lag    = format_chain_lag(snapshot),
+    step   = format_min_step(snapshot),
+    tdepth = format_treedepth_status(summary$max_latest_num_steps)
+  )
+}
+
 #' @noRd
 format_status_tokens <- function(snapshot, summary, format_str,
                                  spread_active = FALSE) {
   result <- format_str
-  if (grepl("{div}", format_str, fixed = TRUE))
-    result <- gsub("{div}", format_divergence_status(summary$total_divergences),
-                   result, fixed = TRUE)
-  if (grepl("{grad}", format_str, fixed = TRUE))
-    result <- gsub("{grad}", format_gradient_status(summary$avg_num_steps),
-                   result, fixed = TRUE)
-  if (grepl("{draws}", format_str, fixed = TRUE))
-    result <- gsub("{draws}", format_chain_draw_range(snapshot), result, fixed = TRUE)
-  if (grepl("{spread}", format_str, fixed = TRUE))
-    result <- gsub("{spread}", format_chain_spread(snapshot, active = spread_active),
-                   result, fixed = TRUE)
-  if (grepl("{spark}", format_str, fixed = TRUE))
-    result <- gsub("{spark}", format_chain_spark(snapshot), result, fixed = TRUE)
-  if (grepl("{lag}", format_str, fixed = TRUE))
-    result <- gsub("{lag}", format_chain_lag(snapshot), result, fixed = TRUE)
-  if (grepl("{step}", format_str, fixed = TRUE))
-    result <- gsub("{step}", format_min_step(snapshot), result, fixed = TRUE)
-  if (grepl("{tdepth}", format_str, fixed = TRUE))
-    result <- gsub("{tdepth}", format_treedepth_status(summary$max_latest_num_steps),
-                   result, fixed = TRUE)
+  for (name in STATUS_TOKEN_NAMES) {
+    token <- paste0("{", name, "}")
+    if (grepl(token, result, fixed = TRUE)) {
+      result <- gsub(token, format_status_token(name, snapshot, summary, spread_active),
+                     result, fixed = TRUE)
+    }
+  }
   # Collapse empty segments left by tokens that returned "". Multi-pass: a run
   # of three or more empty tokens (e.g. "{div} | {spread} | {spark}") needs more
   # than one sweep because each gsub consumes a pipe non-overlapping.
@@ -415,6 +419,21 @@ progress_supports_color <- function() {
   cli::num_ansi_colors() > 1L
 }
 
+#' Is there a *global* message handler installed (`globalCallingHandlers()`)?
+#'
+#' Positron's R kernel (ark) registers a global `message` handler that redirects
+#' message output to the console and invokes the `muffleMessage` restart. That
+#' is a redirect, not suppression: it must not be mistaken for `suppressMessages()`
+#' (see [progress_messages_muffled()]). The query form of `globalCallingHandlers()`
+#' is safe to call with handlers on the stack; only the *setting* form errors.
+#' @noRd
+has_global_message_handler <- function() {
+  handlers <- tryCatch(globalCallingHandlers(), error = function(e) list())
+  # The classes a progress `message()` would match: derived from the same
+  # condition the probe signals so the two can't drift.
+  any(names(handlers) %in% class(simpleMessage("")))
+}
+
 #' Detect whether message conditions are currently being muffled.
 #'
 #' This must run before entering the Rust sampling call. R message handlers
@@ -422,16 +441,23 @@ progress_supports_color <- function() {
 #' progress callback, so the callback closures capture this value up front. The
 #' empty probe condition is observable to non-muffling message handlers, but it
 #' has no default output.
+#'
+#' The probe only exists to honour `suppressMessages()`. A *global* message
+#' handler (e.g. Positron's ark, which redirects output and calls
+#' `muffleMessage`) would otherwise trip the probe and silence all progress even
+#' though the user never asked for it (GitHub #34) -- so when one is present we
+#' report "not muffled" and let the callback emit. The trade-off is that
+#' `suppressMessages()` does not silence *live* progress under such a handler;
+#' the start banner and end summary, emitted at the R top level, are still
+#' suppressed normally.
 #' @noRd
 progress_messages_muffled <- function() {
+  if (has_global_message_handler()) return(FALSE)
   muffled <- FALSE
-  withRestarts({
-    signalCondition(simpleMessage(""))
-    FALSE
-  }, muffleMessage = function() {
-    muffled <<- TRUE
-    TRUE
-  })
+  withRestarts(
+    signalCondition(simpleMessage("")),
+    muffleMessage = function() muffled <<- TRUE
+  )
   muffled
 }
 
@@ -551,9 +577,7 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
   total_draws <- sum(summary$draws, na.rm = TRUE)
   div_frac <- if (total_draws > 0L) total_divs / total_draws else NA_real_
   per_chain_div_frac <- ifelse(summary$draws > 0L, summary$divs / summary$draws, NA_real_)
-  severe_divergences <- is.finite(div_frac) &&
-    (div_frac >= DIV_SEVERE_THRESHOLD ||
-       any(per_chain_div_frac >= DIV_SEVERE_THRESHOLD, na.rm = TRUE))
+  severe_divergences <- divergence_is_severe(div_frac, per_chain_div_frac)
 
   cap_frac <- fraction_at_treedepth_cap(diagnostics, max_treedepth)
   cap_pct <- if (is.finite(cap_frac)) {
@@ -616,15 +640,9 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
   # direction inefficiency coexists with clean within-trajectory geometry, so
   # this is its own block, not an `else if`. Flag-only (silent when every chain
   # is healthy), framed as "N of M chains" to match CmdStanR.
-  ebfmi <- ebfmi_per_chain(diagnostics)
-  if (!is.null(ebfmi)) {
-    n_low <- sum(is.finite(ebfmi) & ebfmi < EBFMI_THRESHOLD)
-    if (n_low > 0L) {
-      n_chains_e <- length(ebfmi)
-      cli::cli_alert_warning(
-        "{n_low} of {n_chains_e} chains had an E-BFMI below 0.3 — the posterior may have heavy tails the sampler explores inefficiently. Consider reparameterizing."
-      )
-    }
+  ebfmi_msg <- ebfmi_warning_msg(ebfmi_per_chain(diagnostics))
+  if (!is.null(ebfmi_msg)) {
+    cli::cli_alert_warning("{ebfmi_msg}")
   }
   invisible(NULL)
 }

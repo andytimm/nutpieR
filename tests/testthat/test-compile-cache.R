@@ -127,6 +127,30 @@ test_that("cache = FALSE compiles to a fresh tempdir, leaves cache untouched", {
   expect_equal(counter$n, 2L)
 })
 
+test_that("compile validates cache and verbose arguments", {
+  local_isolated_cache()
+  counter <- new.env(parent = emptyenv())
+  testthat::local_mocked_bindings(
+    compile_stan_model = make_compile_stub(counter),
+    bs_version = function() "TEST.0",
+    bridgestan_version = function() "TEST.0",
+    .package = "nutpieR"
+  )
+
+  stan <- make_temp_stan()
+  on.exit(unlink(dirname(stan), recursive = TRUE), add = TRUE)
+
+  expect_error(
+    nutpie_compile_model(stan_file = stan, verbose = NA_integer_),
+    "verbose"
+  )
+  expect_error(
+    nutpie_compile_model(stan_file = stan, cache = "false", verbose = 0L),
+    "cache"
+  )
+  expect_equal(counter$n, 0L)
+})
+
 test_that("inline cache: hit, miss on content/flags, clear wipes", {
   local_isolated_cache()
   counter <- new.env(parent = emptyenv())
