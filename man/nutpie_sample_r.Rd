@@ -5,8 +5,9 @@
 \title{Sample an arbitrary R log-density with nutpie's NUTS}
 \usage{
 nutpie_sample_r(
-  fn,
-  grad,
+  fn = NULL,
+  grad = NULL,
+  value_grad = NULL,
   ndim = NULL,
   init = NULL,
   num_draws = 1000L,
@@ -20,12 +21,18 @@ nutpie_sample_r(
 )
 }
 \arguments{
-\item{fn}{\verb{function(y)} returning the log-posterior density at the
+\item{fn}{Optional \verb{function(y)} returning the log-posterior density at the
 unconstrained vector \code{y} (higher = more probable). For a TMB objective
-\code{obj$fn} (a \emph{negative} log-likelihood), pass \code{function(y) -obj$fn(y)}.}
+\code{obj$fn} (a \emph{negative} log-likelihood), pass \code{function(y) -obj$fn(y)}.
+Required unless \code{value_grad} is supplied.}
 
-\item{grad}{\verb{function(y)} returning the gradient of \code{fn} as a numeric vector
-of length \code{ndim}.}
+\item{grad}{Optional \verb{function(y)} returning the gradient of \code{fn} as a numeric
+vector of length \code{ndim}. Required unless \code{value_grad} is supplied.}
+
+\item{value_grad}{Optional combined callback \verb{function(y)} returning a numeric
+vector \code{c(logp, gradient)}, length \code{ndim + 1}. This is the preferred fast
+path for expensive transformed densities because it crosses into R once per
+leapfrog step and can share intermediate work between value and gradient.}
 
 \item{ndim}{Integer dimension of \code{y}. If \code{init} is supplied as a numeric
 vector, \code{ndim} defaults to its length.}
@@ -62,6 +69,8 @@ that \code{\link[=nutpie_diagnostics]{nutpie_diagnostics()}} and the posterior/b
 they work as usual. Diagnostics cover divergences, leapfrog count
 (\code{n_steps}), step size, tree depth, energy, \code{logp}, and mean acceptance.
 (Unlike \code{\link[=nutpie_sample]{nutpie_sample()}} output, no \code{sampler_config} attribute is attached.)
+The \code{callback_stats} attribute reports R-callback evaluation counts and
+timing, useful for separating sampler geometry from implementation overhead.
 }
 \description{
 Run nuts-rs NUTS over a log-posterior supplied as plain R functions, instead

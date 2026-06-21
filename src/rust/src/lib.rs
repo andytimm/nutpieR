@@ -12,7 +12,9 @@ use nuts_rs::{
     ProgressCallback, Sampler, SamplerWaitResult, Settings,
 };
 use rand::SeedableRng;
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -627,8 +629,12 @@ fn sample_stan(
 /// the parallel `Sampler` path used by `sample_stan` — see `r_density.rs`.
 ///
 /// @param logp_fn R closure `function(y) -> double`: the log-posterior (higher
-///   = more probable). For a TMB model, pass the negated objective.
-/// @param grad_fn R closure `function(y) -> double[ndim]`: gradient of `logp_fn`.
+///   = more probable). For a TMB model, pass the negated objective. May be NULL
+///   when `value_grad_fn` is supplied.
+/// @param grad_fn R closure `function(y) -> double[ndim]`: gradient of
+///   `logp_fn`. May be NULL when `value_grad_fn` is supplied.
+/// @param value_grad_fn Optional R closure `function(y) -> c(logp, gradient)`,
+///   used as a faster single-callback path.
 /// @param ndim Dimension of the (unconstrained) parameter vector `y`.
 /// @param init Numeric vector of length `ndim`: starting position.
 /// @param num_draws Post-warmup draws to keep.
@@ -647,6 +653,7 @@ fn sample_stan(
 fn sample_r_density(
     logp_fn: Robj,
     grad_fn: Robj,
+    value_grad_fn: Robj,
     ndim: i32,
     init: Robj,
     num_draws: i32,
@@ -676,12 +683,37 @@ fn sample_r_density(
         check_seed(seed)?;
         let ndim = ndim as usize;
 
-        let logp_fn = logp_fn
-            .as_function()
-            .ok_or_else(|| Error::Other("logp_fn must be a function".into()))?;
-        let grad_fn = grad_fn
-            .as_function()
-            .ok_or_else(|| Error::Other("grad_fn must be a function".into()))?;
+        let logp_fn = if logp_fn.is_null() {
+            None
+        } else {
+            Some(
+                logp_fn
+                    .as_function()
+                    .ok_or_else(|| Error::Other("logp_fn must be NULL or a function".into()))?,
+            )
+        };
+        let grad_fn = if grad_fn.is_null() {
+            None
+        } else {
+            Some(
+                grad_fn
+                    .as_function()
+                    .ok_or_else(|| Error::Other("grad_fn must be NULL or a function".into()))?,
+            )
+        };
+        let value_grad_fn =
+            if value_grad_fn.is_null() {
+                None
+            } else {
+                Some(value_grad_fn.as_function().ok_or_else(|| {
+                    Error::Other("value_grad_fn must be NULL or a function".into())
+                })?)
+            };
+        if value_grad_fn.is_none() && (logp_fn.is_none() || grad_fn.is_none()) {
+            return Err(Error::Other(
+                "provide either value_grad_fn or both logp_fn and grad_fn".into(),
+            ));
+        }
 
         let init_pos = init
             .as_real_vector()
@@ -711,7 +743,14 @@ fn sample_r_density(
             settings.adapt_options.step_size_settings.target_accept = v;
         }
 
-        let math = CpuMath::new(r_density::RDensity::new(logp_fn, grad_fn, ndim));
+        let callback_stats = Rc::new(RefCell::new(r_density::CallbackStats::default()));
+        let math = CpuMath::new(r_density::RDensity::new(
+            logp_fn,
+            grad_fn,
+            value_grad_fn,
+            ndim,
+            Rc::clone(&callback_stats),
+        ));
         let mut seed_rng = rand::rngs::StdRng::seed_from_u64(seed as u64);
         let mut chain = settings.new_chain(0, math, &mut seed_rng);
         chain.set_position(&init_pos).map_err(|e| {
@@ -720,6 +759,10 @@ fn sample_r_density(
                  not finite there?): {e:#}"
             ))
         })?;
+        // `set_position()` evaluates the callback once to validate the initial
+        // state. Reset counters so callback stats describe the actual warmup +
+        // sampling run and line up with `sampler_seconds`.
+        *callback_stats.borrow_mut() = r_density::CallbackStats::default();
 
         let n_warmup = num_warmup as usize;
         let n_draws = num_draws as usize;
@@ -813,12 +856,31 @@ fn sample_r_density(
             (().into_robj(), ().into_robj())
         };
 
+        let callback_stats = callback_stats.borrow();
+        let callback_elapsed = callback_stats.elapsed.as_secs_f64();
+        let sampler_elapsed = start.elapsed().as_secs_f64();
         Ok(list!(
             draws = draws,
             ndim = ndim as i32,
             num_draws = num_draws,
             num_warmup = num_warmup,
             diagnostics = diagnostics,
+            callback_stats = list!(
+                logp_evals = callback_stats.logp_evals as i32,
+                r_calls = callback_stats.r_calls as i32,
+                callback_seconds = callback_elapsed,
+                sampler_seconds = sampler_elapsed,
+                seconds_per_logp_eval = if callback_stats.logp_evals > 0 {
+                    callback_elapsed / callback_stats.logp_evals as f64
+                } else {
+                    f64::NAN
+                },
+                r_calls_per_logp_eval = if callback_stats.logp_evals > 0 {
+                    callback_stats.r_calls as f64 / callback_stats.logp_evals as f64
+                } else {
+                    f64::NAN
+                }
+            ),
             warmup_draws = warmup_draws_robj,
             warmup_diagnostics = warmup_diagnostics_robj
         ))

@@ -66,6 +66,33 @@ test_that("reported logp matches the supplied density at each draw", {
   expect_equal(d$logp, expected, tolerance = 1e-8, ignore_attr = TRUE)
 })
 
+test_that("combined value_grad callback matches split fn/grad path", {
+  fn <- mvn_logp(mvn_mu, mvn_sigma)
+  gr <- mvn_grad(mvn_mu, mvn_sigma)
+  value_grad <- function(y) c(fn(y), gr(y))
+
+  split_fit <- nutpie_sample_r(fn, gr, ndim = 2, num_draws = 200,
+                               num_warmup = 200, seed = 13)
+  combined_fit <- nutpie_sample_r(value_grad = value_grad, ndim = 2,
+                                  num_draws = 200, num_warmup = 200,
+                                  seed = 13)
+
+  expect_equal(as.matrix(posterior::as_draws_matrix(combined_fit)),
+               as.matrix(posterior::as_draws_matrix(split_fit)),
+               ignore_attr = TRUE)
+  expect_equal(nutpie_diagnostics(combined_fit)$logp,
+               nutpie_diagnostics(split_fit)$logp,
+               tolerance = 1e-12, ignore_attr = TRUE)
+
+  split_stats <- attr(split_fit, "callback_stats")
+  combined_stats <- attr(combined_fit, "callback_stats")
+  expect_equal(split_stats$logp_evals, combined_stats$logp_evals)
+  expect_equal(split_stats$r_calls, 2L * split_stats$logp_evals)
+  expect_equal(combined_stats$r_calls, combined_stats$logp_evals)
+  expect_true(split_stats$callback_seconds > 0)
+  expect_true(combined_stats$callback_seconds > 0)
+})
+
 test_that("nutpie_nuts_params is fully populated and aligned", {
   fit <- nutpie_sample_r(mvn_logp(mvn_mu, mvn_sigma),
                          mvn_grad(mvn_mu, mvn_sigma),
@@ -108,8 +135,9 @@ test_that("seed makes runs reproducible", {
                ndim = 2, num_draws = 200, num_warmup = 200, seed = 99)
   a <- do.call(nutpie_sample_r, args)
   b <- do.call(nutpie_sample_r, args)
-  expect_identical(as.matrix(posterior::as_draws_matrix(a)),
-                   as.matrix(posterior::as_draws_matrix(b)))
+  expect_equal(as.matrix(posterior::as_draws_matrix(a)),
+               as.matrix(posterior::as_draws_matrix(b)),
+               ignore_attr = TRUE)
 })
 
 test_that("default variable names are y1..yd, ndim inferred from init", {
@@ -175,6 +203,8 @@ test_that("invalid arguments are rejected", {
   gr <- mvn_grad(mvn_mu, mvn_sigma)
   expect_error(nutpie_sample_r(1, gr, ndim = 2), "`fn` must be a function")
   expect_error(nutpie_sample_r(fn, 1, ndim = 2), "`grad` must be a function")
+  expect_error(nutpie_sample_r(value_grad = 1, ndim = 2),
+               "`value_grad` must be a function")
   expect_error(nutpie_sample_r(fn, gr), "Supply either `ndim` or an `init`")
   expect_error(nutpie_sample_r(fn, gr, ndim = 2, num_warmup = 0),
                "num_warmup")

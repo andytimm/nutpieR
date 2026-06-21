@@ -11,11 +11,16 @@
 #' [nutpie_sample()] is not available here. Run this several times (varying
 #' `seed`) if you want multiple chains.
 #'
-#' @param fn `function(y)` returning the log-posterior density at the
+#' @param fn Optional `function(y)` returning the log-posterior density at the
 #'   unconstrained vector `y` (higher = more probable). For a TMB objective
 #'   `obj$fn` (a *negative* log-likelihood), pass `function(y) -obj$fn(y)`.
-#' @param grad `function(y)` returning the gradient of `fn` as a numeric vector
-#'   of length `ndim`.
+#'   Required unless `value_grad` is supplied.
+#' @param grad Optional `function(y)` returning the gradient of `fn` as a numeric
+#'   vector of length `ndim`. Required unless `value_grad` is supplied.
+#' @param value_grad Optional combined callback `function(y)` returning a numeric
+#'   vector `c(logp, gradient)`, length `ndim + 1`. This is the preferred fast
+#'   path for expensive transformed densities because it crosses into R once per
+#'   leapfrog step and can share intermediate work between value and gradient.
 #' @param ndim Integer dimension of `y`. If `init` is supplied as a numeric
 #'   vector, `ndim` defaults to its length.
 #' @param init Starting position. Either a numeric vector of length `ndim`, or a
@@ -41,16 +46,25 @@
 #'   they work as usual. Diagnostics cover divergences, leapfrog count
 #'   (`n_steps`), step size, tree depth, energy, `logp`, and mean acceptance.
 #'   (Unlike [nutpie_sample()] output, no `sampler_config` attribute is attached.)
+#'   The `callback_stats` attribute reports R-callback evaluation counts and
+#'   timing, useful for separating sampler geometry from implementation overhead.
 #'
 #' @seealso [nutpie_sample()] for Stan models.
 #' @export
-nutpie_sample_r <- function(fn, grad, ndim = NULL, init = NULL,
+nutpie_sample_r <- function(fn = NULL, grad = NULL, value_grad = NULL,
+                            ndim = NULL, init = NULL,
                             num_draws = 1000L, num_warmup = 1000L,
                             seed = NULL, save_warmup = FALSE,
                             max_treedepth = NULL, target_accept = NULL,
                             expand = NULL, progress = interactive()) {
-  if (!is.function(fn)) stop("`fn` must be a function.", call. = FALSE)
-  if (!is.function(grad)) stop("`grad` must be a function.", call. = FALSE)
+  if (is.null(value_grad)) {
+    if (!is.function(fn)) stop("`fn` must be a function.", call. = FALSE)
+    if (!is.function(grad)) stop("`grad` must be a function.", call. = FALSE)
+  } else {
+    if (!is.function(value_grad)) stop("`value_grad` must be a function.", call. = FALSE)
+    if (!is.null(fn) && !is.function(fn)) stop("`fn` must be NULL or a function.", call. = FALSE)
+    if (!is.null(grad) && !is.function(grad)) stop("`grad` must be NULL or a function.", call. = FALSE)
+  }
   if (!is.null(expand) && !is.function(expand)) {
     stop("`expand` must be NULL or a function.", call. = FALSE)
   }
@@ -72,6 +86,7 @@ nutpie_sample_r <- function(fn, grad, ndim = NULL, init = NULL,
   raw <- sample_r_density(
     logp_fn = fn,
     grad_fn = grad,
+    value_grad_fn = value_grad,
     ndim = ndim,
     init = init_pos,
     num_draws = num_draws,
@@ -132,6 +147,7 @@ assemble_r_sample_result <- function(raw, num_draws, num_warmup, save_warmup,
   attr(draws, "num_chains") <- 1L
   attr(draws, "num_warmup") <- num_warmup
   attr(draws, "num_draws") <- num_draws
+  attr(draws, "callback_stats") <- raw$callback_stats
 
   if (save_warmup && !is.null(raw$warmup_draws)) {
     attr(draws, "warmup_draws") <-
