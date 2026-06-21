@@ -1,3 +1,10 @@
+# nutpieR (development)
+
+* New `nutpie_sample_r()`: run NUTS over a log-density supplied as plain R
+  functions (`fn` + `grad`), instead of a Stan model — e.g. a preconditioned
+  RTMB/TMB objective (GitHub #26). Single chain only (R is single-threaded). An
+  optional `expand` callback maps each draw to reported quantities.
+
 # nutpieR 1.8.2
 
 * Live sampling progress streams in the RStudio and Positron consoles again

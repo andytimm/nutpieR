@@ -34,7 +34,23 @@ test_models$tp_gq <- try_compile(
   stan_file = test_path("test_models", "tp_gq.stan")
 )
 
+# Correlated 2D normal whose unconstrained space IS the parameter vector, so
+# `nutpie_sample()` and `nutpie_sample_r()` sample the same density on the same
+# scale — the basis for the R-callback cross-check in test-r-density.R.
+test_models$mvn <- try_compile(
+  "mvn",
+  code = paste(
+    "data { vector[2] mu; matrix[2,2] Sigma; }",
+    "parameters { vector[2] y; }",
+    "model { y ~ multi_normal(mu, Sigma); }",
+    sep = "\n"
+  )
+)
+
 # Shared fixtures used by test-init.R, test-helpers.R, test-nutpieR.R.
+
+mvn_mu <- c(1, -2)
+mvn_sigma <- matrix(c(1, 0.8, 0.8, 1), 2)
 
 bernoulli_data <- function() {
   list(N = 10, y = c(0, 1, 0, 0, 0, 0, 0, 0, 0, 1))

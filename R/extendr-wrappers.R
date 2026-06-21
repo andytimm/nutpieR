@@ -59,6 +59,10 @@ compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__
 #' @noRd
 sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq, progress_callback) .Call(wrap__sample_stan, handle, num_draws, num_warmup, num_chains, seed, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq, progress_callback)
 
+#' Single-chain NUTS over a log-density supplied as R closures (issue #26).
+#' @noRd
+sample_r_density <- function(logp_fn, grad_fn, ndim, init, num_draws, num_warmup, seed, save_warmup, max_treedepth, target_accept) .Call(wrap__sample_r_density, logp_fn, grad_fn, ndim, init, num_draws, num_warmup, seed, save_warmup, max_treedepth, target_accept)
+
 #' Open a BridgeStan model and return an `ExternalPtr<BSHandle>` that caches
 #' parameter-name metadata. The handle may be used by any of the `bs_*`
 #' accessor functions without re-opening the shared library.

@@ -428,13 +428,18 @@ nutpie_nuts_params <- function(draws) {
   n <- length(chain)
   params <- c("accept_stat__", "divergent__", "treedepth__",
               "n_leapfrog__", "stepsize__", "energy__")
+  # A backend may not populate every field (e.g. `nutpie_sample_r()` reports
+  # divergences, leapfrog count, and step size but not energy/treedepth). Fill
+  # absent fields with NA of the right length so `Value` stays aligned with
+  # `Parameter` instead of recycling a short vector into mislabeled columns.
+  or_na <- function(x) if (is.null(x)) rep(NA_real_, n) else as.numeric(x)
   values <- c(
-    as.numeric(diag$mean_tree_accept),
-    as.numeric(diag$diverging),
-    as.numeric(diag$depth),
-    as.numeric(diag$n_steps),
-    as.numeric(diag$step_size),
-    as.numeric(diag$energy)
+    or_na(diag$mean_tree_accept),
+    or_na(diag$diverging),
+    or_na(diag$depth),
+    or_na(diag$n_steps),
+    or_na(diag$step_size),
+    or_na(diag$energy)
   )
 
   data.frame(

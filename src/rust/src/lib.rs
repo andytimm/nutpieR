@@ -8,13 +8,14 @@ use arrow::datatypes::DataType;
 use extendr_api::error::Result;
 use extendr_api::prelude::*;
 use nuts_rs::{
-    ArrowConfig, ArrowTrace, ChainProgress, DiagNutsSettings, LowRankNutsSettings,
+    ArrowConfig, ArrowTrace, Chain, ChainProgress, CpuMath, DiagNutsSettings, LowRankNutsSettings,
     ProgressCallback, Sampler, SamplerWaitResult, Settings,
 };
+use rand::SeedableRng;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 extern "C" {
     static mut R_interrupts_pending: std::os::raw::c_int;
@@ -58,6 +59,7 @@ fn interrupt_pending() -> bool {
 }
 
 mod model;
+mod r_density;
 
 /// Convert any Display error to an extendr Error. Uses anyhow's alternate
 /// Display format (`{:#}`) to preserve cause chains; a no-op for plain
@@ -614,6 +616,182 @@ fn sample_stan(
             warmup_diagnostics = warmup_diagnostics_robj,
             expand_errors = n_expand_errors,
             sampler_config = sampler_config_json
+        ))
+    })())
+}
+
+/// Single-chain NUTS over a log-density supplied as R closures (issue #26).
+///
+/// Drives one `NutsChain` synchronously on the main R thread so the `logp`
+/// callbacks into R are safe (R is single-threaded). This is deliberately NOT
+/// the parallel `Sampler` path used by `sample_stan` — see `r_density.rs`.
+///
+/// @param logp_fn R closure `function(y) -> double`: the log-posterior (higher
+///   = more probable). For a TMB model, pass the negated objective.
+/// @param grad_fn R closure `function(y) -> double[ndim]`: gradient of `logp_fn`.
+/// @param ndim Dimension of the (unconstrained) parameter vector `y`.
+/// @param init Numeric vector of length `ndim`: starting position.
+/// @param num_draws Post-warmup draws to keep.
+/// @param num_warmup Warmup (tuning) draws.
+/// @param seed Random seed.
+/// @param save_warmup Whether to return warmup draws + diagnostics.
+/// @param max_treedepth Optional NUTS max tree depth (NULL = nuts-rs default).
+/// @param target_accept Optional target acceptance probability in (0, 1).
+/// @return A named list: `draws` (flat, draw-major, length num_draws*ndim),
+///   `ndim`, `num_draws`, `num_warmup`, `diagnostics`, and (when `save_warmup`)
+///   `warmup_draws` / `warmup_diagnostics`.
+/// @noRd
+#[allow(clippy::too_many_arguments)]
+#[extendr]
+fn sample_r_density(
+    logp_fn: Robj,
+    grad_fn: Robj,
+    ndim: i32,
+    init: Robj,
+    num_draws: i32,
+    num_warmup: i32,
+    seed: i32,
+    save_warmup: bool,
+    max_treedepth: Robj,
+    target_accept: Robj,
+) -> List {
+    or_throw((|| -> Result<List> {
+        if ndim <= 0 {
+            return Err(Error::Other(format!("ndim must be >= 1, got {}", ndim)));
+        }
+        if num_draws <= 0 {
+            return Err(Error::Other(format!(
+                "num_draws must be >= 1, got {}",
+                num_draws
+            )));
+        }
+        if num_warmup < 0 {
+            return Err(Error::Other(format!(
+                "num_warmup must be >= 0, got {}",
+                num_warmup
+            )));
+        }
+        check_seed(seed)?;
+        let ndim = ndim as usize;
+
+        let logp_fn = logp_fn
+            .as_function()
+            .ok_or_else(|| Error::Other("logp_fn must be a function".into()))?;
+        let grad_fn = grad_fn
+            .as_function()
+            .ok_or_else(|| Error::Other("grad_fn must be a function".into()))?;
+
+        let init_pos = init
+            .as_real_vector()
+            .ok_or_else(|| Error::Other("init must be a numeric vector".into()))?;
+        if init_pos.len() != ndim {
+            return Err(Error::Other(format!(
+                "init has length {}, expected ndim = {}",
+                init_pos.len(),
+                ndim
+            )));
+        }
+
+        let max_treedepth_opt = opt_count(&max_treedepth, "max_treedepth", 1)?;
+        let target_accept_opt = opt_finite_in_open_unit(&target_accept, "target_accept")?;
+
+        let mut settings = DiagNutsSettings::default();
+        settings.num_tune = num_warmup as u64;
+        settings.num_draws = num_draws as u64;
+        settings.num_chains = 1;
+        settings.seed = seed as u64;
+        if let Some(v) = max_treedepth_opt {
+            settings.maxdepth = v as u64;
+        }
+        if let Some(v) = target_accept_opt {
+            settings.adapt_options.step_size_settings.target_accept = v;
+        }
+
+        let math = CpuMath::new(r_density::RDensity::new(logp_fn, grad_fn, ndim));
+        let mut seed_rng = rand::rngs::StdRng::seed_from_u64(seed as u64);
+        let mut chain = settings.new_chain(0, math, &mut seed_rng);
+        chain.set_position(&init_pos).map_err(|e| {
+            r_err(format!(
+                "could not initialize at the supplied `init` (log density or gradient \
+                 not finite there?): {e:#}"
+            ))
+        })?;
+
+        let n_warmup = num_warmup as usize;
+        let n_draws = num_draws as usize;
+
+        // Post-warmup accumulators. Field names mirror the nuts-rs Arrow stats
+        // schema (`diverging`, `n_steps`, `step_size`) so `nutpie_diagnostics()`
+        // and `nutpie_nuts_params()` work on R-density output unchanged.
+        let mut draws: Vec<f64> = Vec::with_capacity(n_draws * ndim);
+        let mut diverging: Vec<bool> = Vec::with_capacity(n_draws);
+        let mut n_steps: Vec<i32> = Vec::with_capacity(n_draws);
+        let mut step_size: Vec<f64> = Vec::with_capacity(n_draws);
+
+        // Warmup accumulators (only filled when requested).
+        let mut w_draws: Vec<f64> = Vec::new();
+        let mut w_diverging: Vec<bool> = Vec::new();
+        let mut w_n_steps: Vec<i32> = Vec::new();
+        let mut w_step_size: Vec<f64> = Vec::new();
+
+        let mut last_pump = Instant::now();
+        for i in 0..(n_warmup + n_draws) {
+            // Same interrupt/event-pump discipline as the Stan poll loop: check
+            // for Ctrl-C before re-entering R, and flush front-end consoles
+            // (RStudio/Positron buffer native-call output) a few times a second.
+            if interrupt_pending() {
+                return Err(Error::Other("Sampling interrupted.".into()));
+            }
+            if last_pump.elapsed() >= Duration::from_millis(100) {
+                pump_r_events();
+                if interrupt_pending() {
+                    return Err(Error::Other("Sampling interrupted.".into()));
+                }
+                last_pump = Instant::now();
+            }
+
+            let (pos, progress) = chain.draw().map_err(r_err)?;
+
+            if i < n_warmup {
+                if save_warmup {
+                    w_draws.extend_from_slice(&pos);
+                    w_diverging.push(progress.diverging);
+                    w_n_steps.push(progress.num_steps as i32);
+                    w_step_size.push(progress.step_size);
+                }
+            } else {
+                draws.extend_from_slice(&pos);
+                diverging.push(progress.diverging);
+                n_steps.push(progress.num_steps as i32);
+                step_size.push(progress.step_size);
+            }
+        }
+
+        let diagnostics = list!(
+            diverging = diverging,
+            n_steps = n_steps,
+            step_size = step_size
+        );
+
+        let (warmup_draws_robj, warmup_diagnostics_robj): (Robj, Robj) = if save_warmup {
+            let wdiag = list!(
+                diverging = w_diverging,
+                n_steps = w_n_steps,
+                step_size = w_step_size
+            );
+            (w_draws.into_robj(), wdiag.into_robj())
+        } else {
+            (().into_robj(), ().into_robj())
+        };
+
+        Ok(list!(
+            draws = draws,
+            ndim = ndim as i32,
+            num_draws = num_draws,
+            num_warmup = num_warmup,
+            diagnostics = diagnostics,
+            warmup_draws = warmup_draws_robj,
+            warmup_diagnostics = warmup_diagnostics_robj
         ))
     })())
 }
@@ -1225,6 +1403,7 @@ extendr_module! {
     fn bridgestan_version;
     fn compile_stan_model;
     fn sample_stan;
+    fn sample_r_density;
     fn bs_open;
     fn bs_block_names;
     fn bs_block_tp_names;
