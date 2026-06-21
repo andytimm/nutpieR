@@ -45,14 +45,25 @@ test_that("diagnostics include energy, tree depth, and acceptance", {
                          mvn_grad(mvn_mu, mvn_sigma),
                          ndim = 2, num_draws = 400, num_warmup = 400, seed = 8)
   d <- nutpie_diagnostics(fit)
-  expect_true(all(c("depth", "maxdepth_reached", "energy",
+  expect_true(all(c("depth", "maxdepth_reached", "energy", "logp",
                     "mean_tree_accept") %in% names(d)))
   expect_true(all(is.finite(d$energy)))
+  expect_true(all(is.finite(d$logp)))
   expect_true(all(d$depth >= 0L))
   # Mean acceptance should sit near the NUTS target (0.8 by default).
   expect_equal(mean(d$mean_tree_accept), 0.8, tolerance = 0.15)
   # E-BFMI is computable now that energy is present.
   expect_true(is.finite(ebfmi_per_chain(d)))
+})
+
+test_that("reported logp matches the supplied density at each draw", {
+  fn <- mvn_logp(mvn_mu, mvn_sigma)
+  fit <- nutpie_sample_r(fn, mvn_grad(mvn_mu, mvn_sigma),
+                         ndim = 2, num_draws = 200, num_warmup = 200, seed = 6)
+  d <- nutpie_diagnostics(fit)
+  dm <- as.matrix(posterior::as_draws_matrix(fit))
+  expected <- unname(apply(dm, 1L, fn))
+  expect_equal(d$logp, expected, tolerance = 1e-8, ignore_attr = TRUE)
 })
 
 test_that("nutpie_nuts_params is fully populated and aligned", {
@@ -118,6 +129,24 @@ test_that("expand maps draws to named reported quantities", {
   expect_equal(posterior::variables(fit), c("a", "b", "total"))
   dm <- as.matrix(posterior::as_draws_matrix(fit))
   expect_equal(unname(dm[, "total"]), unname(dm[, "a"] + dm[, "b"]))
+})
+
+test_that("expand returning a varying-length vector errors clearly", {
+  # Returns length 2 on draw 1 but length 1 afterwards — must not silently
+  # recycle into the row.
+  flaky <- local({
+    n <- 0L
+    function(y) {
+      n <<- n + 1L
+      if (n == 1L) c(a = y[1], b = y[2]) else 99
+    }
+  })
+  expect_error(
+    nutpie_sample_r(mvn_logp(mvn_mu, mvn_sigma), mvn_grad(mvn_mu, mvn_sigma),
+                    ndim = 2, num_draws = 50, num_warmup = 50, seed = 1,
+                    expand = flaky),
+    "fixed-length"
+  )
 })
 
 test_that("init may be a function of chain_id", {

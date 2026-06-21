@@ -36,11 +36,11 @@
 #' @param progress Whether to print a periodic one-line status to the console.
 #'   Defaults to `TRUE` in interactive sessions.
 #'
-#' @return A [posterior::draws_array] with the same attributes as
-#'   [nutpie_sample()] output, so [nutpie_diagnostics()] and the
-#'   posterior/bayesplot tooling work as usual. Diagnostics cover divergences,
-#'   leapfrog count (`n_steps`), step size, tree depth, energy, and mean
-#'   acceptance.
+#' @return A [posterior::draws_array] carrying the same diagnostics attributes
+#'   that [nutpie_diagnostics()] and the posterior/bayesplot tooling consume, so
+#'   they work as usual. Diagnostics cover divergences, leapfrog count
+#'   (`n_steps`), step size, tree depth, energy, `logp`, and mean acceptance.
+#'   (Unlike [nutpie_sample()] output, no `sampler_config` attribute is attached.)
 #'
 #' @seealso [nutpie_sample()] for Stan models.
 #' @export
@@ -158,10 +158,20 @@ r_draws_array <- function(flat, n_draws, ndim, expand) {
     first <- expand(m[1L, ])
     nm <- names(first)
     first <- as.numeric(first)
-    out <- matrix(0, nrow = n_draws, ncol = length(first))
+    width <- length(first)
+    out <- matrix(0, nrow = n_draws, ncol = width)
     out[1L, ] <- first
     for (i in seq_len(n_draws)[-1L]) {
-      out[i, ] <- as.numeric(expand(m[i, ]))
+      v <- as.numeric(expand(m[i, ]))
+      # Guard against a varying-length return: `out[i, ] <- v` would silently
+      # recycle a too-short `v` (e.g. length 1) across the row.
+      if (length(v) != width) {
+        stop(sprintf(
+          "`expand` returned length %d on draw %d but length %d on draw 1; it must return a fixed-length vector.",
+          length(v), i, width
+        ), call. = FALSE)
+      }
+      out[i, ] <- v
     }
     m <- out
     var_names <- if (!is.null(nm)) nm else paste0("v", seq_len(ncol(m)))

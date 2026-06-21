@@ -57,11 +57,11 @@ variable names. Default: report \code{y} as \verb{y1..y\{ndim\}}.}
 Defaults to \code{TRUE} in interactive sessions.}
 }
 \value{
-A \link[posterior:draws_array]{posterior::draws_array} with the same attributes as
-\code{\link[=nutpie_sample]{nutpie_sample()}} output, so \code{\link[=nutpie_diagnostics]{nutpie_diagnostics()}} and the
-posterior/bayesplot tooling work as usual. Diagnostics cover divergences,
-leapfrog count (\code{n_steps}), step size, tree depth, energy, and mean
-acceptance.
+A \link[posterior:draws_array]{posterior::draws_array} carrying the same diagnostics attributes
+that \code{\link[=nutpie_diagnostics]{nutpie_diagnostics()}} and the posterior/bayesplot tooling consume, so
+they work as usual. Diagnostics cover divergences, leapfrog count
+(\code{n_steps}), step size, tree depth, energy, \code{logp}, and mean acceptance.
+(Unlike \code{\link[=nutpie_sample]{nutpie_sample()}} output, no \code{sampler_config} attribute is attached.)
 }
 \description{
 Run nuts-rs NUTS over a log-posterior supplied as plain R functions, instead

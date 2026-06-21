@@ -778,6 +778,7 @@ fn sample_r_density(
                 depth: stats.depth as i32,
                 maxdepth_reached: stats.maxdepth_reached,
                 energy: stats.point.energy,
+                logp: stats.point.logp,
                 mean_tree_accept: stats.adapt.step_size.mean_tree_accept,
             };
 
@@ -833,6 +834,7 @@ struct DrawRecord {
     depth: i32,
     maxdepth_reached: bool,
     energy: f64,
+    logp: f64,
     mean_tree_accept: f64,
 }
 
@@ -848,6 +850,7 @@ struct DrawAccumulator {
     depth: Vec<i32>,
     maxdepth_reached: Vec<bool>,
     energy: Vec<f64>,
+    logp: Vec<f64>,
     mean_tree_accept: Vec<f64>,
 }
 
@@ -861,6 +864,7 @@ impl DrawAccumulator {
             depth: Vec::with_capacity(n_draws),
             maxdepth_reached: Vec::with_capacity(n_draws),
             energy: Vec::with_capacity(n_draws),
+            logp: Vec::with_capacity(n_draws),
             mean_tree_accept: Vec::with_capacity(n_draws),
         }
     }
@@ -873,6 +877,7 @@ impl DrawAccumulator {
         self.depth.push(rec.depth);
         self.maxdepth_reached.push(rec.maxdepth_reached);
         self.energy.push(rec.energy);
+        self.logp.push(rec.logp);
         self.mean_tree_accept.push(rec.mean_tree_accept);
     }
 
@@ -885,6 +890,7 @@ impl DrawAccumulator {
             depth = self.depth,
             maxdepth_reached = self.maxdepth_reached,
             energy = self.energy,
+            logp = self.logp,
             mean_tree_accept = self.mean_tree_accept
         );
         (self.draws, diagnostics.into_robj())
