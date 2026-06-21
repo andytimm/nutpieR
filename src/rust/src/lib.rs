@@ -9,7 +9,7 @@ use extendr_api::error::Result;
 use extendr_api::prelude::*;
 use nuts_rs::{
     ArrowConfig, ArrowTrace, Chain, ChainProgress, CpuMath, DiagNutsSettings, LowRankNutsSettings,
-    ProgressCallback, Sampler, SamplerWaitResult, Settings,
+    Progress, ProgressCallback, Sampler, SamplerWaitResult, Settings,
 };
 use rand::SeedableRng;
 use std::path::PathBuf;
@@ -720,19 +720,9 @@ fn sample_r_density(
         let n_warmup = num_warmup as usize;
         let n_draws = num_draws as usize;
 
-        // Post-warmup accumulators. Field names mirror the nuts-rs Arrow stats
-        // schema (`diverging`, `n_steps`, `step_size`) so `nutpie_diagnostics()`
-        // and `nutpie_nuts_params()` work on R-density output unchanged.
-        let mut draws: Vec<f64> = Vec::with_capacity(n_draws * ndim);
-        let mut diverging: Vec<bool> = Vec::with_capacity(n_draws);
-        let mut n_steps: Vec<i32> = Vec::with_capacity(n_draws);
-        let mut step_size: Vec<f64> = Vec::with_capacity(n_draws);
-
-        // Warmup accumulators (only filled when requested).
-        let mut w_draws: Vec<f64> = Vec::new();
-        let mut w_diverging: Vec<bool> = Vec::new();
-        let mut w_n_steps: Vec<i32> = Vec::new();
-        let mut w_step_size: Vec<f64> = Vec::new();
+        let mut post = DrawAccumulator::with_capacity(n_draws, ndim);
+        // Warmup is only retained when requested, so it starts empty.
+        let mut warm = DrawAccumulator::with_capacity(0, 0);
 
         let mut last_pump = Instant::now();
         for i in 0..(n_warmup + n_draws) {
@@ -754,32 +744,18 @@ fn sample_r_density(
 
             if i < n_warmup {
                 if save_warmup {
-                    w_draws.extend_from_slice(&pos);
-                    w_diverging.push(progress.diverging);
-                    w_n_steps.push(progress.num_steps as i32);
-                    w_step_size.push(progress.step_size);
+                    warm.push(&pos, &progress);
                 }
             } else {
-                draws.extend_from_slice(&pos);
-                diverging.push(progress.diverging);
-                n_steps.push(progress.num_steps as i32);
-                step_size.push(progress.step_size);
+                post.push(&pos, &progress);
             }
         }
 
-        let diagnostics = list!(
-            diverging = diverging,
-            n_steps = n_steps,
-            step_size = step_size
-        );
+        let (draws, diagnostics) = post.into_draws_and_diagnostics();
 
         let (warmup_draws_robj, warmup_diagnostics_robj): (Robj, Robj) = if save_warmup {
-            let wdiag = list!(
-                diverging = w_diverging,
-                n_steps = w_n_steps,
-                step_size = w_step_size
-            );
-            (w_draws.into_robj(), wdiag.into_robj())
+            let (w_draws, w_diag) = warm.into_draws_and_diagnostics();
+            (w_draws.into_robj(), w_diag)
         } else {
             (().into_robj(), ().into_robj())
         };
@@ -794,6 +770,48 @@ fn sample_r_density(
             warmup_diagnostics = warmup_diagnostics_robj
         ))
     })())
+}
+
+/// Per-phase draw + diagnostic accumulator for the R-density sampler. Keeps the
+/// flat (draw-major) draws buffer next to the three diagnostic columns so the
+/// collection loop and the output-list shape are defined in exactly one place.
+/// Field names mirror the nuts-rs Arrow stats schema (`diverging`, `n_steps`,
+/// `step_size`) so `nutpie_diagnostics()` / `nutpie_nuts_params()` work on
+/// R-density output unchanged.
+#[derive(Default)]
+struct DrawAccumulator {
+    draws: Vec<f64>,
+    diverging: Vec<bool>,
+    n_steps: Vec<i32>,
+    step_size: Vec<f64>,
+}
+
+impl DrawAccumulator {
+    fn with_capacity(n_draws: usize, ndim: usize) -> Self {
+        DrawAccumulator {
+            draws: Vec::with_capacity(n_draws * ndim),
+            diverging: Vec::with_capacity(n_draws),
+            n_steps: Vec::with_capacity(n_draws),
+            step_size: Vec::with_capacity(n_draws),
+        }
+    }
+
+    fn push(&mut self, position: &[f64], progress: &Progress) {
+        self.draws.extend_from_slice(position);
+        self.diverging.push(progress.diverging);
+        self.n_steps.push(progress.num_steps as i32);
+        self.step_size.push(progress.step_size);
+    }
+
+    /// Consume into the flat draws buffer and the diagnostics R list.
+    fn into_draws_and_diagnostics(self) -> (Vec<f64>, Robj) {
+        let diagnostics = list!(
+            diverging = self.diverging,
+            n_steps = self.n_steps,
+            step_size = self.step_size
+        );
+        (self.draws, diagnostics.into_robj())
+    }
 }
 
 /// Optional finite scalar (`NULL` -> None, REAL scalar -> Some). Caller does

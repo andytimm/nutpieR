@@ -66,8 +66,9 @@ impl RDensity {
 
     /// Call an R closure with the position vector and return its result.
     fn call(f: &Function, position: &[f64]) -> std::result::Result<Robj, RLogpError> {
-        let arg = Robj::from(position.to_vec());
-        f.call(Pairlist::from_pairs([("", arg)]))
+        // `Robj::from(&[f64])` builds the R vector straight from the slice — no
+        // intermediate `Vec` alloc. This runs twice per leapfrog step.
+        f.call(Pairlist::from_pairs([("", Robj::from(position))]))
             .map_err(|e| RLogpError::Call(e.to_string()))
     }
 }
@@ -96,7 +97,9 @@ impl CpuLogpFunc for RDensity {
         // evaluation point, so calling the value at the same `position` right
         // after reuses that tape instead of recomputing it.
         let grad_robj = Self::call(&self.grad_fn, position)?;
-        let grad = grad_robj.as_real_vector().ok_or_else(|| {
+        // `as_real_slice` borrows the R vector's data (no copy); `grad_robj`
+        // owns it until end of scope, so the borrow stays valid.
+        let grad = grad_robj.as_real_slice().ok_or_else(|| {
             RLogpError::BadReturn("gradient callback did not return a numeric vector".into())
         })?;
         if grad.len() != self.ndim {

@@ -57,9 +57,7 @@ nutpie_sample_r <- function(fn, grad, ndim = NULL, init = NULL,
   num_warmup <- check_count(num_warmup, "num_warmup", min = 0L)
   max_treedepth <- check_optional_count(max_treedepth, "max_treedepth", min = 1L)
   target_accept <- check_optional_probability(target_accept, "target_accept")
-  if (!isTRUE(save_warmup) && !isFALSE(save_warmup)) {
-    stop("`save_warmup` must be TRUE or FALSE.", call. = FALSE)
-  }
+  save_warmup <- check_flag(save_warmup, "save_warmup")
   if (is.null(seed)) {
     seed <- sample.int(.Machine$integer.max, 1L)
   }
@@ -100,17 +98,7 @@ resolve_r_init <- function(init, ndim, seed) {
            call. = FALSE)
     }
     ndim <- check_count(ndim, "ndim", min = 1L)
-    old <- if (exists(".Random.seed", envir = .GlobalEnv)) {
-      get(".Random.seed", envir = .GlobalEnv)
-    } else {
-      NULL
-    }
-    on.exit(
-      if (!is.null(old)) assign(".Random.seed", old, envir = .GlobalEnv),
-      add = TRUE
-    )
-    set.seed(seed)
-    return(stats::rnorm(ndim))
+    return(with_local_seed(seed, stats::rnorm(ndim)))
   }
   if (!is.numeric(init)) {
     stop("`init` must be a numeric vector or a function returning one.",
