@@ -33,12 +33,14 @@
 #'   derived quantities. Called once per kept draw (never in the leapfrog hot
 #'   loop). Should return a numeric vector; if named, the names become the
 #'   variable names. Default: report `y` as `y1..y{ndim}`.
+#' @param progress Whether to print a periodic one-line status to the console.
+#'   Defaults to `TRUE` in interactive sessions.
 #'
 #' @return A [posterior::draws_array] with the same attributes as
 #'   [nutpie_sample()] output, so [nutpie_diagnostics()] and the
 #'   posterior/bayesplot tooling work as usual. Diagnostics cover divergences,
-#'   leapfrog count (`n_steps`), and step size; per-draw energy, tree depth, and
-#'   acceptance are not yet reported on this path.
+#'   leapfrog count (`n_steps`), step size, tree depth, energy, and mean
+#'   acceptance.
 #'
 #' @seealso [nutpie_sample()] for Stan models.
 #' @export
@@ -46,7 +48,7 @@ nutpie_sample_r <- function(fn, grad, ndim = NULL, init = NULL,
                             num_draws = 1000L, num_warmup = 1000L,
                             seed = NULL, save_warmup = FALSE,
                             max_treedepth = NULL, target_accept = NULL,
-                            expand = NULL) {
+                            expand = NULL, progress = interactive()) {
   if (!is.function(fn)) stop("`fn` must be a function.", call. = FALSE)
   if (!is.function(grad)) stop("`grad` must be a function.", call. = FALSE)
   if (!is.null(expand) && !is.function(expand)) {
@@ -58,6 +60,7 @@ nutpie_sample_r <- function(fn, grad, ndim = NULL, init = NULL,
   max_treedepth <- check_optional_count(max_treedepth, "max_treedepth", min = 1L)
   target_accept <- check_optional_probability(target_accept, "target_accept")
   save_warmup <- check_flag(save_warmup, "save_warmup")
+  progress <- check_flag(progress, "progress")
   if (is.null(seed)) {
     seed <- sample.int(.Machine$integer.max, 1L)
   }
@@ -76,7 +79,8 @@ nutpie_sample_r <- function(fn, grad, ndim = NULL, init = NULL,
     seed = seed,
     save_warmup = save_warmup,
     max_treedepth = max_treedepth,
-    target_accept = target_accept
+    target_accept = target_accept,
+    progress = progress
   )
 
   assemble_r_sample_result(raw, num_draws, num_warmup, save_warmup, expand)

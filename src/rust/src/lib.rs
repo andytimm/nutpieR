@@ -9,7 +9,7 @@ use extendr_api::error::Result;
 use extendr_api::prelude::*;
 use nuts_rs::{
     ArrowConfig, ArrowTrace, Chain, ChainProgress, CpuMath, DiagNutsSettings, LowRankNutsSettings,
-    Progress, ProgressCallback, Sampler, SamplerWaitResult, Settings,
+    ProgressCallback, Sampler, SamplerWaitResult, Settings,
 };
 use rand::SeedableRng;
 use std::path::PathBuf;
@@ -637,6 +637,7 @@ fn sample_stan(
 /// @param save_warmup Whether to return warmup draws + diagnostics.
 /// @param max_treedepth Optional NUTS max tree depth (NULL = nuts-rs default).
 /// @param target_accept Optional target acceptance probability in (0, 1).
+/// @param progress Whether to print a periodic one-line status to the console.
 /// @return A named list: `draws` (flat, draw-major, length num_draws*ndim),
 ///   `ndim`, `num_draws`, `num_warmup`, `diagnostics`, and (when `save_warmup`)
 ///   `warmup_draws` / `warmup_diagnostics`.
@@ -654,6 +655,7 @@ fn sample_r_density(
     save_warmup: bool,
     max_treedepth: Robj,
     target_accept: Robj,
+    progress: bool,
 ) -> List {
     or_throw((|| -> Result<List> {
         if ndim <= 0 {
@@ -724,6 +726,16 @@ fn sample_r_density(
         // Warmup is only retained when requested, so it starts empty.
         let mut warm = DrawAccumulator::with_capacity(0, 0);
 
+        let start = Instant::now();
+        let mut divergences = 0usize;
+        if progress {
+            rprintln!(
+                "Sampling (R density): 1 chain, {} draws ({} warmup)",
+                n_draws,
+                n_warmup
+            );
+        }
+
         let mut last_pump = Instant::now();
         for i in 0..(n_warmup + n_draws) {
             // Same interrupt/event-pump discipline as the Stan poll loop: check
@@ -733,6 +745,15 @@ fn sample_r_density(
                 return Err(Error::Other("Sampling interrupted.".into()));
             }
             if last_pump.elapsed() >= Duration::from_millis(100) {
+                if progress {
+                    // Carriage return keeps it to a single, self-updating line.
+                    let (phase, done, total) = if i < n_warmup {
+                        ("warmup", i, n_warmup)
+                    } else {
+                        ("sample", i - n_warmup, n_draws)
+                    };
+                    rprint!("\r  {phase} {done}/{total} | div: {divergences}    ");
+                }
                 pump_r_events();
                 if interrupt_pending() {
                     return Err(Error::Other("Sampling interrupted.".into()));
@@ -740,15 +761,44 @@ fn sample_r_density(
                 last_pump = Instant::now();
             }
 
-            let (pos, progress) = chain.draw().map_err(r_err)?;
+            // `expanded_draw` (vs `draw`) also yields per-draw Stats — energy,
+            // tree depth, acceptance. The expanded vector itself is unused: the
+            // reported draw is the raw position, and any R-side `expand` runs
+            // there. Field paths into Stats are nuts-rs internals (public, but
+            // version-coupled): point stats carry energy, the global strategy's
+            // step-size stats carry mean acceptance.
+            let (pos, _expanded, stats, prog) = chain.expanded_draw().map_err(r_err)?;
+            if !prog.tuning && prog.diverging {
+                divergences += 1;
+            }
+            let rec = DrawRecord {
+                diverging: prog.diverging,
+                n_steps: prog.num_steps as i32,
+                step_size: prog.step_size,
+                depth: stats.depth as i32,
+                maxdepth_reached: stats.maxdepth_reached,
+                energy: stats.point.energy,
+                mean_tree_accept: stats.adapt.step_size.mean_tree_accept,
+            };
 
             if i < n_warmup {
                 if save_warmup {
-                    warm.push(&pos, &progress);
+                    warm.push(&pos, &rec);
                 }
             } else {
-                post.push(&pos, &progress);
+                post.push(&pos, &rec);
             }
+        }
+
+        if progress {
+            rprintln!(
+                "\r  done: {} draws ({} warmup) in {:.1}s | divergences: {}        ",
+                n_draws,
+                n_warmup,
+                start.elapsed().as_secs_f64(),
+                divergences
+            );
+            pump_r_events();
         }
 
         let (draws, diagnostics) = post.into_draws_and_diagnostics();
@@ -772,18 +822,33 @@ fn sample_r_density(
     })())
 }
 
+/// One draw's diagnostics, flattened out of nuts-rs `Progress` + `Stats` so the
+/// accumulator and the loop don't both need to know the (deeply generic) stats
+/// type. Field names mirror the nuts-rs Arrow stats schema so
+/// `nutpie_diagnostics()` / `nutpie_nuts_params()` work on R-density output.
+struct DrawRecord {
+    diverging: bool,
+    n_steps: i32,
+    step_size: f64,
+    depth: i32,
+    maxdepth_reached: bool,
+    energy: f64,
+    mean_tree_accept: f64,
+}
+
 /// Per-phase draw + diagnostic accumulator for the R-density sampler. Keeps the
-/// flat (draw-major) draws buffer next to the three diagnostic columns so the
+/// flat (draw-major) draws buffer next to the diagnostic columns so the
 /// collection loop and the output-list shape are defined in exactly one place.
-/// Field names mirror the nuts-rs Arrow stats schema (`diverging`, `n_steps`,
-/// `step_size`) so `nutpie_diagnostics()` / `nutpie_nuts_params()` work on
-/// R-density output unchanged.
 #[derive(Default)]
 struct DrawAccumulator {
     draws: Vec<f64>,
     diverging: Vec<bool>,
     n_steps: Vec<i32>,
     step_size: Vec<f64>,
+    depth: Vec<i32>,
+    maxdepth_reached: Vec<bool>,
+    energy: Vec<f64>,
+    mean_tree_accept: Vec<f64>,
 }
 
 impl DrawAccumulator {
@@ -793,14 +858,22 @@ impl DrawAccumulator {
             diverging: Vec::with_capacity(n_draws),
             n_steps: Vec::with_capacity(n_draws),
             step_size: Vec::with_capacity(n_draws),
+            depth: Vec::with_capacity(n_draws),
+            maxdepth_reached: Vec::with_capacity(n_draws),
+            energy: Vec::with_capacity(n_draws),
+            mean_tree_accept: Vec::with_capacity(n_draws),
         }
     }
 
-    fn push(&mut self, position: &[f64], progress: &Progress) {
+    fn push(&mut self, position: &[f64], rec: &DrawRecord) {
         self.draws.extend_from_slice(position);
-        self.diverging.push(progress.diverging);
-        self.n_steps.push(progress.num_steps as i32);
-        self.step_size.push(progress.step_size);
+        self.diverging.push(rec.diverging);
+        self.n_steps.push(rec.n_steps);
+        self.step_size.push(rec.step_size);
+        self.depth.push(rec.depth);
+        self.maxdepth_reached.push(rec.maxdepth_reached);
+        self.energy.push(rec.energy);
+        self.mean_tree_accept.push(rec.mean_tree_accept);
     }
 
     /// Consume into the flat draws buffer and the diagnostics R list.
@@ -808,7 +881,11 @@ impl DrawAccumulator {
         let diagnostics = list!(
             diverging = self.diverging,
             n_steps = self.n_steps,
-            step_size = self.step_size
+            step_size = self.step_size,
+            depth = self.depth,
+            maxdepth_reached = self.maxdepth_reached,
+            energy = self.energy,
+            mean_tree_accept = self.mean_tree_accept
         );
         (self.draws, diagnostics.into_robj())
     }

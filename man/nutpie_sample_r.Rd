@@ -15,7 +15,8 @@ nutpie_sample_r(
   save_warmup = FALSE,
   max_treedepth = NULL,
   target_accept = NULL,
-  expand = NULL
+  expand = NULL,
+  progress = interactive()
 )
 }
 \arguments{
@@ -51,11 +52,16 @@ want reported — e.g. the back-transform from a preconditioned space, or
 derived quantities. Called once per kept draw (never in the leapfrog hot
 loop). Should return a numeric vector; if named, the names become the
 variable names. Default: report \code{y} as \verb{y1..y\{ndim\}}.}
+
+\item{progress}{Whether to print a periodic one-line status to the console.
+Defaults to \code{TRUE} in interactive sessions.}
 }
 \value{
 A \link[posterior:draws_array]{posterior::draws_array} with the same attributes as
 \code{\link[=nutpie_sample]{nutpie_sample()}} output, so \code{\link[=nutpie_diagnostics]{nutpie_diagnostics()}} and the
-posterior/bayesplot tooling work as usual.
+posterior/bayesplot tooling work as usual. Diagnostics cover divergences,
+leapfrog count (\code{n_steps}), step size, tree depth, energy, and mean
+acceptance.
 }
 \description{
 Run nuts-rs NUTS over a log-posterior supplied as plain R functions, instead

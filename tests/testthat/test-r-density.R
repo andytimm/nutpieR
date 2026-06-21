@@ -40,17 +40,56 @@ test_that("diagnostics object is well-formed", {
   expect_equal(d$draw, seq_len(500L))
 })
 
-test_that("nutpie_nuts_params stays aligned with partial diagnostics", {
+test_that("diagnostics include energy, tree depth, and acceptance", {
+  fit <- nutpie_sample_r(mvn_logp(mvn_mu, mvn_sigma),
+                         mvn_grad(mvn_mu, mvn_sigma),
+                         ndim = 2, num_draws = 400, num_warmup = 400, seed = 8)
+  d <- nutpie_diagnostics(fit)
+  expect_true(all(c("depth", "maxdepth_reached", "energy",
+                    "mean_tree_accept") %in% names(d)))
+  expect_true(all(is.finite(d$energy)))
+  expect_true(all(d$depth >= 0L))
+  # Mean acceptance should sit near the NUTS target (0.8 by default).
+  expect_equal(mean(d$mean_tree_accept), 0.8, tolerance = 0.15)
+  # E-BFMI is computable now that energy is present.
+  expect_true(is.finite(ebfmi_per_chain(d)))
+})
+
+test_that("nutpie_nuts_params is fully populated and aligned", {
   fit <- nutpie_sample_r(mvn_logp(mvn_mu, mvn_sigma),
                          mvn_grad(mvn_mu, mvn_sigma),
                          ndim = 2, num_draws = 300, num_warmup = 200, seed = 4)
   np <- nutpie_nuts_params(fit)
   expect_equal(nrow(np), 300L * 6L) # 6 NUTS params x draws, no recycling
-  # Populated fields carry real values; unpopulated ones are NA (not mislabeled).
   d <- nutpie_diagnostics(fit)
   expect_equal(np$Value[np$Parameter == "n_leapfrog__"], as.numeric(d$n_steps))
   expect_equal(np$Value[np$Parameter == "divergent__"], as.numeric(d$diverging))
+  expect_equal(np$Value[np$Parameter == "energy__"], as.numeric(d$energy))
+  expect_equal(np$Value[np$Parameter == "treedepth__"], as.numeric(d$depth))
+})
+
+test_that("nutpie_nuts_params NA-fills genuinely absent fields, no recycling", {
+  fit <- nutpie_sample_r(mvn_logp(mvn_mu, mvn_sigma),
+                         mvn_grad(mvn_mu, mvn_sigma),
+                         ndim = 2, num_draws = 100, num_warmup = 100, seed = 4)
+  # Simulate a backend that omits energy: the short vector must not recycle
+  # into mislabeled columns (the bug or_na() guards against).
+  diag <- attr(fit, "diagnostics")
+  diag$energy <- NULL
+  attr(fit, "diagnostics") <- diag
+  np <- nutpie_nuts_params(fit)
+  expect_equal(nrow(np), 100L * 6L)
   expect_true(all(is.na(np$Value[np$Parameter == "energy__"])))
+  expect_equal(np$Value[np$Parameter == "divergent__"],
+               as.numeric(attr(fit, "diagnostics")$diverging))
+})
+
+test_that("progress prints when enabled and is silent when off", {
+  args <- list(mvn_logp(mvn_mu, mvn_sigma), mvn_grad(mvn_mu, mvn_sigma),
+               ndim = 2, num_draws = 100, num_warmup = 100, seed = 2)
+  expect_output(do.call(nutpie_sample_r, c(args, progress = TRUE)),
+                "Sampling \\(R density\\)")
+  expect_silent(do.call(nutpie_sample_r, c(args, progress = FALSE)))
 })
 
 test_that("seed makes runs reproducible", {
