@@ -36,10 +36,7 @@ pub enum RLogpError {
 
 impl LogpError for RLogpError {
     fn is_recoverable(&self) -> bool {
-        matches!(
-            self,
-            RLogpError::BadLogp(_) | RLogpError::BadGradient(_)
-        )
+        matches!(self, RLogpError::BadLogp(_) | RLogpError::BadGradient(_))
     }
 }
 

@@ -36,7 +36,7 @@ vector, \code{ndim} defaults to its length.}
 
 \item{num_draws}{Post-warmup draws to keep. Default 1000.}
 
-\item{num_warmup}{Warmup (tuning) draws. Default 1000.}
+\item{num_warmup}{Warmup (tuning) draws. Must be at least 1. Default 1000.}
 
 \item{seed}{Integer RNG seed. Default random.}
 

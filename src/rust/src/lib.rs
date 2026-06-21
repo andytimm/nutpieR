@@ -667,9 +667,9 @@ fn sample_r_density(
                 num_draws
             )));
         }
-        if num_warmup < 0 {
+        if num_warmup <= 0 {
             return Err(Error::Other(format!(
-                "num_warmup must be >= 0, got {}",
+                "num_warmup must be >= 1, got {}",
                 num_warmup
             )));
         }
@@ -697,11 +697,13 @@ fn sample_r_density(
         let max_treedepth_opt = opt_count(&max_treedepth, "max_treedepth", 1)?;
         let target_accept_opt = opt_finite_in_open_unit(&target_accept, "target_accept")?;
 
-        let mut settings = DiagNutsSettings::default();
-        settings.num_tune = num_warmup as u64;
-        settings.num_draws = num_draws as u64;
-        settings.num_chains = 1;
-        settings.seed = seed as u64;
+        let mut settings = DiagNutsSettings {
+            num_tune: num_warmup as u64,
+            num_draws: num_draws as u64,
+            num_chains: 1,
+            seed: seed as u64,
+            ..Default::default()
+        };
         if let Some(v) = max_treedepth_opt {
             settings.maxdepth = v as u64;
         }

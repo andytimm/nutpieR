@@ -176,6 +176,8 @@ test_that("invalid arguments are rejected", {
   expect_error(nutpie_sample_r(1, gr, ndim = 2), "`fn` must be a function")
   expect_error(nutpie_sample_r(fn, 1, ndim = 2), "`grad` must be a function")
   expect_error(nutpie_sample_r(fn, gr), "Supply either `ndim` or an `init`")
+  expect_error(nutpie_sample_r(fn, gr, ndim = 2, num_warmup = 0),
+               "num_warmup")
   expect_error(nutpie_sample_r(fn, gr, ndim = 2, init = c(0, 0, 0)),
                "`init` has length 3 but `ndim` is 2")
   expect_error(nutpie_sample_r(fn, gr, ndim = 2, expand = 1),

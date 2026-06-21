@@ -22,7 +22,7 @@
 #'   `function(chain_id)` returning one (called once with `1L`). Defaults to
 #'   `rnorm(ndim)`.
 #' @param num_draws Post-warmup draws to keep. Default 1000.
-#' @param num_warmup Warmup (tuning) draws. Default 1000.
+#' @param num_warmup Warmup (tuning) draws. Must be at least 1. Default 1000.
 #' @param seed Integer RNG seed. Default random.
 #' @param save_warmup Whether to retain warmup draws + diagnostics
 #'   (see [nutpie_warmup_draws()]). Default `FALSE`.
@@ -56,7 +56,7 @@ nutpie_sample_r <- function(fn, grad, ndim = NULL, init = NULL,
   }
 
   num_draws <- check_count(num_draws, "num_draws", min = 1L)
-  num_warmup <- check_count(num_warmup, "num_warmup", min = 0L)
+  num_warmup <- check_count(num_warmup, "num_warmup", min = 1L)
   max_treedepth <- check_optional_count(max_treedepth, "max_treedepth", min = 1L)
   target_accept <- check_optional_probability(target_accept, "target_accept")
   save_warmup <- check_flag(save_warmup, "save_warmup")
