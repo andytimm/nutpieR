@@ -11,6 +11,20 @@
 #' [nutpie_sample()] is not available here. Run this several times (varying
 #' `seed`) if you want multiple chains.
 #'
+#' For expensive or preconditioned `RTMB`/`TMB` densities, prefer `value_grad`
+#' over separate `fn`/`grad` callbacks. It calls back into R once per leapfrog
+#' evaluation instead of twice, and lets you share intermediate work such as a
+#' sparse back-transform. With `RTMB`/`TMB`, it is often fastest to compute the
+#' gradient first and then the value at the same point, since the objective can
+#' reuse the most recent tape evaluation.
+#'
+#' Use [nutpie_diagnostics()] for per-draw sampler diagnostics and
+#' `attr(fit, "callback_stats")` to separate sampler geometry from R-callback
+#' overhead. The latter is useful when comparing against other R-callback
+#' samplers: `mean(n_steps)` describes trajectory length, while
+#' `callback_seconds`, `logp_evals`, and `seconds_per_logp_eval` describe the
+#' implementation cost of evaluating the supplied density.
+#'
 #' @param fn Optional `function(y)` returning the log-posterior density at the
 #'   unconstrained vector `y` (higher = more probable). For a TMB objective
 #'   `obj$fn` (a *negative* log-likelihood), pass `function(y) -obj$fn(y)`.
@@ -50,6 +64,33 @@
 #'   timing, useful for separating sampler geometry from implementation overhead.
 #'
 #' @seealso [nutpie_sample()] for Stan models.
+#'
+#' @examples
+#' \dontrun{
+#' # Split callback interface: convenient, but two R calls per leapfrog eval.
+#' fn <- function(y) -sum(y^2) / 2
+#' grad <- function(y) -y
+#'
+#' fit <- nutpie_sample_r(fn, grad, ndim = 2, seed = 1)
+#' nutpie_diagnostics(fit)
+#' attr(fit, "callback_stats")
+#'
+#' # Combined callback interface: preferred for expensive transformed targets.
+#' value_grad <- function(y) {
+#'   # For an RTMB/TMB transformed density, this is where you would compute
+#'   # x <- solve(Lt, y)[iperm] once, then reuse x for gradient and value.
+#'   c(fn(y), grad(y))
+#' }
+#'
+#' fit <- nutpie_sample_r(value_grad = value_grad, ndim = 2, seed = 1)
+#'
+#' # Multiple chains are run as independent single-chain fits.
+#' fits <- lapply(1:4, function(chain) {
+#'   nutpie_sample_r(value_grad = value_grad, ndim = 2, seed = 1000 + chain)
+#' })
+#' draws <- posterior::bind_draws(fits, along = "chain")
+#' posterior::summarise_draws(draws, "rhat", "ess_bulk", "ess_tail")
+#' }
 #' @export
 nutpie_sample_r <- function(fn = NULL, grad = NULL, value_grad = NULL,
                             ndim = NULL, init = NULL,

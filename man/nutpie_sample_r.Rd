@@ -84,6 +84,47 @@ nutpie's adaptation, in the spirit of
 on the main R thread; the parallel, multi-chain machinery used by
 \code{\link[=nutpie_sample]{nutpie_sample()}} is not available here. Run this several times (varying
 \code{seed}) if you want multiple chains.
+
+For expensive or preconditioned \code{RTMB}/\code{TMB} densities, prefer \code{value_grad}
+over separate \code{fn}/\code{grad} callbacks. It calls back into R once per leapfrog
+evaluation instead of twice, and lets you share intermediate work such as a
+sparse back-transform. With \code{RTMB}/\code{TMB}, it is often fastest to compute the
+gradient first and then the value at the same point, since the objective can
+reuse the most recent tape evaluation.
+
+Use \code{\link[=nutpie_diagnostics]{nutpie_diagnostics()}} for per-draw sampler diagnostics and
+\code{attr(fit, "callback_stats")} to separate sampler geometry from R-callback
+overhead. The latter is useful when comparing against other R-callback
+samplers: \code{mean(n_steps)} describes trajectory length, while
+\code{callback_seconds}, \code{logp_evals}, and \code{seconds_per_logp_eval} describe the
+implementation cost of evaluating the supplied density.
+}
+\examples{
+\dontrun{
+# Split callback interface: convenient, but two R calls per leapfrog eval.
+fn <- function(y) -sum(y^2) / 2
+grad <- function(y) -y
+
+fit <- nutpie_sample_r(fn, grad, ndim = 2, seed = 1)
+nutpie_diagnostics(fit)
+attr(fit, "callback_stats")
+
+# Combined callback interface: preferred for expensive transformed targets.
+value_grad <- function(y) {
+  # For an RTMB/TMB transformed density, this is where you would compute
+  # x <- solve(Lt, y)[iperm] once, then reuse x for gradient and value.
+  c(fn(y), grad(y))
+}
+
+fit <- nutpie_sample_r(value_grad = value_grad, ndim = 2, seed = 1)
+
+# Multiple chains are run as independent single-chain fits.
+fits <- lapply(1:4, function(chain) {
+  nutpie_sample_r(value_grad = value_grad, ndim = 2, seed = 1000 + chain)
+})
+draws <- posterior::bind_draws(fits, along = "chain")
+posterior::summarise_draws(draws, "rhat", "ess_bulk", "ess_tail")
+}
 }
 \seealso{
 \code{\link[=nutpie_sample]{nutpie_sample()}} for Stan models.
