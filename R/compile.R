@@ -46,7 +46,11 @@
 #' @param stanc_args Character vector of extra arguments passed to the
 #'   `stanc` compiler (e.g., `"--O1"` for optimization).
 #' @param compile_args Character vector of extra arguments passed to `make`
-#'   during compilation.
+#'   during compilation. On macOS, nutpieR compiles with
+#'   `TBB_LIBRARIES=tbb` by default (matching Linux and Windows) to avoid
+#'   linking Stan's process-wide `tbbmalloc_proxy` allocator, which can
+#'   crash R during live progress reporting (GitHub #36). Pass an explicit
+#'   `"TBB_LIBRARIES=..."` here to override this default.
 #' @param verbose Integer controlling compilation output. `0` = silent,
 #'   `1` (default) = print status messages.
 #'   Note: full make/stanc output (verbose=2) is not yet supported because
@@ -102,6 +106,8 @@ nutpie_compile_model <- function(stan_file = NULL, code = NULL,
   use_cache <- cache &&
     !identical(Sys.getenv("NUTPIER_DISABLE_COMPILE_CACHE"), "1")
 
+  compile_args <- effective_compile_args(compile_args)
+
   bundle <- if (!is.null(code)) {
     inline_bundle(code)
   } else {
@@ -113,6 +119,36 @@ nutpie_compile_model <- function(stan_file = NULL, code = NULL,
   } else {
     compile_no_cache(bundle, stanc_args, compile_args, verbose)
   }
+}
+
+# Resolve the make arguments actually used to compile, layering in
+# platform defaults over the caller's `compile_args`.
+#
+# On macOS, Stan's makefile links the TBB scalable-allocator proxy
+# (`tbbmalloc_proxy`) into every model `.so` by default; Linux and Windows
+# link plain `tbb` (stan_math `make/compiler_flags`). The proxy installs
+# itself as the *process-wide* allocator via a macOS malloc zone, so R's
+# own allocations route through it. Freeing an R-allocated, page-aligned
+# block then faults inside TBB's `__TBB_malloc_safer_msize` (it reads the
+# block header at `ptr - 4`, which for such a foreign pointer lands on an
+# unmapped guard page) -- which is exactly what the live-progress callback
+# triggers when it frees R memory mid-sample on large models (GitHub #36).
+#
+# Pin `TBB_LIBRARIES=tbb` on macOS to match the other platforms, unless the
+# caller has explicitly set it (e.g. to opt back into the proxy). This is
+# applied here, above the cache layer, so the flag is folded into the
+# compile-cache key: existing proxy-linked artifacts get a fresh key and
+# are recompiled rather than silently reused.
+#
+# `sysname` is a parameter so the platform branch is unit-testable.
+effective_compile_args <- function(compile_args,
+                                   sysname = Sys.info()[["sysname"]]) {
+  compile_args <- as.character(compile_args)
+  if (identical(sysname, "Darwin") &&
+      !any(grepl("^\\s*TBB_LIBRARIES", compile_args))) {
+    compile_args <- c(compile_args, "TBB_LIBRARIES=tbb")
+  }
+  compile_args
 }
 
 #' @export

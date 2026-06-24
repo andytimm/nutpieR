@@ -1,3 +1,9 @@
+# nutpieR 1.8.3
+
+* Fixed macOS segfaults during progress reporting on large models (GitHub
+  #36) by compiling with `TBB_LIBRARIES=tbb`, dropping Stan's process-wide
+  `tbbmalloc_proxy` allocator. Override via `compile_args = "TBB_LIBRARIES=..."`.
+
 # nutpieR 1.8.2
 
 * Live sampling progress streams in the RStudio and Positron consoles again
