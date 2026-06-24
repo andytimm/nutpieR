@@ -23,7 +23,11 @@ nutpie_compile_model(
 \code{stanc} compiler (e.g., \code{"--O1"} for optimization).}
 
 \item{compile_args}{Character vector of extra arguments passed to \code{make}
-during compilation.}
+during compilation. On macOS, nutpieR compiles with
+\code{TBB_LIBRARIES=tbb} by default (matching Linux and Windows) to avoid
+linking Stan's process-wide \code{tbbmalloc_proxy} allocator, which can
+crash R during live progress reporting (GitHub #36). Pass an explicit
+\code{"TBB_LIBRARIES=..."} here to override this default.}
 
 \item{verbose}{Integer controlling compilation output. \code{0} = silent,
 \code{1} (default) = print status messages.
