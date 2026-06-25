@@ -194,8 +194,48 @@ const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_RED: &str = "\x1b[31m";
 const ANSI_YELLOW: &str = "\x1b[33m";
 
-/// Spinner frames for the progress bar animation.
-const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_UTF8: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_ASCII: &[&str] = &["-", "\\", "|", "/"];
+
+/// Glyph set for the progress UI, switched to ASCII when the console isn't UTF-8
+/// (R's `cli::is_utf8_output()`, passed via the style string). Mirrors cli's own
+/// fallbacks: `▲`→`^`, `⚠`→`!`, `ℹ`→`i`, block bar → `#`/`-`, braille spinner →
+/// `-\|/`.
+struct Glyphs {
+    spinner: &'static [&'static str],
+    bar_fill: &'static str,
+    bar_empty: &'static str,
+    spark: [char; 8],
+    accent: &'static str,
+    warn: &'static str,
+    info: &'static str,
+}
+
+impl Glyphs {
+    fn new(ascii: bool) -> Self {
+        if ascii {
+            Glyphs {
+                spinner: SPINNER_ASCII,
+                bar_fill: "#",
+                bar_empty: "-",
+                spark: ['.', ':', '-', '=', '+', '*', '#', '@'],
+                accent: "^",
+                warn: "!",
+                info: "i",
+            }
+        } else {
+            Glyphs {
+                spinner: SPINNER_UTF8,
+                bar_fill: "█",
+                bar_empty: "░",
+                spark: ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'],
+                accent: "▲",
+                warn: "⚠",
+                info: "ℹ",
+            }
+        }
+    }
+}
 
 /// Grad/draw threshold above which we accent the value (matches R-side
 /// GRAD_HINT_THRESHOLD).
@@ -315,17 +355,17 @@ fn emit_hint(bar_mode: bool, body: &str) {
 /// Emit the one-shot post-warmup divergence hint (mirrors R's `maybe_div_hint`).
 /// Fires at most once per run; shared by the bar and per-chain text paths so the
 /// wording can't drift between them.
-fn maybe_emit_div_hint(hints: &mut ProgressHints, total_divs: usize, bar_mode: bool) {
+fn maybe_emit_div_hint(hints: &mut ProgressHints, total_divs: usize, bar_mode: bool, glyphs: &Glyphs) {
     if !hints.warned_div && total_divs > 0 {
         hints.warned_div = true;
-        emit_hint(bar_mode, "⚠ div: divergent transitions detected — these can bias your results; try increasing `target_accept` or reparameterizing.\n");
+        emit_hint(bar_mode, &format!("{} div: divergent transitions detected — these can bias your results; try increasing `target_accept` or reparameterizing.\n", glyphs.warn));
     }
 }
 
 /// Emit the one-shot grad/draw hint (mirrors R's `maybe_grad_hint`). `pooled` is
 /// the late-warmup baseline-adjusted pooled average; the hint fires once it
 /// reaches `GRAD_HINT_THRESHOLD`.
-fn maybe_emit_grad_hint(hints: &mut ProgressHints, pooled: Option<f64>, bar_mode: bool) {
+fn maybe_emit_grad_hint(hints: &mut ProgressHints, pooled: Option<f64>, bar_mode: bool, glyphs: &Glyphs) {
     if hints.warned_grad {
         return;
     }
@@ -333,8 +373,8 @@ fn maybe_emit_grad_hint(hints: &mut ProgressHints, pooled: Option<f64>, bar_mode
         if avg >= GRAD_HINT_THRESHOLD {
             hints.warned_grad = true;
             let depth = (avg + 1.0).log2().round() as i32;
-            emit_hint(bar_mode, &format!("ℹ grad/draw: ~{} gradient evaluations per draw (tree depth ~{}) — sampling is taking long trajectories; often a sign of difficult geometry or incomplete adaptation, worth checking if unexpected.\n",
-                avg.round() as i32, depth));
+            emit_hint(bar_mode, &format!("{} grad/draw: ~{} gradient evaluations per draw (tree depth ~{}) — sampling is taking long trajectories; often a sign of difficult geometry or incomplete adaptation, worth checking if unexpected.\n",
+                glyphs.info, avg.round() as i32, depth));
         }
     }
 }
@@ -355,6 +395,7 @@ fn format_progress_line(
     format: &str,
     use_color: bool,
     width: i32,
+    glyphs: &Glyphs,
     frame: usize,
     hints: &mut ProgressHints,
     num_warmup: usize,
@@ -418,8 +459,8 @@ fn format_progress_line(
     });
 
     // --- One-shot hints (fire at most once per run; shared with text path) ---
-    maybe_emit_div_hint(hints, total_divs, true);
-    maybe_emit_grad_hint(hints, baseline_grad, true);
+    maybe_emit_div_hint(hints, total_divs, true, glyphs);
+    maybe_emit_grad_hint(hints, baseline_grad, true, glyphs);
 
     // --- Spread (percent-range across running chains) ---
     // Compute per-chain fractions for started, unfinished chains
@@ -447,7 +488,7 @@ fn format_progress_line(
             hints.spread_active = true;
             if !hints.warned_spread {
                 hints.warned_spread = true;
-                emit_hint(true, &format!("ℹ spread: chain progress is uneven (slowest {}%, fastest {}%) — often one chain adapted a smaller step size or is in a harder region of the posterior. Adding to status line.\n",
+                emit_hint(true, &format!("{} spread: chain progress is uneven (slowest {}%, fastest {}%) — often one chain adapted a smaller step size or is in a harder region of the posterior. Adding to status line.\n", glyphs.info,
                     (chain_fracs.iter().cloned().fold(1.0f64, f64::min) * 100.0).round() as i32,
                     (chain_fracs.iter().cloned().fold(0.0f64, f64::max) * 100.0).round() as i32));
             }
@@ -469,9 +510,9 @@ fn format_progress_line(
     let div_part = if total_divs > 0 {
         // Divergence count is red, matching R's `cli::col_red` styling.
         if use_color {
-            format!("{}⚠ div: {}{}", ANSI_RED, total_divs, ANSI_RESET)
+            format!("{}{} div: {}{}", ANSI_RED, glyphs.warn, total_divs, ANSI_RESET)
         } else {
-            format!("⚠ div: {}", total_divs)
+            format!("{} div: {}", glyphs.warn, total_divs)
         }
     } else {
         "div: 0".to_string()
@@ -481,9 +522,9 @@ fn format_progress_line(
         // One decimal, matching R's `format_gradient_status` (`%.1f grad/draw`).
         let label = format!("{:.1} grad/draw", avg_grad);
         if avg_grad >= GRAD_HINT_THRESHOLD && use_color {
-            format!("{}▲ {}{}", ANSI_YELLOW, label, ANSI_RESET)
+            format!("{}{} {}{}", ANSI_YELLOW, glyphs.accent, label, ANSI_RESET)
         } else if avg_grad >= GRAD_HINT_THRESHOLD {
-            format!("▲ {}", label)
+            format!("{} {}", glyphs.accent, label)
         } else {
             label
         }
@@ -511,14 +552,13 @@ fn format_progress_line(
         let max_total = running.iter().map(|c| c.total_draws).max().unwrap_or(0);
         if max_total > 0 {
             let max_fin = running.iter().map(|c| c.finished_draws).max().unwrap_or(0);
-            const GLYPHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
             running
                 .iter()
                 .map(|c| {
                     let gap = max_fin.saturating_sub(c.finished_draws);
                     let ratio = gap as f64 / max_total as f64;
                     let frac = ((ratio - 0.02) / (0.20 - 0.02)).clamp(0.0, 1.0);
-                    GLYPHS[((frac * 7.0).round() as usize).min(7)]
+                    glyphs.spark[((frac * 7.0).round() as usize).min(7)]
                 })
                 .collect::<String>()
         } else {
@@ -600,8 +640,8 @@ fn format_progress_line(
     } else {
         0
     };
-    let bar: String = "█".repeat(filled) + &"░".repeat(bar_width - filled);
-    let spinner = SPINNER[frame % SPINNER.len()];
+    let bar: String = glyphs.bar_fill.repeat(filled) + &glyphs.bar_empty.repeat(bar_width - filled);
+    let spinner = glyphs.spinner[frame % glyphs.spinner.len()];
 
     // Layout mirrors the R cli bar's format string (R/progress.R):
     // `{spin} {phase} {pct} |{bar}| {current}/{total} {eta} | {status}`.
@@ -645,6 +685,7 @@ fn format_text_progress_lines(
     state: &[ChainState],
     format: &str,
     refresh: usize,
+    glyphs: &Glyphs,
     last_printed: &mut Vec<usize>,
     hints: &mut ProgressHints,
     num_warmup: usize,
@@ -656,9 +697,9 @@ fn format_text_progress_lines(
     // One-shot div/grad hints, from the same baseline the cli bar uses. Text
     // lines already end with "\n", so no bar-mode newline framing is needed.
     let total_divs: usize = state.iter().map(|c| c.divergences).sum();
-    maybe_emit_div_hint(hints, total_divs, false);
+    maybe_emit_div_hint(hints, total_divs, false, glyphs);
     let pooled = hints.update_and_pooled_grad(state, num_warmup);
-    maybe_emit_grad_hint(hints, pooled, false);
+    maybe_emit_grad_hint(hints, pooled, false, glyphs);
 
     let max_runtime = state.iter().map(|c| c.runtime).max().unwrap_or_default();
     let elapsed_str = format_elapsed(max_runtime.as_secs_f64());
@@ -702,12 +743,12 @@ fn format_text_progress_lines(
         let phase_str = if c.tuning { "warmup" } else { "sample" };
 
         let div_token = if c.divergences > 0 {
-            format!("⚠ div: {}", c.divergences)
+            format!("{} div: {}", glyphs.warn, c.divergences)
         } else {
             "div: 0".to_string()
         };
         let grad_token = match hints.chain_grad(i, c) {
-            Some(g) if g >= GRAD_HINT_THRESHOLD => format!("▲ {:.1} grad/draw", g),
+            Some(g) if g >= GRAD_HINT_THRESHOLD => format!("{} {:.1} grad/draw", glyphs.accent, g),
             Some(g) => format!("{:.1} grad/draw", g),
             None => "- grad/draw".to_string(),
         };
@@ -982,7 +1023,9 @@ fn run_sampler<S: Settings>(
     let mut frame: usize = 0;
     // Per-chain last-printed draw counts for the text path's refresh gate.
     let mut last_printed: Vec<usize> = Vec::new();
-    let use_color = rprintf_progress.ends_with(":color");
+    let use_color = rprintf_progress.contains(":color");
+    // ASCII glyph fallback when R reports a non-UTF-8 console (":ascii" tag).
+    let glyphs = Glyphs::new(rprintf_progress.contains(":ascii"));
     let mut hints = ProgressHints::new();
 
     let results = loop {
@@ -1032,6 +1075,7 @@ fn run_sampler<S: Settings>(
                             chain_format,
                             use_color,
                             console_width,
+                            &glyphs,
                             frame,
                             &mut hints,
                             num_warmup,
@@ -1052,6 +1096,7 @@ fn run_sampler<S: Settings>(
                         &state_snapshot,
                         chain_format,
                         text_refresh,
+                        &glyphs,
                         &mut last_printed,
                         &mut hints,
                         num_warmup,

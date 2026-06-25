@@ -306,10 +306,13 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   # consoles aren't TTYs, but cli still reports color there).
   rprintf_style <- if (mac_native && !progress_messages_muffled()) {
     color_tag <- if (isTRUE(progress_supports_color())) ":color" else ""
+    # ":ascii" when the console can't render UTF-8, so Rust swaps in cli's ASCII
+    # glyph fallbacks (▲->^, ⚠->!, block bar->#/-).
+    ascii_tag <- if (isTRUE(cli::is_utf8_output())) "" else ":ascii"
     if (resolved_progress == "text") {
-      paste0("text:", refresh, color_tag)
+      paste0("text:", refresh, color_tag, ascii_tag)
     } else {
-      paste0("bar", color_tag)
+      paste0("bar", color_tag, ascii_tag)
     }
   } else {
     ""
