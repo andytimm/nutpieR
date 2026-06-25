@@ -14,7 +14,7 @@ use nuts_rs::{
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 extern "C" {
     static mut R_interrupts_pending: std::os::raw::c_int;
@@ -24,6 +24,11 @@ extern "C" {
     // events, so without this the progress callback's output is invisible until
     // sample_stan() returns. See `pump_r_events`.
     fn R_ProcessEvents();
+    // Write to R's output stream (stdout) — C-level, no SEXP allocation.
+    // Used for progress rendering that avoids R's GC (#36).
+    fn Rprintf(format: *const std::os::raw::c_char, ...);
+    // Write to R's error stream (stderr) — C-level, no SEXP allocation.
+    fn REprintf(format: *const std::os::raw::c_char, ...);
 }
 
 /// Flush front-end consoles mid-sampling by pumping R's event loop.
@@ -54,6 +59,51 @@ fn interrupt_pending() -> bool {
         } else {
             false
         }
+    }
+}
+
+/// Write a message to R's stderr (REprintf) — C-level, no SEXP allocation.
+/// Used for progress rendering during sampling to avoid triggering R's GC
+/// while `tbbmalloc_proxy` is active (#36).
+fn r_eprint(msg: &str) {
+    // REprintf is a printf-style C function; use "%s" to avoid interpreting
+    // any '%' characters in `msg` as format specifiers.
+    let fmt = b"%s\0";
+    let c_msg = std::ffi::CString::new(msg).unwrap_or_default();
+    unsafe {
+        REprintf(
+            fmt.as_ptr() as *const std::os::raw::c_char,
+            c_msg.as_ptr(),
+        );
+    }
+}
+
+/// Write to R's stdout (Rprintf) — same rationale as `r_eprint`.
+fn r_print(msg: &str) {
+    let fmt = b"%s\0";
+    let c_msg = std::ffi::CString::new(msg).unwrap_or_default();
+    unsafe {
+        Rprintf(fmt.as_ptr() as *const std::os::raw::c_char, c_msg.as_ptr());
+    }
+}
+
+/// Detect whether R's output stream supports ANSI color escape sequences.
+/// On macOS, R's stdout is a TTY when running interactively in Terminal or
+/// RStudio's console. We use `isatty(1)` as the signal — this matches the
+/// R-side `cli::num_ansi_colors()` heuristic well enough for the progress bar.
+fn detect_r_color_support() -> bool {
+    // Use isatty(1) via the C library (linked via R) to detect TTY.
+    // This avoids adding a `libc` crate dependency.
+    #[cfg(unix)]
+    {
+        extern "C" {
+            fn isatty(fd: std::os::raw::c_int) -> std::os::raw::c_int;
+        }
+        unsafe { isatty(1) == 1 }
+    }
+    #[cfg(not(unix))]
+    {
+        false
     }
 }
 
@@ -165,6 +215,407 @@ struct ChainState {
     divergent_draws: Vec<usize>,
 }
 
+/// ANSI color codes for progress output. Using direct escape sequences avoids
+/// any dependency on R's cli package — these go through Rprintf which writes
+/// to stdout. Colors are only emitted when the terminal supports them.
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_RED: &str = "\x1b[31m";
+const ANSI_YELLOW: &str = "\x1b[33m";
+const ANSI_GREEN: &str = "\x1b[32m";
+const ANSI_BOLD: &str = "\x1b[1m";
+const ANSI_DIM: &str = "\x1b[2m";
+
+/// Spinner frames for the progress bar animation.
+const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Grad/draw threshold above which we accent the value (matches R-side
+/// GRAD_HINT_THRESHOLD).
+const GRAD_HINT_THRESHOLD: f64 = 128.0;
+
+/// Persistent state across progress polls for the Rprintf path. Mirrors the
+/// R-side `new_progress_hints()` environment: late-warmup baselines for
+/// grad/draw, one-shot hint flags, and the spread latch.
+#[derive(Default)]
+struct ProgressHints {
+    /// Per-chain baseline: (total_num_steps, finished_draws) at the moment the
+    /// chain crossed LATE_WARMUP_FRACTION of warmup. Keyed by chain index.
+    grad_baselines: Vec<Option<(usize, usize)>>,
+    warned_div: bool,
+    warned_grad: bool,
+    warned_spread: bool,
+    spread_active: bool,
+}
+
+/// Fraction of warmup that must complete before we anchor the grad/draw
+/// baseline (matches R-side `LATE_WARMUP_FRACTION`).
+const LATE_WARMUP_FRACTION: f64 = 0.75;
+/// Percentage-point spread that triggers the spread token (matches
+/// `SPREAD_TRIGGER_POINTS`).
+const SPREAD_TRIGGER_POINTS: f64 = 15.0;
+/// Median chain must be past this fraction before spread fires (matches
+/// `SPREAD_MEDIAN_FLOOR`).
+const SPREAD_MEDIAN_FLOOR: f64 = 0.10;
+
+impl ProgressHints {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Ensure the baselines vec is long enough for the number of chains.
+    fn ensure_capacity(&mut self, n: usize) {
+        while self.grad_baselines.len() < n {
+            self.grad_baselines.push(None);
+        }
+    }
+
+    /// Record each started chain's `(total_num_steps, finished_draws)` the first
+    /// time it passes `LATE_WARMUP_FRACTION` of warmup. Returns the pooled
+    /// baseline-adjusted grad/draw if any baselined chain has produced
+    /// post-baseline draws.
+    fn update_and_pooled_grad(&mut self, state: &[ChainState], num_warmup: usize) -> Option<f64> {
+        self.ensure_capacity(state.len());
+        let threshold = LATE_WARMUP_FRACTION * num_warmup as f64;
+
+        for (i, c) in state.iter().enumerate() {
+            if !c.started {
+                continue;
+            }
+            if (c.finished_draws as f64) < threshold {
+                continue;
+            }
+            if self.grad_baselines[i].is_none() {
+                self.grad_baselines[i] = Some((c.total_num_steps, c.finished_draws));
+            }
+        }
+
+        // Pooled grad/draw over baselined chains
+        let mut steps_delta: f64 = 0.0;
+        let mut draws_delta: f64 = 0.0;
+        for (i, c) in state.iter().enumerate() {
+            if !c.started {
+                continue;
+            }
+            if let Some((base_total, base_finished)) = self.grad_baselines.get(i).copied().flatten() {
+                steps_delta += (c.total_num_steps - base_total) as f64;
+                draws_delta += (c.finished_draws - base_finished) as f64;
+            }
+        }
+        if draws_delta > 0.0 {
+            Some(steps_delta / draws_delta)
+        } else {
+            None
+        }
+    }
+}
+
+/// Format a one-line progress summary for Rprintf rendering (#36).
+///
+/// This replaces the R callback path when `tbbmalloc_proxy` is active on macOS.
+/// By writing via `REprintf`/`Rprintf` (C FFI, no SEXP allocation), we avoid
+/// triggering R's GC during sampling — the root cause of the
+/// `__TBB_malloc_safer_msize` segfault.
+///
+/// Style: `"bar"` overwrites the line with `\r` and draws a Unicode progress
+/// bar with ANSI colors; `"text"` emits a fresh line with `\n`.
+fn format_progress_line(
+    state: &[ChainState],
+    style: &str,
+    use_color: bool,
+    frame: usize,
+    hints: &mut ProgressHints,
+    num_warmup: usize,
+) -> String {
+    if state.is_empty() {
+        return String::new();
+    }
+
+    let started: Vec<&ChainState> = state.iter().filter(|c| c.started).collect();
+    if started.is_empty() {
+        return String::new();
+    }
+
+    let total_finished: usize = started.iter().map(|c| c.finished_draws).sum();
+    let total_draws: usize = started.iter().map(|c| c.total_draws).sum();
+    let total_divs: usize = started.iter().map(|c| c.divergences).sum();
+    let all_tuning = started.iter().all(|c| c.tuning);
+    let any_tuning = started.iter().any(|c| c.tuning);
+    let phase = if all_tuning {
+        "warmup"
+    } else if any_tuning {
+        "mixed"
+    } else {
+        "sample"
+    };
+
+    let pct = if total_draws > 0 {
+        (total_finished as f64 / total_draws as f64 * 100.0).round() as u32
+    } else {
+        0
+    };
+
+    let max_runtime = started
+        .iter()
+        .map(|c| c.runtime)
+        .max()
+        .unwrap_or_default();
+    let elapsed = max_runtime.as_secs_f64();
+
+    // ETA
+    let eta_str = if total_finished > 0 && total_draws > 0 && elapsed > 0.1 {
+        let rate = total_finished as f64 / elapsed;
+        let remaining = (total_draws - total_finished) as f64 / rate;
+        format_time(remaining)
+    } else {
+        "?".to_string()
+    };
+
+    let total_steps: usize = started.iter().map(|c| c.total_num_steps).sum();
+
+    // Late-warmup baseline-adjusted grad/draw: discards the high-leapfrog
+    // early-warmup transient so the reported average reflects the tuned sampler.
+    // Falls back to the raw average until baselines are established.
+    let baseline_grad = hints.update_and_pooled_grad(state, num_warmup);
+    let avg_grad = baseline_grad.unwrap_or_else(|| {
+        if total_finished > 0 {
+            total_steps as f64 / total_finished as f64
+        } else {
+            0.0
+        }
+    });
+
+    // Per-chain draw range
+    let min_finished = started.iter().map(|c| c.finished_draws).min().unwrap_or(0);
+    let max_finished = started.iter().map(|c| c.finished_draws).max().unwrap_or(0);
+
+    // Infer tree depth from max latest_num_steps
+    let max_steps = started.iter().map(|c| c.latest_num_steps).max().unwrap_or(0);
+    let tdepth = if max_steps > 0 {
+        (max_steps as f64).log2().floor() as i32
+    } else {
+        0
+    };
+
+    // Min step size
+    let min_step = started
+        .iter()
+        .map(|c| c.step_size)
+        .filter(|&s| s > 0.0)
+        .fold(f64::INFINITY, f64::min);
+
+    let n_chains = started.len();
+
+    // --- One-shot hints (fire at most once per run) ---
+
+    // Divergence hint
+    if !hints.warned_div && total_divs > 0 {
+        hints.warned_div = true;
+        r_eprint("⚠ div: divergent transitions detected — try increasing target_accept or reparameterizing.\n");
+    }
+
+    // Grad/draw hint
+    if !hints.warned_grad && baseline_grad.is_some() && avg_grad >= GRAD_HINT_THRESHOLD {
+        hints.warned_grad = true;
+        let depth = (avg_grad + 1.0).log2().round() as i32;
+        r_eprint(&format!("ℹ grad/draw: ~{} gradient evaluations per draw (tree depth ~{}) — sampling is taking long trajectories; often a sign of difficult geometry or incomplete adaptation, worth checking if unexpected.\n",
+            avg_grad.round() as i32, depth));
+    }
+
+    // --- Spread (percent-range across running chains) ---
+    // Compute per-chain fractions for started, unfinished chains
+    let running: Vec<&ChainState> = started.iter()
+        .filter(|c| c.total_draws > 0 && c.finished_draws < c.total_draws)
+        .copied()
+        .collect();
+
+    let chain_fracs: Vec<f64> = running.iter()
+        .map(|c| c.finished_draws as f64 / c.total_draws as f64)
+        .collect();
+
+    // Latch spread on once the trigger fires
+    if !hints.spread_active && chain_fracs.len() >= 2 {
+        let spread_pp = (chain_fracs.iter().cloned().fold(0.0f64, f64::max)
+            - chain_fracs.iter().cloned().fold(1.0f64, f64::min)) * 100.0;
+        let mut sorted = chain_fracs.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = if sorted.len() % 2 == 0 {
+            (sorted[sorted.len() / 2 - 1] + sorted[sorted.len() / 2]) / 2.0
+        } else {
+            sorted[sorted.len() / 2]
+        };
+        if spread_pp >= SPREAD_TRIGGER_POINTS && median >= SPREAD_MEDIAN_FLOOR {
+            hints.spread_active = true;
+            if !hints.warned_spread {
+                hints.warned_spread = true;
+                r_eprint(&format!("ℹ spread: chain progress is uneven (slowest {}%, fastest {}%) — often one chain adapted a smaller step size or is in a harder region of the posterior. Adding to status line.\n",
+                    (chain_fracs.iter().cloned().fold(1.0f64, f64::min) * 100.0).round() as i32,
+                    (chain_fracs.iter().cloned().fold(0.0f64, f64::max) * 100.0).round() as i32));
+            }
+        }
+    }
+
+    let spread_part = if hints.spread_active && chain_fracs.len() >= 2 {
+        Some(format!("spread {}-{}%",
+            (chain_fracs.iter().cloned().fold(1.0f64, f64::min) * 100.0).round() as i32,
+            (chain_fracs.iter().cloned().fold(0.0f64, f64::max) * 100.0).round() as i32))
+    } else {
+        None
+    };
+
+    // --- Sparkline (gap-from-leader, one glyph per running chain) ---
+    let spark_part = if running.len() > 1 && running.iter().all(|c| c.total_draws > 0) {
+        let max_total = running.iter().map(|c| c.total_draws).max().unwrap_or(0);
+        if max_total > 0 {
+            let max_fin = running.iter().map(|c| c.finished_draws).max().unwrap_or(0);
+            let glyphs = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+            let s: String = running.iter().map(|c| {
+                let gap = max_fin - c.finished_draws;
+                let ratio = gap as f64 / max_total as f64;
+                let lo = 0.02;
+                let hi = 0.20;
+                let frac = ((ratio - lo) / (hi - lo)).clamp(0.0, 1.0);
+                let level = (frac * 7.0).round() as usize;
+                glyphs[level.min(7)]
+            }).collect();
+            Some(s)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // --- Chain lag indicator ---
+    let lag_part = if running.len() > 1 {
+        let finished: Vec<f64> = running.iter().map(|c| c.finished_draws as f64).collect();
+        let mut sorted = finished.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let med = if sorted.len() % 2 == 0 {
+            (sorted[sorted.len() / 2 - 1] + sorted[sorted.len() / 2]) / 2.0
+        } else {
+            sorted[sorted.len() / 2]
+        };
+        if med > 0.0 {
+            let lag_idx: Vec<usize> = finished.iter().enumerate()
+                .filter(|(_, &f)| f < med * 0.9)
+                .map(|(i, _)| i)
+                .collect();
+            if !lag_idx.is_empty() {
+                let labels: Vec<String> = lag_idx.iter()
+                    .map(|&i| format!("c{}", running[i].chain))
+                    .collect();
+                Some(format!("{} slow", labels.join(",")))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Build the status portion: div | grad | spread | spark | lag | draws | tdepth | step
+    let div_part = if total_divs > 0 {
+        if use_color {
+            format!("{}⚠ div: {}{}", ANSI_YELLOW, total_divs, ANSI_RESET)
+        } else {
+            format!("⚠ div: {}", total_divs)
+        }
+    } else {
+        "div: 0".to_string()
+    };
+
+    let grad_part = if avg_grad > 0.0 {
+        let label = format!("{:.0} grad/draw", avg_grad);
+        if avg_grad >= GRAD_HINT_THRESHOLD && use_color {
+            format!("{}▲ {}{}", ANSI_YELLOW, label, ANSI_RESET)
+        } else if avg_grad >= GRAD_HINT_THRESHOLD {
+            format!("▲ {}", label)
+        } else {
+            label
+        }
+    } else {
+        "- grad/draw".to_string()
+    };
+
+    let draws_part = if min_finished == max_finished {
+        format!("{}/{}", min_finished, total_draws / n_chains)
+    } else {
+        format!("{}-{}/{}", min_finished, max_finished, total_draws / n_chains)
+    };
+
+    let tdepth_part = format!("tdepth: {}", tdepth);
+    let step_part = if min_step.is_finite() && min_step > 0.0 {
+        format!("step: {:.3}", min_step)
+    } else {
+        String::new()
+    };
+
+    // Assemble status tokens, filtering out None
+    let mut tokens: Vec<String> = vec![div_part, grad_part];
+    if let Some(ref s) = spread_part { tokens.push(s.clone()); }
+    if let Some(ref s) = spark_part { tokens.push(s.clone()); }
+    if let Some(ref s) = lag_part { tokens.push(s.clone()); }
+    tokens.push(draws_part);
+    tokens.push(tdepth_part);
+    if !step_part.is_empty() { tokens.push(step_part); }
+    let status = tokens.join(" | ");
+
+    match style {
+        "bar" => {
+            let bar_width = 24usize;
+            let filled = if total_draws > 0 {
+                (bar_width * total_finished / total_draws).min(bar_width)
+            } else {
+                0
+            };
+            let bar: String = "█".repeat(filled) + &"░".repeat(bar_width - filled);
+            let spinner = SPINNER[frame % SPINNER.len()];
+
+            format!(
+                "\r{spinner} {elapsed:.1}s {phase} {pct}% {bar} ETA {eta} | {status}",
+                spinner = spinner,
+                elapsed = elapsed,
+                phase = phase,
+                pct = pct,
+                bar = bar,
+                eta = eta_str,
+                status = status,
+            )
+        }
+        _ => {
+            format!(
+                "[{:.1}s] {} {}% | {}",
+                elapsed, phase, pct, status,
+            )
+        }
+    }
+}
+
+/// Format seconds as a compact time string (e.g. "1m23s", "45s", "3m").
+fn format_time(seconds: f64) -> String {
+    if !seconds.is_finite() || seconds < 0.0 {
+        return "?".to_string();
+    }
+    if seconds < 1.0 {
+        return "<1s".to_string();
+    }
+    let secs = seconds.round() as u64;
+    if secs < 60 {
+        format!("{}s", secs)
+    } else {
+        let mins = secs / 60;
+        let s = secs % 60;
+        if mins < 60 {
+            format!("{}m{:02}s", mins, s)
+        } else {
+            let h = mins / 60;
+            let m = mins % 60;
+            format!("{}h{:02}m", h, m)
+        }
+    }
+}
+
 /// Sample from a Stan model using nuts-rs NUTS sampler.
 /// Run the sampler with progress reporting. Generic over Settings type.
 fn run_sampler<S: Settings>(
@@ -173,18 +624,21 @@ fn run_sampler<S: Settings>(
     num_cores: i32,
     save_warmup: bool,
     progress_cb: Option<Function>,
+    rprintf_progress: &str,
+    num_warmup: usize,
 ) -> Result<Vec<ArrowTrace>> {
     let mut progress_cb = progress_cb;
     let use_callback = progress_cb.is_some();
+    let use_rprintf = !rprintf_progress.is_empty();
 
     let progress_state: Arc<Mutex<Vec<ChainState>>> = Arc::new(Mutex::new(Vec::new()));
     let state_clone = progress_state.clone();
 
-    // Only install the nuts-rs progress callback when R wants per-poll
-    // snapshots. With `progress = "none"` there is no R callback, so we skip
-    // the snapshot bookkeeping — but the wait loop below still runs to service
-    // interrupts.
-    let callback = if use_callback {
+    // Install the nuts-rs progress callback when either the R callback or the
+    // Rprintf path is active — both need per-poll snapshots from the sampler.
+    // With `progress = "none"` neither is set, so we skip the snapshot
+    // bookkeeping — but the wait loop below still runs to service interrupts.
+    let callback = if use_callback || use_rprintf {
         Some(ProgressCallback {
             callback: Box::new(move |_elapsed: Duration, progress: Box<[ChainProgress]>| {
                 let snapshot: Vec<ChainState> = progress
@@ -225,6 +679,25 @@ fn run_sampler<S: Settings>(
         .map_err(r_err)?,
     );
 
+    // Throttle Rprintf rendering to ~1 Hz. The poll loop still spins at 200 ms
+    // for interrupt responsiveness and console flushing, but we only render a
+    // progress line once per second to avoid flooding the console.
+    let cb_interval = Duration::from_millis(
+        std::env::var("NUTPIE_CB_INTERVAL_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1000),
+    );
+    let mut last_render: Option<Instant> = None;
+    let mut last_line = String::new();
+    let mut frame: usize = 0;
+    // Detect color support: check if stdout is a TTY and R has not disabled it.
+    // We use the same heuristic as cli: if R's stdout is a terminal, assume
+    // color support. This is conservative — it may miss some terminals that
+    // support color but aren't detected as TTYs.
+    let use_color = rprintf_progress == "bar" && detect_r_color_support();
+    let mut hints = ProgressHints::new();
+
     let results = loop {
         let sampler = sampler_opt.take().unwrap();
         let wait_dur = Duration::from_millis(200);
@@ -258,31 +731,65 @@ fn run_sampler<S: Settings>(
                     continue;
                 }
 
-                let cb_failed = if let Some(ref cb) = progress_cb {
-                    let snapshot_list = build_progress_snapshot(&state_snapshot);
-                    let pairlist = Pairlist::from_pairs([("", Robj::from(snapshot_list))]);
-                    match cb.call(pairlist) {
-                        Ok(_) => false,
-                        Err(e) => {
-                            rprintln!(
-                                "nutpieR: progress callback failed ({}); disabling further callbacks for this run.",
-                                e
-                            );
-                            true
+                // Throttle: only render progress once per `cb_interval`, not
+                // on every 200 ms poll.
+                let due = last_render.map_or(true, |t| t.elapsed() >= cb_interval);
+                if due {
+                    let line = format_progress_line(
+                        &state_snapshot,
+                        rprintf_progress,
+                        use_color,
+                        frame,
+                        &mut hints,
+                        num_warmup,
+                    );
+                    frame = frame.wrapping_add(1);
+                    // Skip rendering if the line hasn't changed since last render.
+                    // In bar mode the \r overwrites, so duplicates are invisible
+                    // in a real terminal but produce noise in piped/captured output.
+                    let changed = line != last_line;
+                    if !line.is_empty() && changed {
+                        if rprintf_progress == "bar" {
+                            r_print(&line);
+                        } else {
+                            r_eprint(&format!("{}\n", line));
+                        }
+                        pump_r_events();
+                        last_line = line;
+                    }
+                    last_render = Some(Instant::now());
+
+                    // If an R callback is also set (non-macOS or explicit),
+                    // run it too — but only when not on the Rprintf path.
+                    if !use_rprintf {
+                        if let Some(ref cb) = progress_cb {
+                            let snapshot_list = build_progress_snapshot(&state_snapshot);
+                            let pairlist = Pairlist::from_pairs([("", Robj::from(snapshot_list))]);
+                            match cb.call(pairlist) {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    rprintln!(
+                                        "nutpieR: progress callback failed ({}); disabling further callbacks for this run.",
+                                        e
+                                    );
+                                    progress_cb = None;
+                                }
+                            }
                         }
                     }
-                } else {
-                    false
-                };
-                if cb_failed {
-                    progress_cb = None;
                 }
             }
             SamplerWaitResult::Err(e, _) => return Err(r_err(e)),
         }
     };
 
-    if let Some(ref cb) = progress_cb {
+    // Final progress render / callback.
+    if use_rprintf {
+        // Clear the progress bar line with a newline so the summary starts fresh.
+        if rprintf_progress == "bar" {
+            r_eprint("\n");
+        }
+    } else if let Some(ref cb) = progress_cb {
         let state_snapshot: Vec<ChainState> = {
             let state = progress_state.lock().unwrap();
             state.clone()
@@ -401,6 +908,7 @@ fn sample_stan(
     include_tp: bool,
     include_gq: bool,
     progress_callback: Robj,
+    rprintf_progress: &str,
 ) -> List {
     or_throw((|| -> Result<List> {
         // Defensive guards before unsigned casts. The R wrapper validates these
@@ -541,6 +1049,8 @@ fn sample_stan(
                     num_cores,
                     save_warmup,
                     progress_callback.clone(),
+                    rprintf_progress,
+                    num_warmup as usize,
                 )?
             }
             "diag" => {
@@ -552,6 +1062,8 @@ fn sample_stan(
                     num_cores,
                     save_warmup,
                     progress_callback.clone(),
+                    rprintf_progress,
+                    num_warmup as usize,
                 )?
             }
             other => {
@@ -687,6 +1199,8 @@ fn run_with_settings<S: Settings + serde::Serialize>(
     num_cores: i32,
     save_warmup: bool,
     progress_callback: Option<Function>,
+    rprintf_progress: &str,
+    num_warmup: usize,
 ) -> Result<(Vec<ArrowTrace>, String)> {
     let json = serde_json::to_string(&settings)
         .map_err(|e| Error::Other(format!("failed to serialize sampler settings: {}", e)))?;
@@ -696,6 +1210,8 @@ fn run_with_settings<S: Settings + serde::Serialize>(
         num_cores,
         save_warmup,
         progress_callback,
+        rprintf_progress,
+        num_warmup,
     )?;
     Ok((traces, json))
 }

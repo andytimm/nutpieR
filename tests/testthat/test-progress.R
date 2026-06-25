@@ -788,6 +788,10 @@ test_that("suppressMessages silences text progress callbacks", {
 
 test_that("a failing progress callback is disabled instead of killing sampling", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  # On macOS, the Rprintf path is used instead of the R callback (#36),
+  # so make_cli_progress_callback is never called. Skip there.
+  skip_if(Sys.info()[["sysname"]] == "Darwin",
+          "macOS uses Rprintf progress path, not the R callback (#36)")
   call_count <- 0L
   testthat::local_mocked_bindings(
     make_cli_progress_callback = function(...) {

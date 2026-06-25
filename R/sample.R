@@ -249,7 +249,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   chain_format <- validate_chain_format(chain_format, resolved_progress)
   # Will be replaced with the effective maxdepth from sampler_config after sampling.
 
-  call_sample_stan <- function(progress_callback) {
+  call_sample_stan <- function(progress_callback, rprintf_progress = "") {
     progress_callback <- protect_progress_callback(progress_callback)
     sample_stan(
       handle,
@@ -276,25 +276,60 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
       keep_indices,
       flags$include_tp,
       flags$include_gq,
-      progress_callback
+      progress_callback,
+      rprintf_progress
     )
+  }
+
+  # On macOS, Stan models link tbbmalloc_proxy (process-wide allocator
+  # replacement) which can segfault when R's GC frees old SEXPs during the
+  # progress callback (#36). The Rprintf path renders progress via C-level
+  # Rprintf/REprintf — no SEXP allocation, no GC trigger, no crash — while
+  # keeping the fast proxy allocator. On other platforms the R callback
+  # is safe (no proxy linked by default).
+  rprintf_style <- if (resolved_progress != "none" &&
+                       Sys.info()[["sysname"]] == "Darwin" &&
+                       Sys.getenv("NUTPIER_FORCE_R_CALLBACK") != "1") {
+    if (resolved_progress == "text") "text" else "bar"
+  } else {
+    ""
   }
 
   raw <- switch(
     resolved_progress,
     "cli" = {
-      progress_callback <- make_cli_progress_callback(
-        num_chains, num_warmup, num_draws,
-        chain_format = chain_format
-      )
-      progress_started <- Sys.time()
-      on.exit(finish_progress_callback(progress_callback), add = TRUE)
-      raw <- call_sample_stan(progress_callback)
-      finish_progress_callback(progress_callback)
-      attr(raw, "progress_elapsed") <- as.numeric(difftime(Sys.time(), progress_started, units = "secs"))
-      raw
+      if (nchar(rprintf_style) > 0) {
+        # macOS: Rust-side progress bar via Rprintf, no R callback.
+        progress_started <- Sys.time()
+        raw <- call_sample_stan(NULL, rprintf_style)
+        attr(raw, "progress_elapsed") <- as.numeric(difftime(Sys.time(), progress_started, units = "secs"))
+        raw
+      } else {
+        progress_callback <- make_cli_progress_callback(
+          num_chains, num_warmup, num_draws,
+          chain_format = chain_format
+        )
+        progress_started <- Sys.time()
+        on.exit(finish_progress_callback(progress_callback), add = TRUE)
+        raw <- call_sample_stan(progress_callback, "")
+        finish_progress_callback(progress_callback)
+        attr(raw, "progress_elapsed") <- as.numeric(difftime(Sys.time(), progress_started, units = "secs"))
+        raw
+      }
     },
     "text" = {
+      if (nchar(rprintf_style) > 0) {
+        # macOS: Rust-side text progress via REprintf, no R callback.
+        message(sprintf(
+          "Sampling %d chain%s, %s draws each (%s warmup)",
+          num_chains, if (num_chains == 1L) "" else "s",
+          format_draw_count(num_draws), format_draw_count(num_warmup)
+        ))
+        progress_started <- Sys.time()
+        raw <- call_sample_stan(NULL, rprintf_style)
+        attr(raw, "progress_elapsed") <- as.numeric(difftime(Sys.time(), progress_started, units = "secs"))
+        raw
+      } else {
       progress_callback <- make_text_progress_callback(
         num_chains, num_warmup, num_draws,
         refresh = refresh,
@@ -309,12 +344,13 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
       ))
       progress_started <- Sys.time()
       on.exit(finish_progress_callback(progress_callback), add = TRUE)
-      raw <- call_sample_stan(progress_callback)
+      raw <- call_sample_stan(progress_callback, "")
       finish_progress_callback(progress_callback)
       attr(raw, "progress_elapsed") <- as.numeric(difftime(Sys.time(), progress_started, units = "secs"))
-      raw
+        raw
+      }
     },
-    call_sample_stan(NULL)
+    call_sample_stan(NULL, "")
   )
   draws <- assemble_sample_result(
     raw,
