@@ -283,14 +283,31 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
 
   # On macOS, Stan models link tbbmalloc_proxy (process-wide allocator
   # replacement) which can segfault when R's GC frees old SEXPs during the
-  # progress callback (#36). The Rprintf path renders progress via C-level
-  # Rprintf/REprintf — no SEXP allocation, no GC trigger, no crash — while
-  # keeping the fast proxy allocator. On other platforms the R callback
-  # is safe (no proxy linked by default).
-  rprintf_style <- if (resolved_progress != "none" &&
-                       Sys.info()[["sysname"]] == "Darwin" &&
-                       Sys.getenv("NUTPIER_FORCE_R_CALLBACK") != "1") {
-    if (resolved_progress == "text") "text" else "bar"
+  # progress callback (#36). The Rust path renders progress via C-level REprintf
+  # — no SEXP allocation, no GC trigger, no crash — while keeping the fast proxy
+  # allocator. On other platforms the R callback is safe (no proxy linked by
+  # default), so we keep the cli/text callbacks there.
+  #
+  # `mac_native` selects the Rust path. It is deliberately independent of whether
+  # progress is muffled: on macOS we must NEVER install the R callback, even when
+  # silenced, because its per-poll SEXP snapshots are themselves the #36 trigger.
+  # When muffled we pass an empty style instead, so the Rust side renders nothing
+  # and installs no snapshot callback — silent and safe.
+  mac_native <- resolved_progress != "none" &&
+    Sys.info()[["sysname"]] == "Darwin" &&
+    Sys.getenv("NUTPIER_FORCE_R_CALLBACK") != "1"
+  # Encode everything the Rust renderer needs into one string (keeps the FFI
+  # signature fixed): the text path carries the `refresh` draw-count so its
+  # per-chain gate matches R, and a ":color" suffix tells Rust that R has ANSI
+  # color (the C-level renderer can't probe this itself — RStudio/Positron
+  # consoles aren't TTYs, but cli still reports color there).
+  rprintf_style <- if (mac_native && !progress_messages_muffled()) {
+    color_tag <- if (isTRUE(progress_supports_color())) ":color" else ""
+    if (resolved_progress == "text") {
+      paste0("text:", refresh, color_tag)
+    } else {
+      paste0("bar", color_tag)
+    }
   } else {
     ""
   }
@@ -298,8 +315,9 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   raw <- switch(
     resolved_progress,
     "cli" = {
-      if (nchar(rprintf_style) > 0) {
-        # macOS: Rust-side progress bar via Rprintf, no R callback.
+      if (mac_native) {
+        # macOS: render the bar in Rust (or stay silent when rprintf_style == "");
+        # never install the R callback here — its snapshots trip #36.
         progress_started <- Sys.time()
         raw <- call_sample_stan(NULL, rprintf_style)
         attr(raw, "progress_elapsed") <- as.numeric(difftime(Sys.time(), progress_started, units = "secs"))
@@ -318,8 +336,9 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
       }
     },
     "text" = {
-      if (nchar(rprintf_style) > 0) {
-        # macOS: Rust-side text progress via REprintf, no R callback.
+      if (mac_native) {
+        # macOS: render text progress in Rust. The start banner still goes
+        # through message(), so suppressMessages() silences it normally.
         message(sprintf(
           "Sampling %d chain%s, %s draws each (%s warmup)",
           num_chains, if (num_chains == 1L) "" else "s",

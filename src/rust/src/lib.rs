@@ -24,11 +24,12 @@ extern "C" {
     // events, so without this the progress callback's output is invisible until
     // sample_stan() returns. See `pump_r_events`.
     fn R_ProcessEvents();
-    // Write to R's output stream (stdout) — C-level, no SEXP allocation.
-    // Used for progress rendering that avoids R's GC (#36).
+    // Write to R's output stream (stdout) — C-level, no SEXP allocation. Used
+    // for progress rendering that avoids R's GC (#36). We use stdout (not
+    // stderr) so GUI consoles like Positron/RStudio render it on a neutral base
+    // with our ANSI accents honored — raw stderr gets painted a flat salmon by
+    // those front-ends, swallowing the bar's coloring.
     fn Rprintf(format: *const std::os::raw::c_char, ...);
-    // Write to R's error stream (stderr) — C-level, no SEXP allocation.
-    fn REprintf(format: *const std::os::raw::c_char, ...);
 }
 
 /// Flush front-end consoles mid-sampling by pumping R's event loop.
@@ -62,48 +63,18 @@ fn interrupt_pending() -> bool {
     }
 }
 
-/// Write a message to R's stderr (REprintf) — C-level, no SEXP allocation.
+/// Write a message to R's stdout (Rprintf) — C-level, no SEXP allocation.
 /// Used for progress rendering during sampling to avoid triggering R's GC
-/// while `tbbmalloc_proxy` is active (#36).
-fn r_eprint(msg: &str) {
-    // REprintf is a printf-style C function; use "%s" to avoid interpreting
+/// while `tbbmalloc_proxy` is active (#36). Color support is decided R-side via
+/// `cli::num_ansi_colors()` and passed down, so there is no `isatty` probe here
+/// (it would read false in the RStudio/Positron consoles, which are not TTYs).
+fn r_print(msg: &str) {
+    // Rprintf is a printf-style C function; use "%s" to avoid interpreting
     // any '%' characters in `msg` as format specifiers.
     let fmt = b"%s\0";
     let c_msg = std::ffi::CString::new(msg).unwrap_or_default();
     unsafe {
-        REprintf(
-            fmt.as_ptr() as *const std::os::raw::c_char,
-            c_msg.as_ptr(),
-        );
-    }
-}
-
-/// Write to R's stdout (Rprintf) — same rationale as `r_eprint`.
-fn r_print(msg: &str) {
-    let fmt = b"%s\0";
-    let c_msg = std::ffi::CString::new(msg).unwrap_or_default();
-    unsafe {
         Rprintf(fmt.as_ptr() as *const std::os::raw::c_char, c_msg.as_ptr());
-    }
-}
-
-/// Detect whether R's output stream supports ANSI color escape sequences.
-/// On macOS, R's stdout is a TTY when running interactively in Terminal or
-/// RStudio's console. We use `isatty(1)` as the signal — this matches the
-/// R-side `cli::num_ansi_colors()` heuristic well enough for the progress bar.
-fn detect_r_color_support() -> bool {
-    // Use isatty(1) via the C library (linked via R) to detect TTY.
-    // This avoids adding a `libc` crate dependency.
-    #[cfg(unix)]
-    {
-        extern "C" {
-            fn isatty(fd: std::os::raw::c_int) -> std::os::raw::c_int;
-        }
-        unsafe { isatty(1) == 1 }
-    }
-    #[cfg(not(unix))]
-    {
-        false
     }
 }
 
@@ -216,14 +187,12 @@ struct ChainState {
 }
 
 /// ANSI color codes for progress output. Using direct escape sequences avoids
-/// any dependency on R's cli package — these go through Rprintf which writes
-/// to stdout. Colors are only emitted when the terminal supports them.
+/// any dependency on R's cli package — these go through Rprintf (stdout). Colors
+/// are only emitted when R reports color support (`cli::num_ansi_colors()`,
+/// passed down via the style string).
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_RED: &str = "\x1b[31m";
 const ANSI_YELLOW: &str = "\x1b[33m";
-const ANSI_GREEN: &str = "\x1b[32m";
-const ANSI_BOLD: &str = "\x1b[1m";
-const ANSI_DIM: &str = "\x1b[2m";
 
 /// Spinner frames for the progress bar animation.
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -296,8 +265,10 @@ impl ProgressHints {
                 continue;
             }
             if let Some((base_total, base_finished)) = self.grad_baselines.get(i).copied().flatten() {
-                steps_delta += (c.total_num_steps - base_total) as f64;
-                draws_delta += (c.finished_draws - base_finished) as f64;
+                // saturating_sub: the counters are monotonic in practice, but a
+                // stale/regressed snapshot must not underflow-panic the sampler.
+                steps_delta += c.total_num_steps.saturating_sub(base_total) as f64;
+                draws_delta += c.finished_draws.saturating_sub(base_finished) as f64;
             }
         }
         if draws_delta > 0.0 {
@@ -306,20 +277,81 @@ impl ProgressHints {
             None
         }
     }
+
+    /// Per-chain baseline-adjusted grad/draw, mirroring R's
+    /// `chain_grad_per_draw`: use the late-warmup baseline when the chain has one
+    /// and has drawn past it, else fall back to the raw lifetime average. `None`
+    /// before the chain has finished any draw.
+    fn chain_grad(&self, i: usize, c: &ChainState) -> Option<f64> {
+        if let Some((base_total, base_finished)) = self.grad_baselines.get(i).copied().flatten() {
+            let draws_delta = c.finished_draws.saturating_sub(base_finished);
+            if draws_delta > 0 {
+                return Some(
+                    c.total_num_steps.saturating_sub(base_total) as f64 / draws_delta as f64,
+                );
+            }
+        }
+        if c.finished_draws > 0 {
+            Some(c.total_num_steps as f64 / c.finished_draws as f64)
+        } else {
+            None
+        }
+    }
+}
+
+/// Emit a one-shot hint line. In bar mode the live bar line has no trailing
+/// newline, so prefix `\n` to break the hint onto its own line — the last bar
+/// frame freezes above it (like cli's `cli_progress_output`) and the next render
+/// redraws the bar below. In text mode every line already ends with `\n`, so no
+/// prefix is needed. `body` must include its own trailing newline.
+fn emit_hint(bar_mode: bool, body: &str) {
+    if bar_mode {
+        r_print(&format!("\n{}", body));
+    } else {
+        r_print(body);
+    }
+}
+
+/// Emit the one-shot post-warmup divergence hint (mirrors R's `maybe_div_hint`).
+/// Fires at most once per run; shared by the bar and per-chain text paths so the
+/// wording can't drift between them.
+fn maybe_emit_div_hint(hints: &mut ProgressHints, total_divs: usize, bar_mode: bool) {
+    if !hints.warned_div && total_divs > 0 {
+        hints.warned_div = true;
+        emit_hint(bar_mode, "⚠ div: divergent transitions detected — these can bias your results; try increasing `target_accept` or reparameterizing.\n");
+    }
+}
+
+/// Emit the one-shot grad/draw hint (mirrors R's `maybe_grad_hint`). `pooled` is
+/// the late-warmup baseline-adjusted pooled average; the hint fires once it
+/// reaches `GRAD_HINT_THRESHOLD`.
+fn maybe_emit_grad_hint(hints: &mut ProgressHints, pooled: Option<f64>, bar_mode: bool) {
+    if hints.warned_grad {
+        return;
+    }
+    if let Some(avg) = pooled {
+        if avg >= GRAD_HINT_THRESHOLD {
+            hints.warned_grad = true;
+            let depth = (avg + 1.0).log2().round() as i32;
+            emit_hint(bar_mode, &format!("ℹ grad/draw: ~{} gradient evaluations per draw (tree depth ~{}) — sampling is taking long trajectories; often a sign of difficult geometry or incomplete adaptation, worth checking if unexpected.\n",
+                avg.round() as i32, depth));
+        }
+    }
 }
 
 /// Format a one-line progress summary for Rprintf rendering (#36).
 ///
 /// This replaces the R callback path when `tbbmalloc_proxy` is active on macOS.
-/// By writing via `REprintf`/`Rprintf` (C FFI, no SEXP allocation), we avoid
-/// triggering R's GC during sampling — the root cause of the
-/// `__TBB_malloc_safer_msize` segfault.
+/// By writing via `Rprintf` (C FFI, no SEXP allocation), we avoid triggering
+/// R's GC during sampling — the root cause of the `__TBB_malloc_safer_msize`
+/// segfault.
 ///
-/// Style: `"bar"` overwrites the line with `\r` and draws a Unicode progress
-/// bar with ANSI colors; `"text"` emits a fresh line with `\n`.
+/// Renders the single-line cli-style bar (the `progress = "cli"` macOS path).
+/// The returned string carries its own leading `\r` so the caller can overwrite
+/// the current terminal line. `progress = "text"` is rendered separately, per
+/// chain, by [`format_text_progress_lines`].
 fn format_progress_line(
     state: &[ChainState],
-    style: &str,
     use_color: bool,
     frame: usize,
     hints: &mut ProgressHints,
@@ -383,42 +415,9 @@ fn format_progress_line(
         }
     });
 
-    // Per-chain draw range
-    let min_finished = started.iter().map(|c| c.finished_draws).min().unwrap_or(0);
-    let max_finished = started.iter().map(|c| c.finished_draws).max().unwrap_or(0);
-
-    // Infer tree depth from max latest_num_steps
-    let max_steps = started.iter().map(|c| c.latest_num_steps).max().unwrap_or(0);
-    let tdepth = if max_steps > 0 {
-        (max_steps as f64).log2().floor() as i32
-    } else {
-        0
-    };
-
-    // Min step size
-    let min_step = started
-        .iter()
-        .map(|c| c.step_size)
-        .filter(|&s| s > 0.0)
-        .fold(f64::INFINITY, f64::min);
-
-    let n_chains = started.len();
-
-    // --- One-shot hints (fire at most once per run) ---
-
-    // Divergence hint
-    if !hints.warned_div && total_divs > 0 {
-        hints.warned_div = true;
-        r_eprint("⚠ div: divergent transitions detected — try increasing target_accept or reparameterizing.\n");
-    }
-
-    // Grad/draw hint
-    if !hints.warned_grad && baseline_grad.is_some() && avg_grad >= GRAD_HINT_THRESHOLD {
-        hints.warned_grad = true;
-        let depth = (avg_grad + 1.0).log2().round() as i32;
-        r_eprint(&format!("ℹ grad/draw: ~{} gradient evaluations per draw (tree depth ~{}) — sampling is taking long trajectories; often a sign of difficult geometry or incomplete adaptation, worth checking if unexpected.\n",
-            avg_grad.round() as i32, depth));
-    }
+    // --- One-shot hints (fire at most once per run; shared with text path) ---
+    maybe_emit_div_hint(hints, total_divs, true);
+    maybe_emit_grad_hint(hints, baseline_grad, true);
 
     // --- Spread (percent-range across running chains) ---
     // Compute per-chain fractions for started, unfinished chains
@@ -446,7 +445,7 @@ fn format_progress_line(
             hints.spread_active = true;
             if !hints.warned_spread {
                 hints.warned_spread = true;
-                r_eprint(&format!("ℹ spread: chain progress is uneven (slowest {}%, fastest {}%) — often one chain adapted a smaller step size or is in a harder region of the posterior. Adding to status line.\n",
+                emit_hint(true, &format!("ℹ spread: chain progress is uneven (slowest {}%, fastest {}%) — often one chain adapted a smaller step size or is in a harder region of the posterior. Adding to status line.\n",
                     (chain_fracs.iter().cloned().fold(1.0f64, f64::min) * 100.0).round() as i32,
                     (chain_fracs.iter().cloned().fold(0.0f64, f64::max) * 100.0).round() as i32));
             }
@@ -461,63 +460,15 @@ fn format_progress_line(
         None
     };
 
-    // --- Sparkline (gap-from-leader, one glyph per running chain) ---
-    let spark_part = if running.len() > 1 && running.iter().all(|c| c.total_draws > 0) {
-        let max_total = running.iter().map(|c| c.total_draws).max().unwrap_or(0);
-        if max_total > 0 {
-            let max_fin = running.iter().map(|c| c.finished_draws).max().unwrap_or(0);
-            let glyphs = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-            let s: String = running.iter().map(|c| {
-                let gap = max_fin - c.finished_draws;
-                let ratio = gap as f64 / max_total as f64;
-                let lo = 0.02;
-                let hi = 0.20;
-                let frac = ((ratio - lo) / (hi - lo)).clamp(0.0, 1.0);
-                let level = (frac * 7.0).round() as usize;
-                glyphs[level.min(7)]
-            }).collect();
-            Some(s)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    // --- Chain lag indicator ---
-    let lag_part = if running.len() > 1 {
-        let finished: Vec<f64> = running.iter().map(|c| c.finished_draws as f64).collect();
-        let mut sorted = finished.clone();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let med = if sorted.len() % 2 == 0 {
-            (sorted[sorted.len() / 2 - 1] + sorted[sorted.len() / 2]) / 2.0
-        } else {
-            sorted[sorted.len() / 2]
-        };
-        if med > 0.0 {
-            let lag_idx: Vec<usize> = finished.iter().enumerate()
-                .filter(|(_, &f)| f < med * 0.9)
-                .map(|(i, _)| i)
-                .collect();
-            if !lag_idx.is_empty() {
-                let labels: Vec<String> = lag_idx.iter()
-                    .map(|&i| format!("c{}", running[i].chain))
-                    .collect();
-                Some(format!("{} slow", labels.join(",")))
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    // Build the status portion: div | grad | spread | spark | lag | draws | tdepth | step
+    // Build the status portion. Matches the R cli default chain_format,
+    // `"{div} | {grad} | {spread}"` (R/progress.R) — spread renders only once
+    // latched. The spark/lag/draws/tdepth/step tokens are opt-in via
+    // `chain_format` in the R renderer and are intentionally omitted here until
+    // `chain_format` is plumbed through to the Rust path.
     let div_part = if total_divs > 0 {
+        // Divergence count is red, matching R's `cli::col_red` styling.
         if use_color {
-            format!("{}⚠ div: {}{}", ANSI_YELLOW, total_divs, ANSI_RESET)
+            format!("{}⚠ div: {}{}", ANSI_RED, total_divs, ANSI_RESET)
         } else {
             format!("⚠ div: {}", total_divs)
         }
@@ -526,7 +477,8 @@ fn format_progress_line(
     };
 
     let grad_part = if avg_grad > 0.0 {
-        let label = format!("{:.0} grad/draw", avg_grad);
+        // One decimal, matching R's `format_gradient_status` (`%.1f grad/draw`).
+        let label = format!("{:.1} grad/draw", avg_grad);
         if avg_grad >= GRAD_HINT_THRESHOLD && use_color {
             format!("{}▲ {}{}", ANSI_YELLOW, label, ANSI_RESET)
         } else if avg_grad >= GRAD_HINT_THRESHOLD {
@@ -538,61 +490,173 @@ fn format_progress_line(
         "- grad/draw".to_string()
     };
 
-    let draws_part = if min_finished == max_finished {
-        format!("{}/{}", min_finished, total_draws / n_chains)
-    } else {
-        format!("{}-{}/{}", min_finished, max_finished, total_draws / n_chains)
-    };
-
-    let tdepth_part = format!("tdepth: {}", tdepth);
-    let step_part = if min_step.is_finite() && min_step > 0.0 {
-        format!("step: {:.3}", min_step)
-    } else {
-        String::new()
-    };
-
-    // Assemble status tokens, filtering out None
+    // Assemble status tokens, filtering out empty ones.
     let mut tokens: Vec<String> = vec![div_part, grad_part];
     if let Some(ref s) = spread_part { tokens.push(s.clone()); }
-    if let Some(ref s) = spark_part { tokens.push(s.clone()); }
-    if let Some(ref s) = lag_part { tokens.push(s.clone()); }
-    tokens.push(draws_part);
-    tokens.push(tdepth_part);
-    if !step_part.is_empty() { tokens.push(step_part); }
     let status = tokens.join(" | ");
 
-    match style {
-        "bar" => {
-            let bar_width = 24usize;
-            let filled = if total_draws > 0 {
-                (bar_width * total_finished / total_draws).min(bar_width)
-            } else {
-                0
-            };
-            let bar: String = "█".repeat(filled) + &"░".repeat(bar_width - filled);
-            let spinner = SPINNER[frame % SPINNER.len()];
+    let bar_width = 24usize;
+    let filled = if total_draws > 0 {
+        (bar_width * total_finished / total_draws).min(bar_width)
+    } else {
+        0
+    };
+    let bar: String = "█".repeat(filled) + &"░".repeat(bar_width - filled);
+    let spinner = SPINNER[frame % SPINNER.len()];
 
-            format!(
-                "\r{spinner} {elapsed:.1}s {phase} {pct}% {bar} ETA {eta} | {status}",
-                spinner = spinner,
-                elapsed = elapsed,
-                phase = phase,
-                pct = pct,
-                bar = bar,
-                eta = eta_str,
-                status = status,
-            )
+    // Layout mirrors the R cli bar's format string (R/progress.R):
+    // `{spin} {phase} {pct} |{bar}| {current}/{total} {eta} | {status}`.
+    // No elapsed counter in the prefix (cli has none); current/total are the
+    // aggregate finished/total across started chains.
+    format!(
+        "\r{spinner} {phase} {pct:>3}% |{bar}| {current}/{total} ETA: {eta} | {status}",
+        spinner = spinner,
+        phase = phase,
+        pct = pct,
+        bar = bar,
+        current = total_finished,
+        total = total_draws,
+        eta = eta_str,
+        status = status,
+    )
+}
+
+/// Render `progress = "text"` as per-chain lines, matching R's text callback
+/// (`make_text_progress_callback`). One line per chain that has advanced at
+/// least `refresh` draws since it last printed (or has just finished), gated
+/// against `last_printed`. Emits the shared one-shot div/grad hints (the spread
+/// hint is cli-only — in text mode the per-chain lines are themselves the spread
+/// display). Returns the lines to print, in chain order.
+fn format_text_progress_lines(
+    state: &[ChainState],
+    refresh: usize,
+    last_printed: &mut Vec<usize>,
+    hints: &mut ProgressHints,
+    num_warmup: usize,
+) -> Vec<String> {
+    if state.is_empty() {
+        return Vec::new();
+    }
+
+    // One-shot div/grad hints, from the same baseline the cli bar uses. Text
+    // lines already end with "\n", so no bar-mode newline framing is needed.
+    let total_divs: usize = state.iter().map(|c| c.divergences).sum();
+    maybe_emit_div_hint(hints, total_divs, false);
+    let pooled = hints.update_and_pooled_grad(state, num_warmup);
+    maybe_emit_grad_hint(hints, pooled, false);
+
+    let max_runtime = state.iter().map(|c| c.runtime).max().unwrap_or_default();
+    let elapsed_str = format_elapsed(max_runtime.as_secs_f64());
+
+    while last_printed.len() < state.len() {
+        last_printed.push(0);
+    }
+
+    let mut lines = Vec::new();
+    for (i, c) in state.iter().enumerate() {
+        if !c.started {
+            continue;
         }
-        _ => {
-            format!(
-                "[{:.1}s] {} {}% | {}",
-                elapsed, phase, pct, status,
-            )
+        let finished = c.finished_draws;
+        let total = c.total_draws;
+        let since_last = finished.saturating_sub(last_printed[i]);
+        let is_finished = total > 0 && finished >= total;
+        // Refresh gate, mirroring R: print every `refresh` draws, plus one final
+        // line when the chain crosses its total.
+        if since_last < refresh && !(is_finished && last_printed[i] < total) {
+            continue;
         }
+        last_printed[i] = finished;
+
+        // Phase-relative counts: warmup draws then sampling draws.
+        let phase_total = if c.tuning {
+            num_warmup
+        } else {
+            total.saturating_sub(num_warmup)
+        };
+        let phase_finished = if c.tuning {
+            finished.min(phase_total)
+        } else {
+            finished.saturating_sub(num_warmup).min(phase_total)
+        };
+        let pct = if phase_total > 0 {
+            (100.0 * phase_finished as f64 / phase_total as f64).round() as i64
+        } else {
+            0
+        };
+        let phase_str = if c.tuning { "warmup" } else { "sample" };
+
+        let div_token = if c.divergences > 0 {
+            format!("⚠ div: {}", c.divergences)
+        } else {
+            "div: 0".to_string()
+        };
+        let grad_token = match hints.chain_grad(i, c) {
+            Some(g) if g >= GRAD_HINT_THRESHOLD => format!("▲ {:.1} grad/draw", g),
+            Some(g) => format!("{:.1} grad/draw", g),
+            None => "- grad/draw".to_string(),
+        };
+
+        // Matches R's default text chain_format:
+        // "[{elapsed}] c{chain} {phase} {pct}  {draws}/{total} | {div} | {grad}"
+        lines.push(format!(
+            "[{}] c{} {} {}%  {}/{} | {} | {}",
+            elapsed_str,
+            c.chain,
+            phase_str,
+            pct,
+            fmt_thousands(phase_finished),
+            fmt_thousands(phase_total),
+            div_token,
+            grad_token,
+        ));
+    }
+    lines
+}
+
+/// Format an integer with thousands separators ("1,000"), matching R's
+/// `format_draw_count`.
+fn fmt_thousands(n: usize) -> String {
+    let s = n.to_string();
+    let len = s.len();
+    let mut out = String::with_capacity(len + len / 3);
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && (len - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Compact elapsed-time string matching R's `format_progress_time`: "<0.1s",
+/// "%.1fs" under a minute, then "%dm%02ds" / "%dh%02dm".
+fn format_elapsed(seconds: f64) -> String {
+    let seconds = if !seconds.is_finite() || seconds < 0.0 {
+        0.0
+    } else {
+        seconds
+    };
+    if seconds > 0.0 && seconds < 0.1 {
+        return "<0.1s".to_string();
+    }
+    if seconds < 60.0 {
+        return format!("{:.1}s", seconds);
+    }
+    let total = seconds as u64;
+    let mins = total / 60;
+    let secs = (seconds % 60.0).round() as u64;
+    if mins < 60 {
+        format!("{}m{:02}s", mins, secs)
+    } else {
+        let hours = mins / 60;
+        let m = mins % 60;
+        format!("{}h{:02}m", hours, m)
     }
 }
 
-/// Format seconds as a compact time string (e.g. "1m23s", "45s", "3m").
+/// Format seconds as a compact time string for the bar's ETA (e.g. "45s",
+/// "1m23s").
 fn format_time(seconds: f64) -> String {
     if !seconds.is_finite() || seconds < 0.0 {
         return "?".to_string();
@@ -679,9 +743,26 @@ fn run_sampler<S: Settings>(
         .map_err(r_err)?,
     );
 
-    // Throttle Rprintf rendering to ~1 Hz. The poll loop still spins at 200 ms
-    // for interrupt responsiveness and console flushing, but we only render a
-    // progress line once per second to avoid flooding the console.
+    // Parse the Rust-render style. The R side encodes everything it knows into
+    // this one string (so the FFI signature stays put):
+    //   "bar"        / "bar:color"
+    //   "text:<n>"   / "text:<n>:color"
+    // where <n> is the `refresh` draw count and the ":color" suffix is present
+    // when R reports ANSI color support (`cli::num_ansi_colors()`). Empty means
+    // the R callback path (non-macOS) or no progress.
+    let mut parts = rprintf_progress.split(':');
+    let kind = parts.next().unwrap_or("");
+    let style_is_bar = kind == "bar";
+    let style_is_text = kind == "text";
+    let text_refresh: usize = if style_is_text {
+        parts.next().and_then(|s| s.parse().ok()).unwrap_or(100).max(1)
+    } else {
+        100
+    };
+
+    // Throttle the cli bar to ~1 Hz. The poll loop still spins at 200 ms for
+    // interrupt responsiveness and console flushing; the bar just re-renders once
+    // per second. (Text mode is gated per-chain by `text_refresh` instead.)
     let cb_interval = Duration::from_millis(
         std::env::var("NUTPIE_CB_INTERVAL_MS")
             .ok()
@@ -691,11 +772,9 @@ fn run_sampler<S: Settings>(
     let mut last_render: Option<Instant> = None;
     let mut last_line = String::new();
     let mut frame: usize = 0;
-    // Detect color support: check if stdout is a TTY and R has not disabled it.
-    // We use the same heuristic as cli: if R's stdout is a terminal, assume
-    // color support. This is conservative — it may miss some terminals that
-    // support color but aren't detected as TTYs.
-    let use_color = rprintf_progress == "bar" && detect_r_color_support();
+    // Per-chain last-printed draw counts for the text path's refresh gate.
+    let mut last_printed: Vec<usize> = Vec::new();
+    let use_color = rprintf_progress.ends_with(":color");
     let mut hints = ProgressHints::new();
 
     let results = loop {
@@ -731,50 +810,61 @@ fn run_sampler<S: Settings>(
                     continue;
                 }
 
-                // Throttle: only render progress once per `cb_interval`, not
-                // on every 200 ms poll.
-                let due = last_render.map_or(true, |t| t.elapsed() >= cb_interval);
-                if due {
-                    let line = format_progress_line(
+                // Three mutually exclusive render paths. The macOS Rust paths
+                // (bar/text) write via Rprintf (stdout) and never touch the R
+                // callback; the R callback path is the non-macOS default.
+                if style_is_bar {
+                    // cli bar: one overwriting line, throttled to ~1 Hz. The `\r`
+                    // overwrite hides duplicates in a real terminal, but the
+                    // last_line guard avoids noise in piped/captured output.
+                    let due = last_render.map_or(true, |t| t.elapsed() >= cb_interval);
+                    if due {
+                        let line = format_progress_line(
+                            &state_snapshot,
+                            use_color,
+                            frame,
+                            &mut hints,
+                            num_warmup,
+                        );
+                        frame = frame.wrapping_add(1);
+                        if !line.is_empty() && line != last_line {
+                            r_print(&line);
+                            pump_r_events();
+                            last_line = line;
+                        }
+                        last_render = Some(Instant::now());
+                    }
+                } else if style_is_text {
+                    // Per-chain text lines, gated by the refresh draw count. No
+                    // time throttle — the refresh gate decides when each chain
+                    // prints, matching R's text callback.
+                    let lines = format_text_progress_lines(
                         &state_snapshot,
-                        rprintf_progress,
-                        use_color,
-                        frame,
+                        text_refresh,
+                        &mut last_printed,
                         &mut hints,
                         num_warmup,
                     );
-                    frame = frame.wrapping_add(1);
-                    // Skip rendering if the line hasn't changed since last render.
-                    // In bar mode the \r overwrites, so duplicates are invisible
-                    // in a real terminal but produce noise in piped/captured output.
-                    let changed = line != last_line;
-                    if !line.is_empty() && changed {
-                        if rprintf_progress == "bar" {
-                            r_print(&line);
-                        } else {
-                            r_eprint(&format!("{}\n", line));
+                    if !lines.is_empty() {
+                        for line in &lines {
+                            r_print(&format!("{}\n", line));
                         }
                         pump_r_events();
-                        last_line = line;
                     }
-                    last_render = Some(Instant::now());
-
-                    // If an R callback is also set (non-macOS or explicit),
-                    // run it too — but only when not on the Rprintf path.
-                    if !use_rprintf {
-                        if let Some(ref cb) = progress_cb {
-                            let snapshot_list = build_progress_snapshot(&state_snapshot);
-                            let pairlist = Pairlist::from_pairs([("", Robj::from(snapshot_list))]);
-                            match cb.call(pairlist) {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    rprintln!(
-                                        "nutpieR: progress callback failed ({}); disabling further callbacks for this run.",
-                                        e
-                                    );
-                                    progress_cb = None;
-                                }
-                            }
+                } else if let Some(ref cb) = progress_cb {
+                    // Non-macOS: hand the snapshot to the R progress callback every
+                    // poll (cli rate-limits its own redraws). On failure, disable
+                    // the callback for the rest of the run rather than aborting.
+                    let snapshot_list = build_progress_snapshot(&state_snapshot);
+                    let pairlist = Pairlist::from_pairs([("", Robj::from(snapshot_list))]);
+                    match cb.call(pairlist) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            rprintln!(
+                                "nutpieR: progress callback failed ({}); disabling further callbacks for this run.",
+                                e
+                            );
+                            progress_cb = None;
                         }
                     }
                 }
@@ -785,9 +875,10 @@ fn run_sampler<S: Settings>(
 
     // Final progress render / callback.
     if use_rprintf {
-        // Clear the progress bar line with a newline so the summary starts fresh.
-        if rprintf_progress == "bar" {
-            r_eprint("\n");
+        // Close off the bar's in-place line with a newline so the R end-of-run
+        // summary starts fresh. Text mode already ends each line with "\n".
+        if style_is_bar {
+            r_print("\n");
         }
     } else if let Some(ref cb) = progress_cb {
         let state_snapshot: Vec<ChainState> = {
