@@ -249,7 +249,8 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   chain_format <- validate_chain_format(chain_format, resolved_progress)
   # Will be replaced with the effective maxdepth from sampler_config after sampling.
 
-  call_sample_stan <- function(progress_callback, rprintf_progress = "") {
+  call_sample_stan <- function(progress_callback, rprintf_progress = "",
+                               rprintf_format = "") {
     progress_callback <- protect_progress_callback(progress_callback)
     sample_stan(
       handle,
@@ -277,7 +278,8 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
       flags$include_tp,
       flags$include_gq,
       progress_callback,
-      rprintf_progress
+      rprintf_progress,
+      rprintf_format
     )
   }
 
@@ -311,6 +313,13 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   } else {
     ""
   }
+  # Resolve the chain_format the Rust renderer should honor (NULL -> the mode
+  # default), so macOS custom formats render like the cli/text callbacks.
+  rprintf_format <- if (mac_native) {
+    chain_format %||% default_chain_format(resolved_progress)
+  } else {
+    ""
+  }
 
   raw <- switch(
     resolved_progress,
@@ -319,7 +328,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
         # macOS: render the bar in Rust (or stay silent when rprintf_style == "");
         # never install the R callback here — its snapshots trip #36.
         progress_started <- Sys.time()
-        raw <- call_sample_stan(NULL, rprintf_style)
+        raw <- call_sample_stan(NULL, rprintf_style, rprintf_format)
         attr(raw, "progress_elapsed") <- as.numeric(difftime(Sys.time(), progress_started, units = "secs"))
         raw
       } else {
@@ -345,7 +354,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
           format_draw_count(num_draws), format_draw_count(num_warmup)
         ))
         progress_started <- Sys.time()
-        raw <- call_sample_stan(NULL, rprintf_style)
+        raw <- call_sample_stan(NULL, rprintf_style, rprintf_format)
         attr(raw, "progress_elapsed") <- as.numeric(difftime(Sys.time(), progress_started, units = "secs"))
         raw
       } else {

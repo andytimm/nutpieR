@@ -33,6 +33,18 @@ resolve_progress_mode <- function(progress, refresh,
   )
 }
 
+#' Default `chain_format` for a progress mode. Single source of truth so the R
+#' callbacks (cli/text) and the macOS Rust path can't drift.
+#' @noRd
+default_chain_format <- function(mode) {
+  switch(
+    mode,
+    cli = "{div} | {grad} | {spread}",
+    text = "[{elapsed}] c{chain} {phase} {pct}  {draws}/{total} | {div} | {grad}",
+    NULL
+  )
+}
+
 #' @noRd
 validate_chain_format <- function(chain_format, mode) {
   if (is.null(chain_format)) return(NULL)
@@ -806,7 +818,7 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
                                        id = NULL,
                                        update = NULL,
                                        done = NULL) {
-  if (is.null(chain_format)) chain_format <- "{div} | {grad} | {spread}"
+  if (is.null(chain_format)) chain_format <- default_chain_format("cli")
   if (is.null(update)) update <- cli::cli_progress_update
   if (is.null(done)) done <- cli::cli_progress_done
   total_steps <- as.numeric(num_chains) * (as.numeric(num_warmup) + as.numeric(num_draws))
@@ -893,7 +905,7 @@ make_text_progress_callback <- function(num_chains, num_warmup, num_draws,
                                         refresh = 10L,
                                         chain_format = NULL) {
   if (is.null(chain_format)) {
-    chain_format <- "[{elapsed}] c{chain} {phase} {pct}  {draws}/{total} | {div} | {grad}"
+    chain_format <- default_chain_format("text")
   }
   last_printed <- rep(0L, num_chains)
   start_time <- proc.time()[["elapsed"]]

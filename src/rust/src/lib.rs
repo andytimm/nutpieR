@@ -352,6 +352,7 @@ fn maybe_emit_grad_hint(hints: &mut ProgressHints, pooled: Option<f64>, bar_mode
 /// chain, by [`format_text_progress_lines`].
 fn format_progress_line(
     state: &[ChainState],
+    format: &str,
     use_color: bool,
     frame: usize,
     hints: &mut ProgressHints,
@@ -460,11 +461,10 @@ fn format_progress_line(
         None
     };
 
-    // Build the status portion. Matches the R cli default chain_format,
-    // `"{div} | {grad} | {spread}"` (R/progress.R) — spread renders only once
-    // latched. The spark/lag/draws/tdepth/step tokens are opt-in via
-    // `chain_format` in the R renderer and are intentionally omitted here until
-    // `chain_format` is plumbed through to the Rust path.
+    // --- Status tokens. The set and renderers mirror R's `format_status_token`
+    // (R/progress.R); the active subset is chosen by `format` (the cli
+    // `chain_format`, default `"{div} | {grad} | {spread}"`). ---
+
     let div_part = if total_divs > 0 {
         // Divergence count is red, matching R's `cli::col_red` styling.
         if use_color {
@@ -490,10 +490,108 @@ fn format_progress_line(
         "- grad/draw".to_string()
     };
 
-    // Assemble status tokens, filtering out empty ones.
-    let mut tokens: Vec<String> = vec![div_part, grad_part];
-    if let Some(ref s) = spread_part { tokens.push(s.clone()); }
-    let status = tokens.join(" | ");
+    let spread_part = spread_part.unwrap_or_default();
+
+    // {draws}: per-chain finished range over a per-chain total, e.g.
+    // "12,925-13,100/21k" (R's `format_chain_draw_range`).
+    let draws_part = {
+        let min_fin = started.iter().map(|c| c.finished_draws).min().unwrap_or(0);
+        let max_fin = started.iter().map(|c| c.finished_draws).max().unwrap_or(0);
+        let per_chain_total = started.iter().map(|c| c.total_draws).max().unwrap_or(0);
+        if min_fin == max_fin {
+            format!("{}/{}", fmt_thousands(min_fin), fmt_compact(per_chain_total))
+        } else {
+            format!("{}-{}/{}", fmt_thousands(min_fin), fmt_thousands(max_fin), fmt_compact(per_chain_total))
+        }
+    };
+
+    // {spark}: gap-from-leader glyph per running chain (R's `format_chain_spark`).
+    let spark_part = if running.len() > 1 {
+        let max_total = running.iter().map(|c| c.total_draws).max().unwrap_or(0);
+        if max_total > 0 {
+            let max_fin = running.iter().map(|c| c.finished_draws).max().unwrap_or(0);
+            const GLYPHS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+            running
+                .iter()
+                .map(|c| {
+                    let gap = max_fin.saturating_sub(c.finished_draws);
+                    let ratio = gap as f64 / max_total as f64;
+                    let frac = ((ratio - 0.02) / (0.20 - 0.02)).clamp(0.0, 1.0);
+                    GLYPHS[((frac * 7.0).round() as usize).min(7)]
+                })
+                .collect::<String>()
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    // {lag}: which running chains trail the median by >10% (R's `format_chain_lag`).
+    let lag_part = if running.len() > 1 {
+        let mut fins: Vec<f64> = running.iter().map(|c| c.finished_draws as f64).collect();
+        fins.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let med = if fins.len() % 2 == 0 {
+            (fins[fins.len() / 2 - 1] + fins[fins.len() / 2]) / 2.0
+        } else {
+            fins[fins.len() / 2]
+        };
+        if med > 0.0 {
+            let labels: Vec<String> = running
+                .iter()
+                .filter(|c| (c.finished_draws as f64) < med * 0.9)
+                .map(|c| format!("c{}", c.chain))
+                .collect();
+            if labels.is_empty() {
+                String::new()
+            } else {
+                format!("{} slow", labels.join(","))
+            }
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
+    // {step}: smallest finite step size, bare `%.3g` (R's `format_min_step`).
+    let step_part = {
+        let min_step = state
+            .iter()
+            .map(|c| c.step_size)
+            .filter(|s| s.is_finite() && *s > 0.0)
+            .fold(f64::INFINITY, f64::min);
+        if min_step.is_finite() {
+            fmt_3g(min_step)
+        } else {
+            String::new()
+        }
+    };
+
+    // {tdepth}: depth inferred from the max latest step count (R's
+    // `format_treedepth_status` / `infer_tree_depth`).
+    let tdepth_part = {
+        let max_latest = started.iter().map(|c| c.latest_num_steps).max().unwrap_or(0);
+        if max_latest > 0 {
+            format!("tdepth: {}", (max_latest as f64).log2().floor() as i32)
+        } else {
+            "tdepth: -".to_string()
+        }
+    };
+
+    let status = render_status_tokens(
+        format,
+        &[
+            ("div", &div_part),
+            ("grad", &grad_part),
+            ("spread", &spread_part),
+            ("draws", &draws_part),
+            ("spark", &spark_part),
+            ("lag", &lag_part),
+            ("step", &step_part),
+            ("tdepth", &tdepth_part),
+        ],
+    );
 
     let bar_width = 24usize;
     let filled = if total_draws > 0 {
@@ -507,9 +605,15 @@ fn format_progress_line(
     // Layout mirrors the R cli bar's format string (R/progress.R):
     // `{spin} {phase} {pct} |{bar}| {current}/{total} {eta} | {status}`.
     // No elapsed counter in the prefix (cli has none); current/total are the
-    // aggregate finished/total across started chains.
+    // aggregate finished/total across started chains. The status tail is dropped
+    // when the chosen `chain_format` renders nothing.
+    let tail = if status.is_empty() {
+        String::new()
+    } else {
+        format!(" | {}", status)
+    };
     format!(
-        "\r{spinner} {phase} {pct:>3}% |{bar}| {current}/{total} ETA: {eta} | {status}",
+        "\r{spinner} {phase} {pct:>3}% |{bar}| {current}/{total} ETA: {eta}{tail}",
         spinner = spinner,
         phase = phase,
         pct = pct,
@@ -517,7 +621,7 @@ fn format_progress_line(
         current = total_finished,
         total = total_draws,
         eta = eta_str,
-        status = status,
+        tail = tail,
     )
 }
 
@@ -529,6 +633,7 @@ fn format_progress_line(
 /// display). Returns the lines to print, in chain order.
 fn format_text_progress_lines(
     state: &[ChainState],
+    format: &str,
     refresh: usize,
     last_printed: &mut Vec<usize>,
     hints: &mut ProgressHints,
@@ -596,20 +701,26 @@ fn format_text_progress_lines(
             Some(g) => format!("{:.1} grad/draw", g),
             None => "- grad/draw".to_string(),
         };
+        let tdepth_token = if c.latest_num_steps > 0 {
+            format!("tdepth: {}", (c.latest_num_steps as f64).log2().floor() as i32)
+        } else {
+            "tdepth: -".to_string()
+        };
 
-        // Matches R's default text chain_format:
-        // "[{elapsed}] c{chain} {phase} {pct}  {draws}/{total} | {div} | {grad}"
-        lines.push(format!(
-            "[{}] c{} {} {}%  {}/{} | {} | {}",
-            elapsed_str,
-            c.chain,
-            phase_str,
-            pct,
-            fmt_thousands(phase_finished),
-            fmt_thousands(phase_total),
-            div_token,
-            grad_token,
-        ));
+        // Substitute the text tokens, mirroring R's text callback. Default
+        // chain_format: "[{elapsed}] c{chain} {phase} {pct}  {draws}/{total} | {div} | {grad}".
+        // No pipe-collapsing here — text tokens always render (no optional ones).
+        let line = format
+            .replace("{elapsed}", &elapsed_str)
+            .replace("{chain}", &c.chain.to_string())
+            .replace("{phase}", phase_str)
+            .replace("{pct}", &format!("{}%", pct))
+            .replace("{draws}", &fmt_thousands(phase_finished))
+            .replace("{total}", &fmt_thousands(phase_total))
+            .replace("{div}", &div_token)
+            .replace("{grad}", &grad_token)
+            .replace("{tdepth}", &tdepth_token);
+        lines.push(line);
     }
     lines
 }
@@ -627,6 +738,53 @@ fn fmt_thousands(n: usize) -> String {
         out.push(ch);
     }
     out
+}
+
+/// Compact draw count ("21k" for >= 1000, else the integer), matching R's
+/// `format_draw_count_compact`. Used for the `{draws}` token's denominator.
+fn fmt_compact(n: usize) -> String {
+    if n >= 1000 {
+        format!("{}k", n / 1000)
+    } else {
+        n.to_string()
+    }
+}
+
+/// Three-significant-figure float ("0.041", "1.36", "126"), a close analogue of
+/// R's `%.3g` for the `{step}` token. Trailing zeros are trimmed. (Does not
+/// switch to exponential for very small magnitudes — step sizes never get there.)
+fn fmt_3g(x: f64) -> String {
+    if !x.is_finite() {
+        return "NA".to_string();
+    }
+    if x == 0.0 {
+        return "0".to_string();
+    }
+    let exp = x.abs().log10().floor() as i32;
+    let decimals = (2 - exp).max(0) as usize;
+    let s = format!("{:.*}", decimals, x);
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    }
+}
+
+/// Substitute `{token}` placeholders in a cli `chain_format` string, then collapse
+/// the empty `" | "` segments left by tokens that rendered "" (e.g. an inactive
+/// `{spread}`). Mirrors R's `format_status_tokens`: split on the pipe separator,
+/// drop blank segments, rejoin with " | ". Token values never contain a pipe.
+fn render_status_tokens(format: &str, tokens: &[(&str, &str)]) -> String {
+    let mut result = format.to_string();
+    for (name, value) in tokens {
+        result = result.replace(&format!("{{{}}}", name), value);
+    }
+    result
+        .split('|')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 /// Compact elapsed-time string matching R's `format_progress_time`: "<0.1s",
@@ -689,6 +847,7 @@ fn run_sampler<S: Settings>(
     save_warmup: bool,
     progress_cb: Option<Function>,
     rprintf_progress: &str,
+    chain_format: &str,
     num_warmup: usize,
 ) -> Result<Vec<ArrowTrace>> {
     let mut progress_cb = progress_cb;
@@ -821,6 +980,7 @@ fn run_sampler<S: Settings>(
                     if due {
                         let line = format_progress_line(
                             &state_snapshot,
+                            chain_format,
                             use_color,
                             frame,
                             &mut hints,
@@ -840,6 +1000,7 @@ fn run_sampler<S: Settings>(
                     // prints, matching R's text callback.
                     let lines = format_text_progress_lines(
                         &state_snapshot,
+                        chain_format,
                         text_refresh,
                         &mut last_printed,
                         &mut hints,
@@ -1000,6 +1161,7 @@ fn sample_stan(
     include_gq: bool,
     progress_callback: Robj,
     rprintf_progress: &str,
+    chain_format: &str,
 ) -> List {
     or_throw((|| -> Result<List> {
         // Defensive guards before unsigned casts. The R wrapper validates these
@@ -1141,6 +1303,7 @@ fn sample_stan(
                     save_warmup,
                     progress_callback.clone(),
                     rprintf_progress,
+                    chain_format,
                     num_warmup as usize,
                 )?
             }
@@ -1154,6 +1317,7 @@ fn sample_stan(
                     save_warmup,
                     progress_callback.clone(),
                     rprintf_progress,
+                    chain_format,
                     num_warmup as usize,
                 )?
             }
@@ -1291,6 +1455,7 @@ fn run_with_settings<S: Settings + serde::Serialize>(
     save_warmup: bool,
     progress_callback: Option<Function>,
     rprintf_progress: &str,
+    chain_format: &str,
     num_warmup: usize,
 ) -> Result<(Vec<ArrowTrace>, String)> {
     let json = serde_json::to_string(&settings)
@@ -1302,6 +1467,7 @@ fn run_with_settings<S: Settings + serde::Serialize>(
         save_warmup,
         progress_callback,
         rprintf_progress,
+        chain_format,
         num_warmup,
     )?;
     Ok((traces, json))
