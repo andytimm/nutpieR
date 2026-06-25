@@ -354,6 +354,7 @@ fn format_progress_line(
     state: &[ChainState],
     format: &str,
     use_color: bool,
+    width: i32,
     frame: usize,
     hints: &mut ProgressHints,
     num_warmup: usize,
@@ -612,7 +613,7 @@ fn format_progress_line(
     } else {
         format!(" | {}", status)
     };
-    format!(
+    let line = format!(
         "\r{spinner} {phase} {pct:>3}% |{bar}| {current}/{total} ETA: {eta}{tail}",
         spinner = spinner,
         phase = phase,
@@ -622,7 +623,16 @@ fn format_progress_line(
         total = total_draws,
         eta = eta_str,
         tail = tail,
-    )
+    );
+
+    // Clip to the console width so the `\r`-redrawn bar can't wrap. Keep one
+    // column of margin to dodge terminals that auto-wrap on the final cell. The
+    // leading `\r` (one byte) is preserved; only the visible body is truncated.
+    if width > 1 {
+        format!("\r{}", truncate_display(&line[1..], (width as usize) - 1))
+    } else {
+        line
+    }
 }
 
 /// Render `progress = "text"` as per-chain lines, matching R's text callback
@@ -787,6 +797,44 @@ fn render_status_tokens(format: &str, tokens: &[(&str, &str)]) -> String {
         .join(" | ")
 }
 
+/// Truncate `s` to at most `max_cols` *visible* columns, ANSI-aware: escape
+/// sequences (`ESC [ ... letter`) are copied whole and counted as zero width,
+/// and a `ANSI_RESET` is appended if anything was dropped so an open color can't
+/// bleed past the cut. Without this the bar — which has no trailing newline and
+/// is redrawn with `\r` — wraps and corrupts when it overflows the console width
+/// (long custom `chain_format`, narrow panes). Glyphs are counted one column
+/// each (true for every glyph the bar emits — block/braille/triangle/ASCII).
+fn truncate_display(s: &str, max_cols: usize) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut visible = 0usize;
+    let mut truncated = false;
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            // Copy the whole CSI escape sequence; it occupies no columns.
+            out.push(ch);
+            while let Some(&c) = chars.peek() {
+                out.push(c);
+                chars.next();
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+            continue;
+        }
+        if visible >= max_cols {
+            truncated = true;
+            break;
+        }
+        out.push(ch);
+        visible += 1;
+    }
+    if truncated {
+        out.push_str(ANSI_RESET);
+    }
+    out
+}
+
 /// Compact elapsed-time string matching R's `format_progress_time`: "<0.1s",
 /// "%.1fs" under a minute, then "%dm%02ds" / "%dh%02dm".
 fn format_elapsed(seconds: f64) -> String {
@@ -848,6 +896,7 @@ fn run_sampler<S: Settings>(
     progress_cb: Option<Function>,
     rprintf_progress: &str,
     chain_format: &str,
+    console_width: i32,
     num_warmup: usize,
 ) -> Result<Vec<ArrowTrace>> {
     let mut progress_cb = progress_cb;
@@ -982,6 +1031,7 @@ fn run_sampler<S: Settings>(
                             &state_snapshot,
                             chain_format,
                             use_color,
+                            console_width,
                             frame,
                             &mut hints,
                             num_warmup,
@@ -1162,6 +1212,7 @@ fn sample_stan(
     progress_callback: Robj,
     rprintf_progress: &str,
     chain_format: &str,
+    console_width: i32,
 ) -> List {
     or_throw((|| -> Result<List> {
         // Defensive guards before unsigned casts. The R wrapper validates these
@@ -1304,6 +1355,7 @@ fn sample_stan(
                     progress_callback.clone(),
                     rprintf_progress,
                     chain_format,
+                    console_width,
                     num_warmup as usize,
                 )?
             }
@@ -1318,6 +1370,7 @@ fn sample_stan(
                     progress_callback.clone(),
                     rprintf_progress,
                     chain_format,
+                    console_width,
                     num_warmup as usize,
                 )?
             }
@@ -1456,6 +1509,7 @@ fn run_with_settings<S: Settings + serde::Serialize>(
     progress_callback: Option<Function>,
     rprintf_progress: &str,
     chain_format: &str,
+    console_width: i32,
     num_warmup: usize,
 ) -> Result<(Vec<ArrowTrace>, String)> {
     let json = serde_json::to_string(&settings)
@@ -1468,6 +1522,7 @@ fn run_with_settings<S: Settings + serde::Serialize>(
         progress_callback,
         rprintf_progress,
         chain_format,
+        console_width,
         num_warmup,
     )?;
     Ok((traces, json))
