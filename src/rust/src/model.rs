@@ -101,7 +101,7 @@ impl BSHandle {
         } else {
             Some(CString::new(data_json)?)
         };
-        let mut model = bridgestan::Model::new(lib, data.as_deref(), seed)?;
+        let model = bridgestan::Model::new(lib, data.as_deref(), seed)?;
         let block_names = split_csv_names(model.param_names(false, false));
         let block_tp_names = split_csv_names(model.param_names(true, false));
         let full_names = split_csv_names(model.param_names(true, true));

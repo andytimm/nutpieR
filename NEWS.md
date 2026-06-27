@@ -1,3 +1,9 @@
+# nutpieR 1.8.3
+
+* Bumped the bundled BridgeStan to 2.8.0 (Stan 2.39), exposing newer Stan
+  language features such as the numerically stabilised `gamma_lccdf()`
+  (GitHub #38).
+
 # nutpieR 1.8.2
 
 * Live sampling progress streams in the RStudio and Positron consoles again

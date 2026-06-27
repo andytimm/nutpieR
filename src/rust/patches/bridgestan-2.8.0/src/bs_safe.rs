@@ -1,16 +1,16 @@
-use crate::ffi;
 use crate::VERSION;
+use crate::ffi;
 use std::borrow::Borrow;
 use std::collections::hash_map::DefaultHasher;
+use std::ffi::CStr;
+use std::ffi::OsStr;
 use std::ffi::c_char;
 use std::ffi::c_int;
 use std::ffi::c_uint;
-use std::ffi::CStr;
-use std::ffi::OsStr;
 use std::hash::Hash;
 use std::hash::Hasher;
-use std::mem::forget;
 use std::mem::ManuallyDrop;
+use std::mem::forget;
 use std::ptr::NonNull;
 use std::ptr::{null, null_mut};
 use std::str::Utf8Error;
@@ -345,7 +345,7 @@ impl<T: Borrow<StanLibrary>> Model<T> {
     /// generally last-index major) order.  Parameter indices are separated with
     /// periods (`.`).  For example, `a[3]` is written `a.3` and `b[2,
     /// 3]` as `b.2.3`.  The numbering follows Stan and is indexed from 1.
-    pub fn param_unc_names(&mut self) -> &str {
+    pub fn param_unc_names(&self) -> &str {
         let cstr =
             unsafe { CStr::from_ptr(self.ffi_lib().bs_param_unc_names(self.model.as_ptr())) };
         cstr.to_str()
