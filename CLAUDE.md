@@ -46,7 +46,7 @@ Rust layer (extendr crate)
     │  - returns draws via Arrow (zero-copy to R via nanoarrow)
     │
     ├── nuts-rs 0.18.x (NUTS sampler, "arrow" feature)
-    ├── bridgestan 2.7.x (patched — pre-generated bindings, no bindgen)
+    ├── bridgestan 2.8.x (patched — pre-generated bindings, no bindgen)
     └── arrow-extendr (Arrow C Data Interface for R ↔ Rust)
 ```
 
@@ -68,7 +68,7 @@ nutpieR/
 │   ├── src/
 │   │   ├── lib.rs           # extendr module: compile_stan_model, sample_stan, sample_normal
 │   │   └── model.rs         # StanModel + StanDensity (CpuLogpFunc + Model trait impls)
-│   └── patches/bridgestan-2.7.0/  # patched bridgestan with pre-generated bindings
+│   └── patches/bridgestan-2.8.0/  # patched bridgestan with pre-generated bindings
 ├── tests/testthat/
 │   ├── test-nutpieR.R       # ~300 lines covering compilation, sampling, diagnostics
 │   └── test_models/         # bernoulli.stan, normal.stan
@@ -122,13 +122,15 @@ caveats:
 
 ## BridgeStan Patch
 
-We carry a patched bridgestan 2.7.0 in `src/rust/patches/bridgestan-2.7.0/`, referenced via `[patch.crates-io]` in Cargo.toml. Three changes from upstream:
+We carry a patched bridgestan 2.8.0 in `src/rust/patches/bridgestan-2.8.0/`, referenced via `[patch.crates-io]` in Cargo.toml. Three changes from upstream:
 
 1. **Pre-generated bindings** (`src/pregenerated_bindings.rs`): bindgen output for 22 `bs_*` FFI symbols, generated once. The `build.rs` copies this file instead of running bindgen. Eliminates LLVM/libclang requirement on all platforms.
 
 2. **Root cause**: upstream bridgestan runs bindgen with `dynamic_link_require_all(true)` and no allowlist. On Windows, system headers inject CRT symbols that `from_library()` then tries to resolve from the Stan model DLL — causing `GetProcAddress` error 127. The allowlist filters (`bs_.*`) fix this. Worth upstreaming.
 
 3. **OS trust store for downloads** (`src/download.rs`): `download_bridgestan_src()` builds a ureq agent with `RootCerts::PlatformVerifier` (ureq `platform-verifier` feature) instead of the bundled webpki-roots, so TLS-intercepting corporate proxies with a system-installed CA work (issue #30). Also worth upstreaming.
+
+We also pin the vendored crate to `edition = "2021"` (upstream 2.8.0 ships edition 2024). The pre-generated bindings are a bindgen edition-2021 artifact, so under edition 2024 they trip 43 `unsafe_op_in_unsafe_fn` warnings; staying on 2021 keeps the build warning-free without suppression. `bridgestan.h` was byte-identical from 2.7.0 → 2.8.0, so `pregenerated_bindings.rs` carried over unchanged — no bindgen/libclang regeneration was needed for this bump.
 
 **Regenerating bindings**: If bridgestan updates its C API, temporarily restore `bindgen` in the patch's `Cargo.toml`, build, copy `$OUT_DIR/bindings.rs` → `src/pregenerated_bindings.rs`.
 
@@ -190,7 +192,7 @@ match sampler.wait_timeout(duration) {
 |-------|------|
 | `nuts-rs` (~0.18.2, features: arrow) | NUTS sampler + Arrow trace |
 | `extendr-api` (0.8.1) | R ↔ Rust FFI |
-| `bridgestan` (~2.7, features: download-bridgestan-src) | Stan model compile + load (patched) |
+| `bridgestan` (~2.8, features: download-bridgestan-src) | Stan model compile + load (patched) |
 | `arrow` (~57) | Arrow arrays (must match nuts-rs) |
 | `dirs` | Home directory resolution |
 | `anyhow`, `thiserror` | Error handling |

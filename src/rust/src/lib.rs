@@ -92,7 +92,7 @@ fn or_throw<T>(r: Result<T>) -> T {
     }
 }
 
-/// Return the linked BridgeStan crate version, e.g. "2.7.0". Used by the
+/// Return the linked BridgeStan crate version, e.g. "2.8.0". Used by the
 /// inline-code compile cache key so a BridgeStan version bump invalidates
 /// cached entries automatically.
 /// @noRd

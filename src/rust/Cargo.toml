@@ -16,7 +16,7 @@ anyhow = '1'
 thiserror = '2'
 rand = '0.10'
 arrow = { version = '58', default-features = false }
-bridgestan = { version = '2.7', features = ['download-bridgestan-src'] }
+bridgestan = { version = '2.8', features = ['download-bridgestan-src'] }
 dirs = '6'
 serde = '1'
 serde_json = '1'
@@ -29,7 +29,7 @@ serde_json = '1'
 # Also patched: download_bridgestan_src() verifies TLS against the OS
 # trust store (ureq platform-verifier) instead of bundled webpki-roots,
 # so corporate-proxy CAs work (issue #30).
-bridgestan = { path = "patches/bridgestan-2.7.0" }
+bridgestan = { path = "patches/bridgestan-2.8.0" }
 
 [profile.release]
 lto = "thin"
