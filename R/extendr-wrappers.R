@@ -15,6 +15,11 @@ bridgestan_version <- function() .Call(wrap__bridgestan_version)
 #' @noRd
 compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__compile_stan_model, stan_file, stanc_args, compile_args)
 
+#' Whether nutpieR's live progress renderer is safe to run given the currently
+#' loaded allocator (GitHub #36). Always TRUE off macOS.
+#' @noRd
+tbb_proxy_live_progress_safe <- function() .Call(wrap__tbb_proxy_live_progress_safe)
+
 #' @param handle An `ExternalPtr<BSHandle>` from `bs_open()`.
 #' @param num_draws Number of draws per chain after warmup.
 #' @param num_warmup Number of warmup (tuning) draws per chain.

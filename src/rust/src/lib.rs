@@ -130,6 +130,10 @@ fn compile_stan_model_impl(
         }
     }
     let bs_path = bridgestan::download_bridgestan_src().map_err(r_err)?;
+    // Make Stan's bundled macOS tbbmalloc_proxy safe to keep (GitHub #36).
+    // No-op off macOS, when already patched, or when opted out via
+    // NUTPIER_NO_TBB_PROXY_PATCH.
+    ensure_safe_tbb_proxy(&bs_path);
     let stan_path = PathBuf::from(stan_file);
 
     let stanc_vec: Vec<String> = if stanc_args.is_empty() {
@@ -148,6 +152,229 @@ fn compile_stan_model_impl(
     let lib_path = bridgestan::compile_model(&bs_path, &stan_path, &stanc_refs, &compile_refs)
         .map_err(r_err)?;
     Ok(lib_path.to_string_lossy().into_owned())
+}
+
+// --- Issue #36: keep Stan's fast tbbmalloc_proxy allocator, made safe --------
+//
+// On macOS, Stan links `libtbbmalloc_proxy` into every model `.so`; it installs
+// TBB as the process-wide malloc zone. libmalloc then calls TBB's zone `size()`
+// callback for every `free()` in the process to find the owning zone, and that
+// probe raw-reads the would-be block header just below the pointer. For a
+// foreign pointer at a VM region start (e.g. a large R vector allocated before
+// the model loaded) the read lands on an unmapped page and segfaults during R's
+// GC — the crashes on GitHub #36. Dropping the proxy fixes it but costs ~17% on
+// large, many-chain models. Instead we patch the proxy's zone callback to ask
+// the other registered zones first whenever the probe would cross below a page
+// boundary, and rebuild just the proxy dylib. The patched proxy also exports a
+// marker symbol so the R layer can confirm at runtime that the *loaded* proxy is
+// the safe one before it renders live progress (see `tbb_proxy_live_progress_safe`).
+
+/// Sentinel string in the patched header; also the exported marker symbol name.
+#[cfg(target_os = "macos")]
+const TBB_PATCH_MARKER: &str = "nutpie_tbb_proxy_safe_probe";
+
+/// Exact stock `impl_malloc_usable_size` from tbb_2020.3
+/// `src/tbbmalloc/proxy_overload_osx.h`. Byte-stable across the BridgeStan
+/// versions we bundle; if it ever changes, the patch declines cleanly and the
+/// runtime gate takes over.
+#[cfg(target_os = "macos")]
+const TBB_STOCK_FN: &str = r#"/* note: impl_malloc_usable_size() is called for each free() call, so it must be fast */
+static size_t impl_malloc_usable_size(struct _malloc_zone_t *, const void *ptr)
+{
+    // malloc_usable_size() is used by macOS* to recognize which memory manager
+    // allocated the address, so our wrapper must not redirect to the original function.
+    return __TBB_malloc_safer_msize(const_cast<void*>(ptr), NULL);
+}"#;
+
+/// Replacement: an exported marker symbol plus a page-boundary-guarded callback.
+/// The guard is two integer compares on the hot path; the zone walk only runs
+/// for pointers hugging a page boundary (which TBB's own blocks never are).
+#[cfg(target_os = "macos")]
+const TBB_PATCHED_FN: &str = r#"/* nutpieR (GitHub #36): exported marker so the R layer can confirm at runtime,
+   via dlsym, that the loaded tbbmalloc_proxy carries the page-boundary-safe zone
+   size() probe below. A proxy loaded WITHOUT this symbol gates off live progress
+   to avoid the GC-time segfault in __TBB_malloc_safer_msize. */
+extern "C" int nutpie_tbb_proxy_safe_probe = 1;
+
+/* note: impl_malloc_usable_size() is called for each free() call, so it must be fast */
+static size_t impl_malloc_usable_size(struct _malloc_zone_t *self, const void *ptr)
+{
+    // malloc_usable_size() is used by macOS* to recognize which memory manager
+    // allocated the address, so our wrapper must not redirect to the original function.
+    //
+    // Safety (nutpieR #36): __TBB_malloc_safer_msize decides whether a block is
+    // ours by dereferencing the would-be large-object header just below `ptr`
+    // (16 bytes) and the would-be slab header at alignDown(ptr, 16K). For a
+    // foreign pointer at the very start of a VM region (e.g. a libmalloc
+    // MALLOC_LARGE block allocated before this zone was installed), those
+    // addresses can lie on an unmapped page and the probe itself raises
+    // EXC_BAD_ACCESS. Only pointers whose probe addresses cross below a page
+    // boundary are at risk; for those, ask the other registered zones first --
+    // if one claims the pointer it is certainly not ours, and we must return 0
+    // without touching the (possibly unmapped) memory below it.
+    {
+        static const uintptr_t pageMask = (uintptr_t)getpagesize() - 1;
+        const uintptr_t p = (uintptr_t)ptr;
+        bool headerMayCrossPage = (p & pageMask) < 16;    /* sizeof(LargeObjectHdr) */
+        bool slabFloorBelowPage = (p & ~(uintptr_t)(16*1024 - 1)) < (p & ~pageMask);
+        if (headerMayCrossPage || slabFloorBelowPage) {
+            vm_address_t *zones = NULL;
+            unsigned count = 0;
+            if (KERN_SUCCESS == malloc_get_all_zones(mach_task_self(), NULL, &zones, &count)) {
+                for (unsigned i = 0; i < count; ++i) {
+                    malloc_zone_t *z = (malloc_zone_t*)zones[i];
+                    if (z && z != self && z->size(z, ptr) > 0)
+                        return 0;
+                }
+            }
+        }
+    }
+    return __TBB_malloc_safer_msize(const_cast<void*>(ptr), NULL);
+}"#;
+
+/// Splice the safe callback into the proxy source. Returns `None` if the stock
+/// function is not found verbatim (unfamiliar TBB version) so the caller can
+/// decline rather than corrupt the file.
+#[cfg(target_os = "macos")]
+fn patch_proxy_source(content: &str) -> Option<String> {
+    if !content.contains(TBB_STOCK_FN) {
+        return None;
+    }
+    Some(content.replacen(TBB_STOCK_FN, TBB_PATCHED_FN, 1))
+}
+
+/// Patch Stan's bundled tbbmalloc_proxy source and force a rebuild of the proxy
+/// dylib. Idempotent; best-effort (any IO problem leaves the source untouched
+/// and the runtime gate takes over). macOS-only.
+#[cfg(target_os = "macos")]
+fn ensure_safe_tbb_proxy(bs_path: &std::path::Path) {
+    use std::fs;
+    if std::env::var_os("NUTPIER_NO_TBB_PROXY_PATCH").is_some() {
+        return;
+    }
+    let lib = bs_path
+        .join("stan")
+        .join("lib")
+        .join("stan_math")
+        .join("lib");
+    // Stan vendors TBB under lib/tbb_<version>/; the built objects and dylibs
+    // land in lib/tbb/.
+    let src_dir = match fs::read_dir(&lib) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map_or(false, |n| n.starts_with("tbb_"))
+                    && p.join("src/tbbmalloc/proxy_overload_osx.h").exists()
+            }),
+        Err(_) => None,
+    };
+    let src_dir = match src_dir {
+        Some(d) => d,
+        None => return,
+    };
+    let header = src_dir
+        .join("src")
+        .join("tbbmalloc")
+        .join("proxy_overload_osx.h");
+    let content = match fs::read_to_string(&header) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    if content.contains(TBB_PATCH_MARKER) {
+        return; // already patched
+    }
+    let patched = match patch_proxy_source(&content) {
+        Some(p) => p,
+        None => {
+            rprintln!(
+                "nutpieR: bundled tbbmalloc_proxy source is not in the expected form; \
+                 leaving it unpatched and gating live progress at runtime (GitHub #36)."
+            );
+            return;
+        }
+    };
+    if fs::write(&header, patched).is_err() {
+        return;
+    }
+    // Force a rebuild of the proxy dylib from the patched source. In Stan's
+    // make graph (make/libraries) the `libtbbmalloc_proxy.dylib` target has NO
+    // recipe of its own — the dylib is produced only as a side effect of the
+    // `tbbmalloc.def` recipe, which re-runs only when that `.def` is missing.
+    // So removing just the dylib leaves make unable to rebuild it and the next
+    // model link fails. Remove the `.def` (the real trigger) plus the stale
+    // object and dylib; the next model build then recompiles proxy.cpp — the
+    // only TU that includes this header — from the patched source. The proxy
+    // dylib links with no export filter, so the marker symbol becomes
+    // dlsym-visible, and models resolve it via @rpath at load time, so even
+    // previously compiled models pick up the safe proxy in a fresh session.
+    let bin = lib.join("tbb");
+    let _ = fs::remove_file(bin.join("tbbmalloc.def"));
+    let _ = fs::remove_file(bin.join("proxy.o"));
+    let _ = fs::remove_file(bin.join("libtbbmalloc_proxy.dylib"));
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ensure_safe_tbb_proxy(_bs_path: &std::path::Path) {}
+
+/// Runtime companion to the compile-time patch: is it safe to render live
+/// progress (which allocates R memory mid-sample and can trigger GC)?
+///
+/// Safe when no `tbbmalloc_proxy` is loaded in the process, or when the loaded
+/// one exports our marker symbol (i.e. it is the patched, page-safe build). The
+/// only unsafe case is a stale, unpatched proxy already loaded in this session —
+/// e.g. a model compiled before the patch and loaded in the same R session. The
+/// R layer downgrades live progress to a static summary in that case (#36).
+#[cfg(target_os = "macos")]
+mod tbb_gate {
+    use std::os::raw::{c_char, c_void};
+    extern "C" {
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+        fn _dyld_image_count() -> u32;
+        fn _dyld_get_image_name(image_index: u32) -> *const c_char;
+    }
+    // (void*)-2 — resolve the symbol in any loaded image, like RTLD_DEFAULT.
+    const RTLD_DEFAULT: *mut c_void = -2isize as *mut c_void;
+
+    pub fn live_progress_safe() -> bool {
+        unsafe {
+            let mut proxy_loaded = false;
+            for i in 0.._dyld_image_count() {
+                let name = _dyld_get_image_name(i);
+                if name.is_null() {
+                    continue;
+                }
+                if std::ffi::CStr::from_ptr(name)
+                    .to_string_lossy()
+                    .contains("libtbbmalloc_proxy")
+                {
+                    proxy_loaded = true;
+                    break;
+                }
+            }
+            if !proxy_loaded {
+                return true;
+            }
+            let sym = b"nutpie_tbb_proxy_safe_probe\0";
+            !dlsym(RTLD_DEFAULT, sym.as_ptr() as *const c_char).is_null()
+        }
+    }
+}
+
+/// Whether nutpieR's live progress renderer is safe to run given the currently
+/// loaded allocator (GitHub #36). Always TRUE off macOS.
+/// @noRd
+#[extendr]
+fn tbb_proxy_live_progress_safe() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        tbb_gate::live_progress_safe()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
 }
 
 #[derive(Clone, Default)]
@@ -237,6 +464,17 @@ fn run_sampler<S: Settings>(
                 // than longjmp'ing past the assignment and leaving the user with a
                 // confusing "object not found" on the next line.
                 if interrupt_pending() {
+                    // Join the worker threads before unwinding. nuts-rs `Sampler`
+                    // has no Drop impl, so dropping it only detaches the rayon
+                    // pool — it keeps finalizing in the background into R's
+                    // post-interrupt GC, and the two then push concurrent
+                    // allocator traffic that can segfault during GC (#36).
+                    // abort() signals the controller (drop of the command
+                    // channel) and joins the threads. Ported from
+                    // exp/36-fast-proxy-safe.
+                    if let Some(sampler) = sampler_opt.take() {
+                        let _ = sampler.abort();
+                    }
                     return Err(Error::Other("Sampling interrupted.".into()));
                 }
                 // Repaint the front-end console each poll so progress streams
@@ -248,6 +486,17 @@ fn run_sampler<S: Settings>(
                 // the R progress callback runs, or it could service the flag by
                 // longjmp'ing across these Rust frames.
                 if interrupt_pending() {
+                    // Join the worker threads before unwinding. nuts-rs `Sampler`
+                    // has no Drop impl, so dropping it only detaches the rayon
+                    // pool — it keeps finalizing in the background into R's
+                    // post-interrupt GC, and the two then push concurrent
+                    // allocator traffic that can segfault during GC (#36).
+                    // abort() signals the controller (drop of the command
+                    // channel) and joins the threads. Ported from
+                    // exp/36-fast-proxy-safe.
+                    if let Some(sampler) = sampler_opt.take() {
+                        let _ = sampler.abort();
+                    }
                     return Err(Error::Other("Sampling interrupted.".into()));
                 }
                 let state_snapshot: Vec<ChainState> = {
@@ -1224,6 +1473,7 @@ extendr_module! {
     mod nutpieR;
     fn bridgestan_version;
     fn compile_stan_model;
+    fn tbb_proxy_live_progress_safe;
     fn sample_stan;
     fn bs_open;
     fn bs_block_names;
