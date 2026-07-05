@@ -42,22 +42,26 @@ test_that("init = function(chain_id) samples and yields distinct starts", {
 test_that("partial init is reproducible from sampler seed", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
-  data_list <- normal_data()
+  handle <- open_normal_handle()
 
-  # Advance the global RNG between calls so that any reliance on it would
-  # produce different random fills.
-  draws1 <- nutpie_sample(
-    test_models$normal, data = data_list,
-    num_draws = 50, num_chains = 2, seed = 123, refresh = 0,
-    init = list(sigma = 1)
-  )
+  # The property under test: for a partial init, the per-chain random fill of
+  # the missing parameters is driven solely by `seed`, not the global RNG.
+  # Resolve twice with the same seed, advancing the global RNG in between, and
+  # assert the fills are identical. Checking the resolved positions (rather than
+  # a full sampler run) keeps this deterministic across platforms — an
+  # end-to-end draw comparison additionally demands bit-exact floating-point
+  # reproducibility from the Stan model, which some builds don't provide.
+  positions1 <- nutpieR:::resolve_init(
+    init = list(sigma = 1), init_mean = NULL,
+    handle = handle, num_chains = 2, seed = 123
+  )$positions
   invisible(stats::runif(10))
-  draws2 <- nutpie_sample(
-    test_models$normal, data = data_list,
-    num_draws = 50, num_chains = 2, seed = 123, refresh = 0,
-    init = list(sigma = 1)
-  )
-  expect_equal(as.array(draws1), as.array(draws2))
+  positions2 <- nutpieR:::resolve_init(
+    init = list(sigma = 1), init_mean = NULL,
+    handle = handle, num_chains = 2, seed = 123
+  )$positions
+
+  expect_equal(positions1, positions2)
 })
 
 # --- Direct resolve_init unit tests (no sampler) ----------------------------
