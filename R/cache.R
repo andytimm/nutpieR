@@ -338,6 +338,12 @@ compile_via_cache <- function(bundle, stanc_args, compile_args, verbose) {
 
   if (file.exists(ok) && file.exists(lib) && file.exists(main)) {
     if (verbose >= 1L) message("Using cached compiled model.")
+    # A cache hit never calls into Rust, so ensure_safe_tbb_proxy (which only
+    # runs during a real compile) would never re-patch a stale, unpatched
+    # tbbmalloc_proxy for an upgrading user whose model is already cached. Do it
+    # here: macOS-cheap, idempotent, no-op elsewhere, and never triggers a
+    # BridgeStan download (GitHub #36).
+    ensure_tbb_proxy_patched()
     # Refresh the `ok` mtime so this entry counts as recently-used.
     # Pruning is LRU on the marker mtime; without the bump, a popular
     # but old-on-disk model could be auto-evicted right after a hit

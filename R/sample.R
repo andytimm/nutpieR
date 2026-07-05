@@ -246,6 +246,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   keep_indices <- resolve_keep_indices(constrain_names, pars, include)
 
   resolved_progress <- resolve_progress_mode(progress, refresh)
+  resolved_progress <- gate_progress_for_tbb(resolved_progress)
   chain_format <- validate_chain_format(chain_format, resolved_progress)
   # Will be replaced with the effective maxdepth from sampler_config after sampling.
 

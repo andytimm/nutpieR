@@ -1,3 +1,22 @@
+# nutpieR 1.8.4
+
+* macOS: fixed the intermittent segfaults during sampling and garbage
+  collection on large models (GitHub #36). The root cause was Stan's
+  process-wide `tbbmalloc_proxy` allocator, whose block-ownership probe could
+  fault on foreign, page-aligned pointers freed by R's GC. nutpieR now patches
+  the bundled proxy source so the allocator is safe to keep, retaining its
+  speed on large, many-chain models. Opt out with `NUTPIER_NO_TBB_PROXY_PATCH=1`
+  (exact value `1`), or compile with `compile_args = "TBB_LIBRARIES=tbb"` to drop
+  the proxy.
+* macOS: cache hits re-apply the proxy patch, so upgrading users with an already
+  cached model pick up the safe allocator without a manual recompile (GitHub #36).
+* macOS: if an unpatched proxy is already loaded, nutpieR now warns for every
+  `progress` mode — the whole session is at risk until R is restarted — not just
+  live progress modes (GitHub #36).
+* Cancelling a run with Ctrl-C now joins the sampler threads before returning,
+  fixing an occasional crash during the garbage collection that follows
+  (GitHub #36).
+
 # nutpieR 1.8.3
 
 * Bumped the bundled BridgeStan to 2.8.0 (Stan 2.39), exposing newer Stan

@@ -46,7 +46,12 @@
 #' @param stanc_args Character vector of extra arguments passed to the
 #'   `stanc` compiler (e.g., `"--O1"` for optimization).
 #' @param compile_args Character vector of extra arguments passed to `make`
-#'   during compilation.
+#'   during compilation. On macOS, nutpieR keeps Stan's fast process-wide
+#'   `tbbmalloc_proxy` allocator but patches its bundled source to be safe
+#'   (GitHub #36); this is automatic and idempotent. Set
+#'   `NUTPIER_NO_TBB_PROXY_PATCH=1` to skip the patch (nutpieR then gates live
+#'   progress at runtime instead), or pass `"TBB_LIBRARIES=tbb"` here to drop
+#'   the proxy entirely (safe, but ~17% slower on large, many-chain models).
 #' @param verbose Integer controlling compilation output. `0` = silent,
 #'   `1` (default) = print status messages.
 #'   Note: full make/stanc output (verbose=2) is not yet supported because

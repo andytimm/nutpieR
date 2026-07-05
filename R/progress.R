@@ -33,6 +33,28 @@ resolve_progress_mode <- function(progress, refresh,
   )
 }
 
+#' Guard against a stale, unpatched macOS `tbbmalloc_proxy` (GitHub #36). If such
+#' an allocator is already loaded in this session, EVERY R allocation is at risk
+#' of a garbage-collection crash until R is restarted — not just live progress —
+#' so warn once regardless of `mode`. Rendering live progress additionally
+#' allocates mid-sample, so also downgrade `"cli"`/`"text"` to `"none"`. No-op
+#' when the loaded proxy carries nutpieR's page-safe patch, when no proxy is
+#' loaded, or off macOS (`tbb_proxy_live_progress_safe()` is `TRUE` in all those
+#' cases). `safe` is injectable for tests.
+#' @noRd
+gate_progress_for_tbb <- function(mode, safe = tbb_proxy_live_progress_safe()) {
+  if (isTRUE(safe)) return(mode)
+  if (!isTRUE(getOption("nutpieR.tbb_gate_warned"))) {
+    cli::cli_warn(c(
+      "An unpatched Stan {.pkg tbbmalloc_proxy} allocator is already loaded in this session.",
+      "!" = "Until you restart R, every R allocation in this session risks a garbage-collection crash (GitHub #36), not just live progress.",
+      "i" = "Recompile the model with {.code cache = FALSE} to pick up the patched allocator, or compile with {.code compile_args = \"TBB_LIBRARIES=tbb\"} to drop the proxy entirely."
+    ))
+    options(nutpieR.tbb_gate_warned = TRUE)
+  }
+  if (mode %in% c("cli", "text")) "none" else mode
+}
+
 #' @noRd
 validate_chain_format <- function(chain_format, mode) {
   if (is.null(chain_format)) return(NULL)
