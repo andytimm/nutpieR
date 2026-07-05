@@ -1247,6 +1247,7 @@ dependencies = [
  "bridgestan",
  "dirs",
  "extendr-api",
+ "libc",
  "nuts-rs",
  "rand",
  "serde",

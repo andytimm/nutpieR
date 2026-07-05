@@ -132,8 +132,9 @@ fn compile_stan_model_impl(
     let bs_path = bridgestan::download_bridgestan_src().map_err(r_err)?;
     // Make Stan's bundled macOS tbbmalloc_proxy safe to keep (GitHub #36).
     // No-op off macOS, when already patched, or when opted out via
-    // NUTPIER_NO_TBB_PROXY_PATCH.
-    ensure_safe_tbb_proxy(&bs_path);
+    // NUTPIER_NO_TBB_PROXY_PATCH. `true`: a compile follows immediately, so it is
+    // safe to purge and rebuild the proxy dylib.
+    ensure_safe_tbb_proxy(&bs_path, true);
     let stan_path = PathBuf::from(stan_file);
 
     let stanc_vec: Vec<String> = if stanc_args.is_empty() {
@@ -187,8 +188,17 @@ static size_t impl_malloc_usable_size(struct _malloc_zone_t *, const void *ptr)
 }"#;
 
 /// Replacement: an exported marker symbol plus a page-boundary-guarded callback.
-/// The guard is two integer compares on the hot path; the zone walk only runs
-/// for pointers hugging a page boundary (which TBB's own blocks never are).
+/// The guard is two integer compares on the hot path. How often the guarded
+/// slow path fires depends on the VM page size: on 16K-page Apple Silicon it is
+/// essentially never (~0.1%, only pointers hugging a page boundary via
+/// `headerMayCrossPage`); on 4K-page Intel it is ~75% of frees, because any
+/// pointer whose 16K slab floor sits below its 4K page trips `slabFloorBelowPage`.
+/// The slow path walks the other registered zones from `malloc_get_all_zones`.
+/// It must NOT shortcut via `malloc_default_zone()`: that returns libmalloc's
+/// virtual-default-zone wrapper, and the proxy registers its own zone as zone 0
+/// (the runtime default — see the system-zone unregister/re-register dance in
+/// proxy_overload_osx.h), so the wrapper's `size()` forwards straight back into
+/// this callback and recurses without bound.
 #[cfg(target_os = "macos")]
 const TBB_PATCHED_FN: &str = r#"/* nutpieR (GitHub #36): exported marker so the R layer can confirm at runtime,
    via dlsym, that the loaded tbbmalloc_proxy carries the page-boundary-safe zone
@@ -213,11 +223,24 @@ static size_t impl_malloc_usable_size(struct _malloc_zone_t *self, const void *p
     // if one claims the pointer it is certainly not ours, and we must return 0
     // without touching the (possibly unmapped) memory below it.
     {
-        static const uintptr_t pageMask = (uintptr_t)getpagesize() - 1;
         const uintptr_t p = (uintptr_t)ptr;
-        bool headerMayCrossPage = (p & pageMask) < 16;    /* sizeof(LargeObjectHdr) */
-        bool slabFloorBelowPage = (p & ~(uintptr_t)(16*1024 - 1)) < (p & ~pageMask);
+        // vm_page_mask is a libsystem global (via <mach/mach.h>), initialized
+        // before user code runs -- a plain load, unlike a function-local
+        // runtime-init `static` which would cost a __cxa_guard atomic check on
+        // every free(). On 4K-page Intel this guard fires for ~75% of frees, so
+        // it is on a genuinely hot path.
+        bool headerMayCrossPage = (p & (uintptr_t)vm_page_mask) < 16;    /* sizeof(LargeObjectHdr) */
+        bool slabFloorBelowPage = (p & ~(uintptr_t)(16*1024 - 1)) < (p & ~(uintptr_t)vm_page_mask);
         if (headerMayCrossPage || slabFloorBelowPage) {
+            // Walk the registered zones (skipping ourselves) and let the real
+            // owner claim the pointer. Do NOT shortcut by probing libmalloc's
+            // default-zone accessor: it returns the virtual-default-zone
+            // wrapper, and this zone IS the runtime default (zone 0, see the
+            // registration dance below), so the wrapper's size() would forward
+            // right back here and recurse. The zones array below holds only
+            // concrete zones, so `z != self` is a sufficient recursion guard.
+            // Do NOT cache the zone list in a static -- zones can register
+            // after this runs.
             vm_address_t *zones = NULL;
             unsigned count = 0;
             if (KERN_SUCCESS == malloc_get_all_zones(mach_task_self(), NULL, &zones, &count)) {
@@ -243,13 +266,26 @@ fn patch_proxy_source(content: &str) -> Option<String> {
     Some(content.replacen(TBB_STOCK_FN, TBB_PATCHED_FN, 1))
 }
 
-/// Patch Stan's bundled tbbmalloc_proxy source and force a rebuild of the proxy
-/// dylib. Idempotent; best-effort (any IO problem leaves the source untouched
-/// and the runtime gate takes over). macOS-only.
+/// Patch Stan's bundled tbbmalloc_proxy source and (optionally) force a rebuild
+/// of the proxy dylib. Idempotent; best-effort (any IO problem leaves the source
+/// untouched and the runtime gate takes over). macOS-only.
+///
+/// `will_recompile` MUST be true only when a model compile immediately follows
+/// (the compile path), because purging the artifacts deletes
+/// `libtbbmalloc_proxy.dylib`, which every model `.so` hard-links via @rpath
+/// (`LC_LOAD_DYLIB`). The compile rebuilds it before linking, so that is safe.
+/// From the cache-hit path no compile follows, so we pass `false`: we still
+/// patch the header (so the *next* real compile produces the safe proxy) but
+/// never delete the dylib — deleting it would break the cached model that is
+/// about to be loaded. Until that next compile, the current session is covered
+/// by the runtime gate (`tbb_proxy_live_progress_safe`).
 #[cfg(target_os = "macos")]
-fn ensure_safe_tbb_proxy(bs_path: &std::path::Path) {
+fn ensure_safe_tbb_proxy(bs_path: &std::path::Path, will_recompile: bool) {
     use std::fs;
-    if std::env::var_os("NUTPIER_NO_TBB_PROXY_PATCH").is_some() {
+    // Opt out only on exactly "1", matching the sibling
+    // NUTPIER_DISABLE_COMPILE_CACHE convention (R/compile.R) and the documented
+    // `=1` in NEWS/help -- not on any arbitrary value.
+    if std::env::var("NUTPIER_NO_TBB_PROXY_PATCH").as_deref() == Ok("1") {
         return;
     }
     let lib = bs_path
@@ -282,8 +318,26 @@ fn ensure_safe_tbb_proxy(bs_path: &std::path::Path) {
         Ok(c) => c,
         Err(_) => return,
     };
+    let bin = lib.join("tbb");
     if content.contains(TBB_PATCH_MARKER) {
-        return; // already patched
+        // The header is already patched, but a marker in the *source* only proves
+        // the header was written -- not that the dylib was rebuilt from it. If a
+        // prior run patched the header but the artifact purge failed (or the
+        // session died between the write and the purge), the stale unpatched
+        // dylib keeps shipping and every future call would early-return here
+        // forever. Re-verify against the built dylib: if it exists but its bytes
+        // don't carry the marker symbol, purge the artifacts so the next model
+        // build rebuilds it (idempotent, cheap). Only when a recompile follows —
+        // purging deletes the dylib, and off the compile path nothing rebuilds it.
+        if will_recompile {
+            let dylib = bin.join("libtbbmalloc_proxy.dylib");
+            if let Ok(bytes) = fs::read(&dylib) {
+                if !contains_bytes(&bytes, TBB_PATCH_MARKER.as_bytes()) {
+                    purge_tbb_proxy_artifacts(&bin);
+                }
+            }
+        }
+        return;
     }
     let patched = match patch_proxy_source(&content) {
         Some(p) => p,
@@ -298,25 +352,75 @@ fn ensure_safe_tbb_proxy(bs_path: &std::path::Path) {
     if fs::write(&header, patched).is_err() {
         return;
     }
-    // Force a rebuild of the proxy dylib from the patched source. In Stan's
-    // make graph (make/libraries) the `libtbbmalloc_proxy.dylib` target has NO
-    // recipe of its own — the dylib is produced only as a side effect of the
-    // `tbbmalloc.def` recipe, which re-runs only when that `.def` is missing.
-    // So removing just the dylib leaves make unable to rebuild it and the next
-    // model link fails. Remove the `.def` (the real trigger) plus the stale
-    // object and dylib; the next model build then recompiles proxy.cpp — the
-    // only TU that includes this header — from the patched source. The proxy
-    // dylib links with no export filter, so the marker symbol becomes
-    // dlsym-visible, and models resolve it via @rpath at load time, so even
-    // previously compiled models pick up the safe proxy in a fresh session.
-    let bin = lib.join("tbb");
+    // Force a rebuild of the proxy dylib from the patched source — but only when
+    // a compile follows to actually rebuild it. On the cache-hit path the header
+    // is now patched so the next real compile produces the safe proxy; deleting
+    // the dylib here would break the cached model about to be loaded.
+    if will_recompile {
+        purge_tbb_proxy_artifacts(&bin);
+    }
+}
+
+/// Force a rebuild of the proxy dylib from the (patched) source. In Stan's make
+/// graph (make/libraries) the `libtbbmalloc_proxy.dylib` target has NO recipe of
+/// its own — the dylib is produced only as a side effect of the `tbbmalloc.def`
+/// recipe, which re-runs only when that `.def` is missing. So removing just the
+/// dylib leaves make unable to rebuild it and the next model link fails. Remove
+/// the `.def` (the real trigger) plus the stale object and dylib; the next model
+/// build then recompiles proxy.cpp — the only TU that includes this header —
+/// from the patched source. The proxy dylib links with no export filter, so the
+/// marker symbol becomes dlsym-visible, and models resolve it via @rpath at load
+/// time, so even previously compiled models pick up the safe proxy in a fresh
+/// session. Idempotent and cheap.
+#[cfg(target_os = "macos")]
+fn purge_tbb_proxy_artifacts(bin: &std::path::Path) {
+    use std::fs;
     let _ = fs::remove_file(bin.join("tbbmalloc.def"));
     let _ = fs::remove_file(bin.join("proxy.o"));
     let _ = fs::remove_file(bin.join("libtbbmalloc_proxy.dylib"));
 }
 
+/// Simple substring search over raw bytes (the marker symbol name appears in the
+/// dylib's symbol table).
+#[cfg(target_os = "macos")]
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return needle.is_empty();
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
 #[cfg(not(target_os = "macos"))]
-fn ensure_safe_tbb_proxy(_bs_path: &std::path::Path) {}
+fn ensure_safe_tbb_proxy(_bs_path: &std::path::Path, _will_recompile: bool) {}
+
+/// Cache-hit companion to the compile-time patch. `compile_via_cache()` (R)
+/// returns a cached model without ever calling into Rust, so an upgrading user
+/// whose model is already cached would never re-run `ensure_safe_tbb_proxy` and
+/// would keep shipping the stale, unpatched dylib. This re-applies the patch,
+/// but ONLY when the BridgeStan source tree already exists on disk — it must
+/// never trigger the ~235 MB download on a cache hit. macOS-cheap, idempotent,
+/// and a no-op elsewhere.
+/// @noRd
+#[extendr]
+fn ensure_tbb_proxy_patched() {
+    #[cfg(target_os = "macos")]
+    {
+        // Same path the bridgestan crate resolves to (see the download guard in
+        // compile_stan_model_impl); only touch it if it already exists so we
+        // never kick off a network download from the cache-hit path.
+        if let Some(home) = dirs::home_dir() {
+            let bs_path = home
+                .join(".bridgestan")
+                .join(format!("bridgestan-{}", bridgestan::VERSION));
+            if bs_path.exists() {
+                // No compile follows a cache hit, so pass `false`: patch the
+                // header (the next real compile then builds the safe proxy) but
+                // never delete the proxy dylib the cached model links against.
+                ensure_safe_tbb_proxy(&bs_path, false);
+            }
+        }
+    }
+}
 
 /// Runtime companion to the compile-time patch: is it safe to render live
 /// progress (which allocates R memory mid-sample and can trigger GC)?
@@ -328,20 +432,17 @@ fn ensure_safe_tbb_proxy(_bs_path: &std::path::Path) {}
 /// R layer downgrades live progress to a static summary in that case (#36).
 #[cfg(target_os = "macos")]
 mod tbb_gate {
-    use std::os::raw::{c_char, c_void};
-    extern "C" {
-        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
-        fn _dyld_image_count() -> u32;
-        fn _dyld_get_image_name(image_index: u32) -> *const c_char;
-    }
-    // (void*)-2 — resolve the symbol in any loaded image, like RTLD_DEFAULT.
-    const RTLD_DEFAULT: *mut c_void = -2isize as *mut c_void;
+    use std::os::raw::c_char;
 
+    // libc marks the _dyld_* image-iteration functions deprecated (it points at
+    // the mach2 crate), but they are the documented libdyld API and remain the
+    // lightest way to answer "is this image loaded?" without a new dependency.
+    #[allow(deprecated)]
     pub fn live_progress_safe() -> bool {
         unsafe {
             let mut proxy_loaded = false;
-            for i in 0.._dyld_image_count() {
-                let name = _dyld_get_image_name(i);
+            for i in 0..libc::_dyld_image_count() {
+                let name = libc::_dyld_get_image_name(i);
                 if name.is_null() {
                     continue;
                 }
@@ -356,8 +457,9 @@ mod tbb_gate {
             if !proxy_loaded {
                 return true;
             }
+            // libc::RTLD_DEFAULT resolves the symbol in any loaded image.
             let sym = b"nutpie_tbb_proxy_safe_probe\0";
-            !dlsym(RTLD_DEFAULT, sym.as_ptr() as *const c_char).is_null()
+            !libc::dlsym(libc::RTLD_DEFAULT, sym.as_ptr() as *const c_char).is_null()
         }
     }
 }
@@ -374,6 +476,24 @@ fn tbb_proxy_live_progress_safe() -> bool {
     #[cfg(not(target_os = "macos"))]
     {
         true
+    }
+}
+
+/// Expose the stock TBB function text and the nutpieR marker to R so a test can
+/// assert the bundled proxy header still matches one of them — a BridgeStan/TBB
+/// bump that broke the verbatim splice would then fail loudly instead of
+/// silently reverting macOS users to the unpatched proxy (GitHub #36). Returns
+/// `c(stock, marker)` on macOS, `character(0)` elsewhere.
+/// @noRd
+#[extendr]
+fn tbb_patch_strings() -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        vec![TBB_STOCK_FN.to_string(), TBB_PATCH_MARKER.to_string()]
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
     }
 }
 
@@ -452,6 +572,23 @@ fn run_sampler<S: Settings>(
         .map_err(r_err)?,
     );
 
+    // Interrupt teardown, written once for the two poll sites below (a macro
+    // rather than a closure/fn only because `Sampler`'s concrete generic type is
+    // not nameable here). nuts-rs `Sampler` has no Drop impl, so simply dropping
+    // it only detaches the rayon pool — the worker threads keep finalizing in the
+    // background into R's post-interrupt GC, and the two then push concurrent
+    // allocator traffic that can segfault during GC (#36). abort() signals the
+    // controller (drop of the command channel) and joins the threads before we
+    // unwind, then extendr raises a clean R error at the call site.
+    macro_rules! abort_on_interrupt {
+        ($opt:expr) => {{
+            if let Some(sampler) = $opt.take() {
+                let _ = sampler.abort();
+            }
+            return Err(Error::Other("Sampling interrupted.".into()));
+        }};
+    }
+
     let results = loop {
         let sampler = sampler_opt.take().unwrap();
         let wait_dur = Duration::from_millis(200);
@@ -464,18 +601,7 @@ fn run_sampler<S: Settings>(
                 // than longjmp'ing past the assignment and leaving the user with a
                 // confusing "object not found" on the next line.
                 if interrupt_pending() {
-                    // Join the worker threads before unwinding. nuts-rs `Sampler`
-                    // has no Drop impl, so dropping it only detaches the rayon
-                    // pool — it keeps finalizing in the background into R's
-                    // post-interrupt GC, and the two then push concurrent
-                    // allocator traffic that can segfault during GC (#36).
-                    // abort() signals the controller (drop of the command
-                    // channel) and joins the threads. Ported from
-                    // exp/36-fast-proxy-safe.
-                    if let Some(sampler) = sampler_opt.take() {
-                        let _ = sampler.abort();
-                    }
-                    return Err(Error::Other("Sampling interrupted.".into()));
+                    abort_on_interrupt!(sampler_opt);
                 }
                 // Repaint the front-end console each poll so progress streams
                 // live instead of appearing all at once when sampling ends
@@ -486,18 +612,7 @@ fn run_sampler<S: Settings>(
                 // the R progress callback runs, or it could service the flag by
                 // longjmp'ing across these Rust frames.
                 if interrupt_pending() {
-                    // Join the worker threads before unwinding. nuts-rs `Sampler`
-                    // has no Drop impl, so dropping it only detaches the rayon
-                    // pool — it keeps finalizing in the background into R's
-                    // post-interrupt GC, and the two then push concurrent
-                    // allocator traffic that can segfault during GC (#36).
-                    // abort() signals the controller (drop of the command
-                    // channel) and joins the threads. Ported from
-                    // exp/36-fast-proxy-safe.
-                    if let Some(sampler) = sampler_opt.take() {
-                        let _ = sampler.abort();
-                    }
-                    return Err(Error::Other("Sampling interrupted.".into()));
+                    abort_on_interrupt!(sampler_opt);
                 }
                 let state_snapshot: Vec<ChainState> = {
                     let state = progress_state.lock().unwrap();
@@ -527,6 +642,14 @@ fn run_sampler<S: Settings>(
                     progress_cb = None;
                 }
             }
+            // Residual unjoined-threads race (#36): nuts-rs 0.18.2's wait_timeout
+            // Ok(Err(e)) path drops the `Sampler` here — dropping the command
+            // channel and the JoinHandle *unjoined* — so worker threads can still
+            // be finalizing while R unwinds and runs GC, the same hazard the
+            // interrupt path guards against. We cannot guard it here: this arm
+            // hands back only the error, not the sampler, so there is no handle to
+            // abort()/join. Fixing it needs upstream nuts-rs support (a Drop impl
+            // on Sampler, or an Err variant that carries the sampler back).
             SamplerWaitResult::Err(e, _) => return Err(r_err(e)),
         }
     };
@@ -1474,6 +1597,8 @@ extendr_module! {
     fn bridgestan_version;
     fn compile_stan_model;
     fn tbb_proxy_live_progress_safe;
+    fn ensure_tbb_proxy_patched;
+    fn tbb_patch_strings;
     fn sample_stan;
     fn bs_open;
     fn bs_block_names;
@@ -1485,4 +1610,45 @@ extendr_module! {
     fn bs_param_unconstrain;
     fn bs_param_constrain;
     fn bs_param_constrain_block;
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    // Guards the verbatim splice: patch_proxy_source() must still find and
+    // replace the stock function when it is embedded in surrounding text (#36).
+    #[test]
+    fn patch_proxy_source_splices_stock_into_surrounding_text() {
+        let fixture = format!(
+            "// preceding declarations\nstatic void impl_zone_destroy() {{}}\n\n{}\n\n// trailing declarations\n",
+            TBB_STOCK_FN
+        );
+        let patched =
+            patch_proxy_source(&fixture).expect("stock function must be found verbatim");
+        assert!(patched.contains(TBB_PATCH_MARKER), "marker symbol spliced in");
+        assert!(
+            !patched.contains("malloc_default_zone"),
+            "must not probe the virtual default zone (forwards back into us and recurses)"
+        );
+        assert!(
+            patched.contains("malloc_get_all_zones"),
+            "registered-zone walk present"
+        );
+        assert!(patched.contains("// preceding declarations"));
+        assert!(patched.contains("// trailing declarations"));
+        // The stock body must no longer be present verbatim (it was replaced).
+        assert!(!patched.contains(TBB_STOCK_FN));
+    }
+
+    #[test]
+    fn patch_proxy_source_declines_unknown_source() {
+        assert!(patch_proxy_source("nothing familiar here").is_none());
+    }
+
+    #[test]
+    fn contains_bytes_finds_marker() {
+        assert!(contains_bytes(b"xxnutpie_tbb_proxy_safe_probeyy", TBB_PATCH_MARKER.as_bytes()));
+        assert!(!contains_bytes(b"unrelated bytes", TBB_PATCH_MARKER.as_bytes()));
+    }
 }
