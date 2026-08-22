@@ -1,4 +1,4 @@
-# nutpieR (development version)
+# nutpieR 1.8.5
 
 * `nutpie_prune_cache()` now rejects negative, fractional, non-finite, or
   non-scalar pruning arguments before touching the cache.

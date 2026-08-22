@@ -444,7 +444,7 @@ progress_supports_color <- function() {
 #' Positron's R kernel (ark) registers a global `message` handler that redirects
 #' message output to the console and invokes the `muffleMessage` restart. That
 #' is a redirect, not suppression: it must not be mistaken for `suppressMessages()`
-#' (see [progress_messages_muffled()]). The query form of `globalCallingHandlers()`
+#' (see `progress_messages_muffled()`). The query form of `globalCallingHandlers()`
 #' is safe to call with handlers on the stack; only the *setting* form errors.
 #' @noRd
 has_global_message_handler <- function() {
@@ -672,7 +672,7 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
 #' most once per run; the trigger flags live here so both callbacks fire each
 #' hint exactly once. `cli_bar_id` is the active cli progress bar id (cli mode),
 #' so hints can coordinate with it; `NULL` in text mode (see
-#' [emit_progress_hint()]).
+#' `emit_progress_hint()`).
 #' @noRd
 new_progress_hints <- function(cli_bar_id = NULL) {
   env <- new.env(parent = emptyenv())
