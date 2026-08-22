@@ -3,15 +3,15 @@
 # cover the R-side progress gate, which is pure and injectable.
 
 test_that("gate leaves progress untouched when the allocator is safe", {
-  expect_identical(gate_progress_for_tbb("cli", safe = TRUE), "cli")
-  expect_identical(gate_progress_for_tbb("text", safe = TRUE), "text")
-  expect_identical(gate_progress_for_tbb("none", safe = TRUE), "none")
+  expect_identical(nutpieR:::gate_progress_for_tbb("cli", safe = TRUE), "cli")
+  expect_identical(nutpieR:::gate_progress_for_tbb("text", safe = TRUE), "text")
+  expect_identical(nutpieR:::gate_progress_for_tbb("none", safe = TRUE), "none")
 })
 
 test_that("gate stops sampling when an unsafe allocator is loaded", {
   for (mode in c("none", "cli", "text")) {
     expect_error(
-      gate_progress_for_tbb(mode, safe = FALSE),
+      nutpieR:::gate_progress_for_tbb(mode, safe = FALSE),
       "Restart R"
     )
   }
@@ -54,7 +54,7 @@ test_that("live-progress safety probe is callable and TRUE with no proxy loaded"
   # platforms) no tbbmalloc_proxy is in the process, so the probe is TRUE.
   # If an earlier test in the run compiled a model, the patched proxy is loaded
   # and this is still TRUE — the only FALSE case is a stale unpatched proxy.
-  expect_true(tbb_proxy_live_progress_safe())
+  expect_true(nutpieR:::tbb_proxy_live_progress_safe())
 })
 
 test_that("bundled TBB proxy header still matches the verbatim splice (#36)", {
@@ -64,7 +64,7 @@ test_that("bundled TBB proxy header still matches the verbatim splice (#36)", {
   # either the stock function text or nutpieR's marker, so such a bump fails
   # loudly in CI/dev.
   skip_on_os(c("windows", "linux", "solaris"))
-  strings <- tbb_patch_strings()
+  strings <- nutpieR:::tbb_patch_strings()
   skip_if(length(strings) < 2L, "TBB patch strings unavailable (non-macOS build).")
   stock <- strings[[1L]]
   marker <- strings[[2L]]

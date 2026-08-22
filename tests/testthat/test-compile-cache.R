@@ -44,24 +44,26 @@ local_isolated_cache <- function(env = parent.frame()) {
 
 test_that("per-entry cache lock is released after success and failure", {
   entry <- tempfile("nutpieR-cache-lock-")
-  on.exit(unlink(entry_lock_path(entry), recursive = TRUE), add = TRUE)
+  on.exit(unlink(nutpieR:::entry_lock_path(entry), recursive = TRUE), add = TRUE)
 
-  expect_equal(with_cache_entry_lock(entry, 42L), 42L)
-  expect_false(dir.exists(entry_lock_path(entry)))
+  expect_equal(nutpieR:::with_cache_entry_lock(entry, 42L), 42L)
+  expect_false(dir.exists(nutpieR:::entry_lock_path(entry)))
 
-  expect_error(with_cache_entry_lock(entry, stop("expected failure")),
+  expect_error(nutpieR:::with_cache_entry_lock(entry, stop("expected failure")),
                "expected failure")
-  expect_false(dir.exists(entry_lock_path(entry)))
+  expect_false(dir.exists(nutpieR:::entry_lock_path(entry)))
 })
 
 test_that("per-entry cache lock reclaims a stale lock", {
   entry <- tempfile("nutpieR-cache-lock-")
-  lock <- entry_lock_path(entry)
+  lock <- nutpieR:::entry_lock_path(entry)
   dir.create(lock)
   on.exit(unlink(lock, recursive = TRUE), add = TRUE)
 
   expect_equal(
-    with_cache_entry_lock(entry, 42L, timeout_secs = 0, stale_secs = -1),
+    nutpieR:::with_cache_entry_lock(
+      entry, 42L, timeout_secs = 0, stale_secs = -1
+    ),
     42L
   )
   expect_false(dir.exists(lock))
