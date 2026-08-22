@@ -8,28 +8,45 @@ test_that("gate leaves progress untouched when the allocator is safe", {
   expect_identical(gate_progress_for_tbb("none", safe = TRUE), "none")
 })
 
-test_that("gate warns for progress = 'none' too but leaves the mode alone", {
-  # The session is at risk for every allocation, not just live progress, so an
-  # unsafe allocator warns even in "none" mode — but the mode stays "none".
-  withr::local_options(nutpieR.tbb_gate_warned = NULL)
-  expect_warning(
-    expect_identical(gate_progress_for_tbb("none", safe = FALSE), "none"),
-    "tbbmalloc_proxy"
+test_that("gate stops sampling when an unsafe allocator is loaded", {
+  for (mode in c("none", "cli", "text")) {
+    expect_error(
+      gate_progress_for_tbb(mode, safe = FALSE),
+      "Restart R"
+    )
+  }
+})
+
+test_that("sampling checks allocator safety before opening a model", {
+  testthat::local_mocked_bindings(
+    tbb_proxy_live_progress_safe = function() FALSE,
+    bs_open = function(...) stop("model was opened"),
+    .package = "nutpieR"
+  )
+  expect_error(
+    nutpie_sample("not-used", num_draws = 1, num_chains = 1, refresh = 0),
+    "Restart R"
   )
 })
 
-test_that("gate downgrades live progress and warns once when unsafe", {
-  withr::local_options(nutpieR.tbb_gate_warned = NULL)
-
-  expect_warning(
-    expect_identical(gate_progress_for_tbb("cli", safe = FALSE), "none"),
-    "tbbmalloc_proxy"
+test_that("sampling rechecks allocator safety immediately after opening", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  calls <- 0L
+  testthat::local_mocked_bindings(
+    tbb_proxy_live_progress_safe = function() {
+      calls <<- calls + 1L
+      calls == 1L
+    },
+    .package = "nutpieR"
   )
-  # Second call in the same session downgrades silently (warned-once flag set).
-  expect_no_warning(
-    expect_identical(gate_progress_for_tbb("text", safe = FALSE), "none")
+  expect_error(
+    nutpie_sample(
+      test_models$bernoulli, data = bernoulli_data(),
+      num_draws = 1, num_chains = 1, refresh = 0
+    ),
+    "Restart R"
   )
-  expect_true(getOption("nutpieR.tbb_gate_warned"))
+  expect_equal(calls, 2L)
 })
 
 test_that("live-progress safety probe is callable and TRUE with no proxy loaded", {

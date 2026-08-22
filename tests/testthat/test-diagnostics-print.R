@@ -8,7 +8,8 @@
 # well-mixed sigma, and attach a diagnostics attribute of the shape
 # nutpie_diagnostics() expects.
 make_diag_object <- function(mu_means, energy_pattern = "healthy",
-                             diverging = NULL, n_iter = 200L) {
+                             diverging = NULL, n_iter = 200L,
+                             variables_filtered = FALSE) {
   set.seed(42)
   n_chain <- length(mu_means)
   arr <- array(0, dim = c(n_iter, n_chain, 2L),
@@ -37,6 +38,7 @@ make_diag_object <- function(mu_means, energy_pattern = "healthy",
     energy           = energy
   )
   attr(draws, "num_chains") <- n_chain
+  attr(draws, "variables_filtered") <- variables_filtered
   nutpie_diagnostics(draws)
 }
 
@@ -50,6 +52,20 @@ test_that("print always shows Max R-hat / ESS / E-BFMI info lines", {
   expect_match(out, "posterior::summarize_draws(draws)", fixed = TRUE)
   # Developer field dump is gone.
   expect_false(grepl("Available fields", out, fixed = TRUE))
+})
+
+test_that("print notes when R-hat and ESS cover filtered variables", {
+  filtered <- make_diag_object(c(0, 0, 0, 0), variables_filtered = TRUE)
+  filtered_out <- paste(
+    capture.output(suppressMessages(print(filtered))), collapse = "\n"
+  )
+  expect_match(filtered_out, "R-hat/ESS cover returned variables only", fixed = TRUE)
+
+  unfiltered <- make_diag_object(c(0, 0, 0, 0))
+  unfiltered_out <- paste(
+    capture.output(suppressMessages(print(unfiltered))), collapse = "\n"
+  )
+  expect_false(grepl("returned variables only", unfiltered_out, fixed = TRUE))
 })
 
 test_that("a non-mixing (bimodal) fit flags R-hat/ESS and names the parameter", {

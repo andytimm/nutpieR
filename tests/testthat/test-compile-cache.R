@@ -42,6 +42,31 @@ local_isolated_cache <- function(env = parent.frame()) {
   td
 }
 
+test_that("per-entry cache lock is released after success and failure", {
+  entry <- tempfile("nutpieR-cache-lock-")
+  on.exit(unlink(entry_lock_path(entry), recursive = TRUE), add = TRUE)
+
+  expect_equal(with_cache_entry_lock(entry, 42L), 42L)
+  expect_false(dir.exists(entry_lock_path(entry)))
+
+  expect_error(with_cache_entry_lock(entry, stop("expected failure")),
+               "expected failure")
+  expect_false(dir.exists(entry_lock_path(entry)))
+})
+
+test_that("per-entry cache lock reclaims a stale lock", {
+  entry <- tempfile("nutpieR-cache-lock-")
+  lock <- entry_lock_path(entry)
+  dir.create(lock)
+  on.exit(unlink(lock, recursive = TRUE), add = TRUE)
+
+  expect_equal(
+    with_cache_entry_lock(entry, 42L, timeout_secs = 0, stale_secs = -1),
+    42L
+  )
+  expect_false(dir.exists(lock))
+})
+
 test_that("cache_key folds in content, BridgeStan version, and flags", {
   v <- nutpieR:::bs_version()
   k_base <- nutpieR:::inline_cache_key("data {}", v, character(), character())
@@ -369,6 +394,23 @@ test_that("nutpie_prune_cache respects max_entries and min_age_days", {
   remaining <- basename(list.dirs(root, recursive = FALSE))
   expect_equal(length(remaining), 16L)
   expect_true(all(grepl("^new", remaining[order(remaining)][1:10])))
+})
+
+test_that("nutpie_prune_cache rejects invalid arguments before deleting", {
+  local_isolated_cache()
+  root <- nutpie_cache_dir()
+  entry <- file.path(root, "must-survive")
+  dir.create(entry, recursive = TRUE)
+  file.create(file.path(entry, "ok"))
+
+  expect_error(nutpie_prune_cache(max_entries = -1L), "max_entries")
+  expect_error(nutpie_prune_cache(max_entries = 1.5), "whole number")
+  expect_error(nutpie_prune_cache(max_entries = NA_real_), "finite integer")
+  expect_error(nutpie_prune_cache(min_age_days = -1), "min_age_days")
+  expect_error(nutpie_prune_cache(min_age_days = Inf), "finite")
+  expect_error(nutpie_prune_cache(min_age_days = c(1, 2)), "single")
+
+  expect_true(dir.exists(entry))
 })
 
 test_that("cache hit refreshes ok marker mtime (so prune treats it as LRU)", {

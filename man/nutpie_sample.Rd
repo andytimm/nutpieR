@@ -8,7 +8,7 @@ nutpie_sample(
   model,
   data = NULL,
   num_draws = 1000L,
-  num_warmup = 400L,
+  num_warmup = NULL,
   num_chains = 4L,
   seed = NULL,
   max_treedepth = NULL,
@@ -49,19 +49,23 @@ or a path to a compiled shared library.}
 
 \item{num_draws}{Number of post-warmup draws per chain.}
 
-\item{num_warmup}{Number of warmup (tuning) draws per chain.}
+\item{num_warmup}{Number of warmup (tuning) draws per chain. \code{NULL} (the
+default) uses the nuts-rs adaptation-specific default: \code{400} for
+\code{adaptation = "diag"} and \code{800} for \code{adaptation = "low_rank"}. An explicit
+value always takes precedence.}
 
 \item{num_chains}{Number of parallel chains.}
 
 \item{seed}{Random seed for reproducibility.}
 
-\item{max_treedepth}{Maximum tree depth for NUTS. The number of leapfrog
-steps per draw is at most \code{2^max_treedepth}. Default \code{NULL} keeps the
-nuts-rs default (currently 10).}
+\item{max_treedepth}{Maximum tree depth for NUTS. A complete tree at
+depth \code{d} takes \code{2^d - 1} leapfrog steps. This is the ordinary depth cap;
+\code{extra_doublings} can extend a trajectory after a turning point. Default
+\code{NULL} keeps the nuts-rs default (currently 10).}
 
-\item{mindepth}{Minimum tree depth for NUTS. The number of leapfrog steps
-per draw is at least \code{2^mindepth}. Default \code{NULL} keeps the nuts-rs
-default (currently 0).}
+\item{mindepth}{Minimum tree depth for NUTS. Absent an earlier divergence,
+this requires at least \code{2^mindepth - 1} leapfrog steps. Default \code{NULL}
+keeps the nuts-rs default (currently 0).}
 
 \item{target_accept}{Target acceptance probability for step size adaptation.
 Default \code{NULL} keeps the nuts-rs default (currently 0.8).}
@@ -91,8 +95,9 @@ progress bar shows. Use \code{{token}} placeholders. Available tokens for
 threshold), \code{{spread}} (percent-range spread across chains, e.g.
 \verb{spread 23-78\%}, shown only once chains diverge enough), \code{{draws}}
 (per-chain draw range), \code{{spark}} (gap-from-leader sparkline), \code{{lag}}
-(slow chain indicator), \code{{step}} (min step size), \code{{tdepth}} (latest
-treedepth). The default is \code{"{div} | {grad} | {spread}"}. For \code{"text"}
+(slow chain indicator), \code{{step}} (min step size), \code{{tdepth}} (estimated
+latest treedepth, prefixed with \code{~}). The default is
+\code{"{div} | {grad} | {spread}"}. For \code{"text"}
 mode, per-chain tokens are
 also available: \code{{chain}}, \code{{phase}}, \code{{pct}}, \code{{draws}}, \code{{total}},
 \code{{elapsed}}, \code{{div}}, \code{{grad}}, \code{{tdepth}}. \code{NULL} uses the
@@ -151,7 +156,9 @@ output draws. By default (\code{NULL}), all parameters are returned. Parameter
 names should be the Stan block names, not indexed names — e.g. \code{"beta"}
 will match \code{beta}, \code{beta[1]}, \code{beta[2]}, etc. When the kept set excludes
 the entire transformed-parameter and/or generated-quantities blocks,
-those slices are skipped at sample time (see \code{NEWS.md} for benchmarks).}
+those slices are skipped at sample time (see \code{NEWS.md} for benchmarks).
+R-hat and ESS reported by \code{\link[=nutpie_diagnostics]{nutpie_diagnostics()}} then cover only the
+variables retained in the returned draws.}
 
 \item{include}{Logical (default \code{TRUE}). If \code{TRUE}, \code{pars} specifies the
 parameters to \emph{keep} (whitelist). If \code{FALSE}, \code{pars} specifies parameters

@@ -140,6 +140,29 @@ test_that("low_rank_modified_mass_matrix is deprecated but still works", {
   expect_equal(cfg$adapt_options$mass_matrix_update_freq, 20)
 })
 
+test_that("sampler_config records adaptation-specific default warmup", {
+  expect_null(formals(nutpie_sample)$num_warmup)
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  common <- list(
+    model = test_models$bernoulli, data = bernoulli_data(),
+    num_draws = 10, num_chains = 1, seed = 1L, refresh = 0
+  )
+
+  diag_draws <- do.call(nutpie_sample, c(common, list(adaptation = "diag")))
+  low_rank_draws <- do.call(
+    nutpie_sample, c(common, list(adaptation = "low_rank"))
+  )
+
+  expect_equal(
+    jsonlite::fromJSON(attr(diag_draws, "sampler_config"))$num_warmup,
+    400
+  )
+  expect_equal(
+    jsonlite::fromJSON(attr(low_rank_draws, "sampler_config"))$num_warmup,
+    800
+  )
+})
+
 test_that("adaptation = 'low_rank' matches the deprecated flag's behaviour", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
   draws_new <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
@@ -525,6 +548,9 @@ test_that("adaptation = 'low_rank' produces valid draws", {
   )
   expect_s3_class(draws, "draws_array")
   expect_equal(posterior::niterations(draws), 100)
+  expect_equal(attr(draws, "num_warmup"), 800L)
+  cfg <- jsonlite::fromJSON(attr(draws, "sampler_config"))
+  expect_equal(cfg$num_warmup, 800)
   expect_true("theta" %in% posterior::variables(draws))
 
   # Should reach a similar posterior as standard mass matrix
@@ -538,6 +564,23 @@ test_that("adaptation = 'low_rank' produces valid draws", {
   expect_type(diag$logp, "double")
   expect_true(any(diag$logp != 0))
 })
+
+test_that("generated-quantities failures preserve valid parameter draws", {
+  skip_if(is.null(test_models$gq_failure), "GQ failure model not compiled")
+
+  expect_warning(
+    draws <- nutpie_sample(
+      test_models$gq_failure,
+      num_draws = 20, num_warmup = 20, num_chains = 1,
+      seed = 42, refresh = 0
+    ),
+    "generated quantities"
+  )
+
+  expect_true(all(is.finite(as.numeric(draws[, , "x"]))))
+  expect_true(all(is.nan(as.numeric(draws[, , "invalid_gq"]))))
+})
+
 
 # --- bad-data error path -----------------------------------------------------
 

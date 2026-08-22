@@ -241,6 +241,67 @@ entry_lib_path  <- function(entry, main_rel) {
          "_model.so")
 }
 
+# A cache key may be requested by several R processes at once (e.g. parallel
+# CI jobs sharing R_USER_CACHE_DIR). `dir.create()` is atomic on supported
+# local filesystems, so a sibling lock directory serialises staging and
+# compiling of one entry without serialising unrelated models. A stale lock
+# from a killed process is reclaimed after half a day; an active compiler
+# should finish well before then, while a waiter times out with an actionable
+# error rather than blocking indefinitely.
+CACHE_LOCK_TIMEOUT_SECS <- 600
+CACHE_LOCK_STALE_SECS <- 12 * 60 * 60
+
+entry_lock_path <- function(entry) paste0(entry, ".lock")
+
+with_cache_entry_lock <- function(entry, expr,
+                                  timeout_secs = CACHE_LOCK_TIMEOUT_SECS,
+                                  stale_secs = CACHE_LOCK_STALE_SECS) {
+  lock <- entry_lock_path(entry)
+  started <- Sys.time()
+  repeat {
+    if (dir.create(lock, showWarnings = FALSE)) break
+
+    info <- file.info(lock)
+    age <- as.numeric(difftime(Sys.time(), info$mtime, units = "secs"))
+    if (dir.exists(lock) && is.finite(age) && age > stale_secs) {
+      unlink(lock, recursive = TRUE, force = TRUE)
+      next
+    }
+    waited <- as.numeric(difftime(Sys.time(), started, units = "secs"))
+    if (!is.finite(waited) || waited >= timeout_secs) {
+      stop(
+        "Timed out waiting for another process to compile the same cached ",
+        "Stan model. If no compilation is running, remove stale lock: ", lock,
+        call. = FALSE
+      )
+    }
+    Sys.sleep(0.05)
+  }
+  on.exit(unlink(lock, recursive = TRUE, force = TRUE), add = TRUE)
+  force(expr)
+}
+
+cached_model <- function(entry, main_rel, display_source, verbose) {
+  ok <- entry_ok_marker(entry)
+  main <- entry_main_path(entry, main_rel)
+  lib <- entry_lib_path(entry, main_rel)
+  if (!file.exists(ok) || !file.exists(lib) || !file.exists(main)) {
+    return(NULL)
+  }
+  if (verbose >= 1L) message("Using cached compiled model.")
+  # A cache hit never calls into Rust, so ensure_safe_tbb_proxy (which only
+  # runs during a real compile) would never re-patch a stale, unpatched
+  # tbbmalloc_proxy for an upgrading user whose model is already cached.
+  ensure_tbb_proxy_patched()
+  # Marker mtime is the LRU timestamp for pruning.
+  Sys.setFileTime(ok, Sys.time())
+  nutpie_model(
+    lib_path = normalizePath(lib, mustWork = TRUE),
+    stan_file = display_source,
+    staged_source = normalizePath(main, mustWork = TRUE)
+  )
+}
+
 # --- Compile --------------------------------------------------------------
 
 nutpie_model <- function(lib_path, stan_file, staged_source) {
@@ -332,54 +393,46 @@ compile_at_path <- function(stan_file, stanc_args, compile_args, verbose) {
 compile_via_cache <- function(bundle, stanc_args, compile_args, verbose) {
   key <- cache_key(bundle, bs_version(), stanc_args, compile_args)
   entry <- file.path(cache_root(), key)
-  ok    <- entry_ok_marker(entry)
-  main  <- entry_main_path(entry, bundle$main)
-  lib   <- entry_lib_path(entry, bundle$main)
 
-  if (file.exists(ok) && file.exists(lib) && file.exists(main)) {
-    if (verbose >= 1L) message("Using cached compiled model.")
-    # A cache hit never calls into Rust, so ensure_safe_tbb_proxy (which only
-    # runs during a real compile) would never re-patch a stale, unpatched
-    # tbbmalloc_proxy for an upgrading user whose model is already cached. Do it
-    # here: macOS-cheap, idempotent, no-op elsewhere, and never triggers a
-    # BridgeStan download (GitHub #36).
-    ensure_tbb_proxy_patched()
-    # Refresh the `ok` mtime so this entry counts as recently-used.
-    # Pruning is LRU on the marker mtime; without the bump, a popular
-    # but old-on-disk model could be auto-evicted right after a hit
-    # returns it to the caller (issue surfaced in PR #24 review).
-    Sys.setFileTime(ok, Sys.time())
-    return(nutpie_model(
-      lib_path      = normalizePath(lib,  mustWork = TRUE),
-      stan_file     = bundle$display_source,
-      staged_source = normalizePath(main, mustWork = TRUE)
-    ))
-  }
+  # Fast path: a complete entry is immutable, so it is safe to use without
+  # taking the per-key compile lock.
+  hit <- cached_model(entry, bundle$main, bundle$display_source, verbose)
+  if (!is.null(hit)) return(hit)
 
-  # Wipe partial state from a prior failed compile so stage_bundle()
-  # starts from a clean slate.
-  if (dir.exists(entry)) {
-    unlink(entry, recursive = TRUE, force = TRUE)
-  }
-  stage_bundle(bundle, entry)
-  built <- compile_at_path(
-    entry_main_path(entry, bundle$main),
-    stanc_args, compile_args, verbose
-  )
-  file.create(ok)
+  # A waiter must check again after it owns the lock: the prior lock holder may
+  # have completed the same build while this process waited.
+  with_cache_entry_lock(entry, {
+    hit <- cached_model(entry, bundle$main, bundle$display_source, verbose)
+    if (!is.null(hit)) {
+      hit
+    } else {
+      # Wipe partial state from a prior failed compile so stage_bundle() starts
+      # from a clean slate. The lock prevents another process from observing or
+      # changing this entry until the `ok` marker is written.
+      if (dir.exists(entry)) {
+        unlink(entry, recursive = TRUE, force = TRUE)
+      }
+      stage_bundle(bundle, entry)
+      built <- compile_at_path(
+        entry_main_path(entry, bundle$main),
+        stanc_args, compile_args, verbose
+      )
+      file.create(entry_ok_marker(entry))
 
-  tryCatch(
-    prune_cache_internal(CACHE_MAX_ENTRIES, CACHE_MIN_AGE_DAYS),
-    error = function(e) NULL
-  )
+      tryCatch(
+        prune_cache_internal(CACHE_MAX_ENTRIES, CACHE_MIN_AGE_DAYS),
+        error = function(e) NULL
+      )
 
-  nutpie_model(
-    lib_path      = normalizePath(built, mustWork = TRUE),
-    stan_file     = bundle$display_source,
-    staged_source = normalizePath(
-      entry_main_path(entry, bundle$main), mustWork = TRUE
-    )
-  )
+      nutpie_model(
+        lib_path = normalizePath(built, mustWork = TRUE),
+        stan_file = bundle$display_source,
+        staged_source = normalizePath(
+          entry_main_path(entry, bundle$main), mustWork = TRUE
+        )
+      )
+    }
+  })
 }
 
 # cache = FALSE escape hatch: stage + compile in a fresh tempdir,
@@ -443,18 +496,29 @@ prune_cache_internal <- function(max_entries, min_age_days) {
 #' here for one-off manual cleanup or scripted maintenance.
 #'
 #' @param max_entries Maximum number of valid (fully compiled) cache
-#'   entries to retain. Defaults to 16.
+#'   entries to retain. Must be a non-negative whole number. Defaults to 16.
 #' @param min_age_days Minimum age (in days, by `ok` marker mtime) before
-#'   an entry is eligible for eviction. Defaults to 14, so frequently
-#'   re-used models aren't evicted just because the cache is hot.
+#'   an entry is eligible for eviction. Must be a non-negative finite number.
+#'   Defaults to 14, so frequently re-used models aren't evicted just because
+#'   the cache is hot.
 #' @return Invisibly, the number of entries removed.
 #' @examples
 #' nutpie_prune_cache()
 #' nutpie_prune_cache(max_entries = 8, min_age_days = 7)
 #' @export
 nutpie_prune_cache <- function(max_entries = 16L, min_age_days = 14L) {
+  max_entries <- check_count(max_entries, "max_entries", min = 0L)
+  if (length(min_age_days) != 1L) {
+    stop("`min_age_days` must be a single non-negative finite number.",
+         call. = FALSE)
+  }
+  if (!is.numeric(min_age_days) || !is.finite(min_age_days) ||
+      min_age_days < 0) {
+    stop("`min_age_days` must be a non-negative finite number.",
+         call. = FALSE)
+  }
   invisible(prune_cache_internal(
-    as.integer(max_entries), as.numeric(min_age_days)
+    max_entries, as.numeric(min_age_days)
   ))
 }
 

@@ -23,7 +23,14 @@ nutpie_compile_model(
 \code{stanc} compiler (e.g., \code{"--O1"} for optimization).}
 
 \item{compile_args}{Character vector of extra arguments passed to \code{make}
-during compilation.}
+during compilation. On macOS, nutpieR keeps Stan's fast process-wide
+\code{tbbmalloc_proxy} allocator but patches its bundled source to be safe
+(GitHub #36); this is automatic and idempotent. Set
+\code{NUTPIER_NO_TBB_PROXY_PATCH=1} to skip the patch, or pass
+\code{"TBB_LIBRARIES=tbb"} here to drop the proxy entirely (safe, but ~17\%
+slower on large, many-chain models). If an unpatched proxy is loaded,
+nutpieR stops sampling and asks you to restart R because all subsequent R
+allocations in that process are unsafe.}
 
 \item{verbose}{Integer controlling compilation output. \code{0} = silent,
 \code{1} (default) = print status messages.

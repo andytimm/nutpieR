@@ -1,3 +1,19 @@
+# nutpieR (development version)
+
+* `nutpie_prune_cache()` now rejects negative, fractional, non-finite, or
+  non-scalar pruning arguments before touching the cache.
+* `num_warmup = NULL` now uses the adaptation-specific default: 400 for
+  diagonal and 800 for low-rank adaptation.
+* `nutpie_diagnostics()` notes when R-hat and ESS cover a `pars`-filtered set of
+  returned variables.
+* Fixed live treedepth inference and max-treedepth fallback detection.
+* Live progress now marks inferred treedepth with `~`.
+* Added per-entry locking for concurrent compile-cache misses.
+* Expansion failures now retain valid parameter values and fill unavailable
+  transformed parameters or generated quantities with `NaN`.
+* macOS sampling now stops before opening a model when an unpatched
+  `tbbmalloc_proxy` is loaded.
+
 # nutpieR 1.8.4
 
 * macOS: fixed the intermittent segfaults during sampling and garbage

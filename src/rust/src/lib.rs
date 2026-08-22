@@ -296,14 +296,12 @@ fn ensure_safe_tbb_proxy(bs_path: &std::path::Path, will_recompile: bool) {
     // Stan vendors TBB under lib/tbb_<version>/; the built objects and dylibs
     // land in lib/tbb/.
     let src_dir = match fs::read_dir(&lib) {
-        Ok(rd) => rd
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .find(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .map_or(false, |n| n.starts_with("tbb_"))
-                    && p.join("src/tbbmalloc/proxy_overload_osx.h").exists()
-            }),
+        Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("tbb_"))
+                && p.join("src/tbbmalloc/proxy_overload_osx.h").exists()
+        }),
         Err(_) => None,
     };
     let src_dir = match src_dir {
@@ -1624,9 +1622,11 @@ mod tests {
             "// preceding declarations\nstatic void impl_zone_destroy() {{}}\n\n{}\n\n// trailing declarations\n",
             TBB_STOCK_FN
         );
-        let patched =
-            patch_proxy_source(&fixture).expect("stock function must be found verbatim");
-        assert!(patched.contains(TBB_PATCH_MARKER), "marker symbol spliced in");
+        let patched = patch_proxy_source(&fixture).expect("stock function must be found verbatim");
+        assert!(
+            patched.contains(TBB_PATCH_MARKER),
+            "marker symbol spliced in"
+        );
         assert!(
             !patched.contains("malloc_default_zone"),
             "must not probe the virtual default zone (forwards back into us and recurses)"
@@ -1648,7 +1648,13 @@ mod tests {
 
     #[test]
     fn contains_bytes_finds_marker() {
-        assert!(contains_bytes(b"xxnutpie_tbb_proxy_safe_probeyy", TBB_PATCH_MARKER.as_bytes()));
-        assert!(!contains_bytes(b"unrelated bytes", TBB_PATCH_MARKER.as_bytes()));
+        assert!(contains_bytes(
+            b"xxnutpie_tbb_proxy_safe_probeyy",
+            TBB_PATCH_MARKER.as_bytes()
+        ));
+        assert!(!contains_bytes(
+            b"unrelated bytes",
+            TBB_PATCH_MARKER.as_bytes()
+        ));
     }
 }
