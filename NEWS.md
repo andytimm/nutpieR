@@ -1,7 +1,10 @@
 # nutpieR 1.8.6
 
-* List-form model data and reported sampler configuration now preserve maximum
-  numeric precision during JSON serialization.
+* List-form model data now preserve maximum numeric precision during JSON
+  serialization. Previously, values around 1 could be rounded by up to `5e-5`,
+  mainly affecting tasks where the fifth decimal place in the data's units is
+  scientifically meaningful. Reported sampler configuration retains the same
+  precision.
 * Reduced result-assembly time and peak memory by avoiding a redundant
   full-size draws copy.
 
