@@ -1,13 +1,9 @@
 #' Convert a flat draws matrix to posterior::draws_array
 #'
-#' The flat matrix Rust hands us is already laid out (column-major) such that
-#' the (n_draws, n_chains, n_params) shape needs no permutation. R may make one
-#' copy when the attributes are changed because the matrix is still referenced
-#' by the raw result list. Assign the standard posterior classes directly once
-#' the dimensions are valid: sending this otherwise-ready array through
-#' `posterior::as_draws_array()` dispatches through its default method and makes
-#' a second full copy. For a 10k draws × 4 chains × 1k params result, each
-#' avoidable copy is about 305 MiB.
+#' The flat matrix is already in `(draw, chain, parameter)` order, so reshaping
+#' needs no permutation. Assigning the standard posterior classes directly
+#' avoids the full-buffer copy made by `posterior::as_draws_array()`'s default
+#' method — about 305 MiB for 10k draws × 4 chains × 1k parameters.
 #'
 #' @param flat_matrix Matrix with (n_draws * n_chains) rows and n_params
 #'   columns. Rows are ordered by chain (chain 1 rows first, then chain 2, etc).

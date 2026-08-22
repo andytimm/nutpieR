@@ -1,3 +1,10 @@
+# nutpieR 1.8.6
+
+* List-form model data and reported sampler configuration now preserve maximum
+  numeric precision during JSON serialization.
+* Reduced result-assembly time and peak memory by avoiding a redundant
+  full-size draws copy.
+
 # nutpieR 1.8.5
 
 * Safer compilation and sampling: concurrent cache misses now use per-entry

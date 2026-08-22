@@ -942,12 +942,9 @@ fn sample_stan(
             &kept_param_names,
         )?;
 
-        // Defensive boundary filter for the two opt-in, `ndim_unc`-wide
-        // diagnostics. The pinned nuts-rs honours both storage flags, so these
-        // columns are normally all-null and the schema-driven filter below
-        // would drop them anyway. Keep the explicit suppression so the R API
-        // continues to honour its defaults if an upstream schema or settings
-        // regression ever populates them unexpectedly.
+        // The pinned nuts-rs honours these opt-in storage flags and normally
+        // leaves the columns null. Suppress them explicitly so an upstream
+        // regression cannot change the documented R defaults.
         let mut drop_cols: Vec<&str> = Vec::new();
         if !store_unconstrained {
             drop_cols.push("unconstrained_draw");
