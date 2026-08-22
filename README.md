@@ -121,8 +121,8 @@ draws <- nutpie_sample(
 ```
 
 (`low_rank_modified_mass_matrix = TRUE` still works but is deprecated.)
-Mass-matrix and warmup defaults inherit from nuts-rs; pass `num_warmup`
-explicitly to override.
+When `num_warmup` is omitted, nutpieR matches nuts-rs's adaptation-specific
+defaults: 400 warmup draws for diagonal adaptation and 800 for low-rank.
 
 ## How it works
 

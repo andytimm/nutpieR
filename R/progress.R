@@ -33,26 +33,20 @@ resolve_progress_mode <- function(progress, refresh,
   )
 }
 
-#' Guard against a stale, unpatched macOS `tbbmalloc_proxy` (GitHub #36). If such
-#' an allocator is already loaded in this session, EVERY R allocation is at risk
-#' of a garbage-collection crash until R is restarted — not just live progress —
-#' so warn once regardless of `mode`. Rendering live progress additionally
-#' allocates mid-sample, so also downgrade `"cli"`/`"text"` to `"none"`. No-op
-#' when the loaded proxy carries nutpieR's page-safe patch, when no proxy is
-#' loaded, or off macOS (`tbb_proxy_live_progress_safe()` is `TRUE` in all those
-#' cases). `safe` is injectable for tests.
+#' Guard against a stale, unpatched macOS `tbbmalloc_proxy` (GitHub #36). Once
+#' loaded, every subsequent R allocation is at risk of a garbage-collection
+#' crash until R is restarted, including result assembly after sampling. Stop
+#' before sampling rather than merely disabling live progress. No-op when the
+#' loaded proxy carries nutpieR's page-safe patch, when no proxy is loaded, or
+#' off macOS (`tbb_proxy_live_progress_safe()` is `TRUE` in all those cases).
+#' `safe` is injectable for tests.
 #' @noRd
 gate_progress_for_tbb <- function(mode, safe = tbb_proxy_live_progress_safe()) {
   if (isTRUE(safe)) return(mode)
-  if (!isTRUE(getOption("nutpieR.tbb_gate_warned"))) {
-    cli::cli_warn(c(
-      "An unpatched Stan {.pkg tbbmalloc_proxy} allocator is already loaded in this session.",
-      "!" = "Until you restart R, every R allocation in this session risks a garbage-collection crash (GitHub #36), not just live progress.",
-      "i" = "Recompile the model with {.code cache = FALSE} to pick up the patched allocator, or compile with {.code compile_args = \"TBB_LIBRARIES=tbb\"} to drop the proxy entirely."
-    ))
-    options(nutpieR.tbb_gate_warned = TRUE)
-  }
-  if (mode %in% c("cli", "text")) "none" else mode
+  cli::cli_abort(c(
+    "An unpatched Stan {.pkg tbbmalloc_proxy} allocator is already loaded; sampling was stopped to avoid a garbage-collection crash (GitHub #36).",
+    "i" = "Restart R, then recompile with {.code cache = FALSE} to pick up the patch, or use {.code compile_args = \"TBB_LIBRARIES=tbb\"} to drop the proxy entirely."
+  ))
 }
 
 #' @noRd
@@ -146,7 +140,7 @@ format_divergence_status <- function(total_divs) {
 #' @noRd
 infer_tree_depth <- function(n_steps) {
   if (!is.finite(n_steps) || n_steps <= 0) return(NA_integer_)
-  as.integer(floor(log2(n_steps)))
+  as.integer(floor(log2(n_steps + 1)))
 }
 
 #' @noRd
@@ -178,11 +172,15 @@ format_gradient_status <- function(avg_lf) {
   }
 }
 
+#' Live estimate of the latest tree depth from its leapfrog count.
+#'
+#' The progress snapshot does not include nuts-rs's exact final tree depth.
+#' Diagnostics `$depth` remains authoritative after sampling.
 #' @noRd
 format_treedepth_status <- function(n_steps) {
   depth <- infer_tree_depth(as_progress_num(n_steps, NA_real_))
-  if (!is.finite(depth)) return("tdepth: -")
-  paste("tdepth:", depth)
+  if (!is.finite(depth)) return("tdepth: ~-")
+  paste0("tdepth: ~", depth)
 }
 
 #' @noRd
@@ -446,7 +444,7 @@ progress_supports_color <- function() {
 #' Positron's R kernel (ark) registers a global `message` handler that redirects
 #' message output to the console and invokes the `muffleMessage` restart. That
 #' is a redirect, not suppression: it must not be mistaken for `suppressMessages()`
-#' (see [progress_messages_muffled()]). The query form of `globalCallingHandlers()`
+#' (see `progress_messages_muffled()`). The query form of `globalCallingHandlers()`
 #' is safe to call with handlers on the stack; only the *setting* form errors.
 #' @noRd
 has_global_message_handler <- function() {
@@ -564,7 +562,7 @@ sampling_summary_table <- function(diagnostics) {
 #' Fraction of sampled draws that hit the max tree depth cap. Prefers nuts-rs's
 #' own `maxdepth_reached` flag — the same field `print.nutpie_diagnostics()`
 #' reports — so the two never disagree. Falls back to `depth >= max_treedepth`,
-#' then `n_steps >= 2^max_treedepth`, when that flag is absent. Returns `NA`
+#' then `n_steps >= 2^max_treedepth - 1`, when that flag is absent. Returns `NA`
 #' when none is available.
 #' @noRd
 fraction_at_treedepth_cap <- function(diagnostics, max_treedepth) {
@@ -575,7 +573,8 @@ fraction_at_treedepth_cap <- function(diagnostics, max_treedepth) {
   } else if (!is.null(diagnostics$depth)) {
     at_cap <- as.numeric(diagnostics$depth) >= as.numeric(max_treedepth)
   } else if (!is.null(diagnostics$n_steps)) {
-    at_cap <- as.numeric(diagnostics$n_steps) >= 2^as.numeric(max_treedepth)
+    at_cap <- as.numeric(diagnostics$n_steps) >=
+      2^as.numeric(max_treedepth) - 1
   } else {
     return(NA_real_)
   }
@@ -673,7 +672,7 @@ print_sampling_diagnostic_summary <- function(diagnostics, num_chains, elapsed,
 #' most once per run; the trigger flags live here so both callbacks fire each
 #' hint exactly once. `cli_bar_id` is the active cli progress bar id (cli mode),
 #' so hints can coordinate with it; `NULL` in text mode (see
-#' [emit_progress_hint()]).
+#' `emit_progress_hint()`).
 #' @noRd
 new_progress_hints <- function(cli_bar_id = NULL) {
   env <- new.env(parent = emptyenv())

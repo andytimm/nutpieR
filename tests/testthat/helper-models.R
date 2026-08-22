@@ -34,6 +34,11 @@ test_models$tp_gq <- try_compile(
   stan_file = test_path("test_models", "tp_gq.stan")
 )
 
+test_models$gq_failure <- try_compile(
+  "gq_failure",
+  stan_file = test_path("test_models", "gq_failure.stan")
+)
+
 # Shared fixtures used by test-init.R, test-helpers.R, test-nutpieR.R.
 
 bernoulli_data <- function() {

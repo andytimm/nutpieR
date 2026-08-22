@@ -10,15 +10,19 @@
 #'   - A path to a `.json` file
 #'   - `NULL` for models with no data block
 #' @param num_draws Number of post-warmup draws per chain.
-#' @param num_warmup Number of warmup (tuning) draws per chain.
+#' @param num_warmup Number of warmup (tuning) draws per chain. `NULL` (the
+#'   default) uses the nuts-rs adaptation-specific default: `400` for
+#'   `adaptation = "diag"` and `800` for `adaptation = "low_rank"`. An explicit
+#'   value always takes precedence.
 #' @param num_chains Number of parallel chains.
 #' @param seed Random seed for reproducibility.
-#' @param max_treedepth Maximum tree depth for NUTS. The number of leapfrog
-#'   steps per draw is at most `2^max_treedepth`. Default `NULL` keeps the
-#'   nuts-rs default (currently 10).
-#' @param mindepth Minimum tree depth for NUTS. The number of leapfrog steps
-#'   per draw is at least `2^mindepth`. Default `NULL` keeps the nuts-rs
-#'   default (currently 0).
+#' @param max_treedepth Maximum tree depth for NUTS. A complete tree at
+#'   depth `d` takes `2^d - 1` leapfrog steps. This is the ordinary depth cap;
+#'   `extra_doublings` can extend a trajectory after a turning point. Default
+#'   `NULL` keeps the nuts-rs default (currently 10).
+#' @param mindepth Minimum tree depth for NUTS. Absent an earlier divergence,
+#'   this requires at least `2^mindepth - 1` leapfrog steps. Default `NULL`
+#'   keeps the nuts-rs default (currently 0).
 #' @param target_accept Target acceptance probability for step size adaptation.
 #'   Default `NULL` keeps the nuts-rs default (currently 0.8).
 #' @param max_energy_error Energy-error threshold above which a leapfrog step
@@ -42,8 +46,9 @@
 #'   threshold), `{spread}` (percent-range spread across chains, e.g.
 #'   `spread 23-78%`, shown only once chains diverge enough), `{draws}`
 #'   (per-chain draw range), `{spark}` (gap-from-leader sparkline), `{lag}`
-#'   (slow chain indicator), `{step}` (min step size), `{tdepth}` (latest
-#'   treedepth). The default is `"{div} | {grad} | {spread}"`. For `"text"`
+#'   (slow chain indicator), `{step}` (min step size), `{tdepth}` (estimated
+#'   latest treedepth, prefixed with `~`). The default is
+#'   `"{div} | {grad} | {spread}"`. For `"text"`
 #'   mode, per-chain tokens are
 #'   also available: `{chain}`, `{phase}`, `{pct}`, `{draws}`, `{total}`,
 #'   `{elapsed}`, `{div}`, `{grad}`, `{tdepth}`. `NULL` uses the
@@ -116,6 +121,8 @@
 #'   will match `beta`, `beta[1]`, `beta[2]`, etc. When the kept set excludes
 #'   the entire transformed-parameter and/or generated-quantities blocks,
 #'   those slices are skipped at sample time (see `NEWS.md` for benchmarks).
+#'   R-hat and ESS reported by [nutpie_diagnostics()] then cover only the
+#'   variables retained in the returned draws.
 #' @param include Logical (default `TRUE`). If `TRUE`, `pars` specifies the
 #'   parameters to *keep* (whitelist). If `FALSE`, `pars` specifies parameters
 #'   to *exclude* (blacklist). Ignored when `pars` is `NULL`.
@@ -169,7 +176,7 @@
 #' }
 #' @export
 nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
-                          num_warmup = 400L, num_chains = 4L, seed = NULL,
+                          num_warmup = NULL, num_chains = 4L, seed = NULL,
                           max_treedepth = NULL, mindepth = NULL,
                           target_accept = NULL, max_energy_error = NULL,
                           extra_doublings = NULL,
@@ -188,6 +195,10 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           low_rank_modified_mass_matrix = FALSE,
                           mass_matrix_gamma = NULL,
                           mass_matrix_eigval_cutoff = NULL) {
+  # Fail before doing any model/data work when a stale macOS allocator is
+  # already present. Opening a model can load that allocator, so check again
+  # immediately after bs_open() below.
+  gate_progress_for_tbb("none")
   lib_path <- resolve_model(model)
   data_json <- resolve_data(data)
   cfg <- resolve_sample_config(
@@ -237,6 +248,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   mass_matrix_eigval_cutoff <- cfg$mass_matrix_eigval_cutoff
 
   handle <- bs_open(lib_path, data_json, as.integer(seed))
+  gate_progress_for_tbb("none")
   init_resolved <- resolve_init(init, init_mean, handle, num_chains,
                                 seed = seed)
 
@@ -246,7 +258,6 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   keep_indices <- resolve_keep_indices(constrain_names, pars, include)
 
   resolved_progress <- resolve_progress_mode(progress, refresh)
-  resolved_progress <- gate_progress_for_tbb(resolved_progress)
   chain_format <- validate_chain_format(chain_format, resolved_progress)
   # Will be replaced with the effective maxdepth from sampler_config after sampling.
 
@@ -324,6 +335,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     num_chains = num_chains,
     save_warmup = save_warmup
   )
+  attr(draws, "variables_filtered") <- !is.null(pars)
   maybe_print_sampling_summary(
     draws,
     raw,
@@ -384,10 +396,11 @@ progress_max_treedepth <- function(sampler_config_json) {
 warn_on_expand_errors <- function(n_expand_errors) {
   if (n_expand_errors <= 0L) return(invisible(NULL))
   warning(
-    n_expand_errors, " draw(s) had generated quantities that could not be ",
-    "computed (filled with NaN). This typically happens when the sampler ",
-    "explores extreme unconstrained values where parameter constraints ",
-    "(e.g. bounds) are violated during transformation.",
+    n_expand_errors, " draw(s) had transformed parameters or generated ",
+    "quantities that could not be computed. nutpieR preserved any lower-level ",
+    "values that could be safely recomputed and filled unavailable outputs ",
+    "with NaN. Check transformed-parameter and generated-quantities code for ",
+    "invalid function domains, rejected values, or violated output bounds.",
     call. = FALSE
   )
 }
@@ -422,6 +435,10 @@ resolve_sample_config <- function(seed, adaptation, low_rank_modified_mass_matri
       call. = FALSE
     )
     adaptation <- "low_rank"
+  }
+
+  if (is.null(num_warmup)) {
+    num_warmup <- if (identical(adaptation, "low_rank")) 800L else 400L
   }
 
   num_draws <- check_count(num_draws, "num_draws", min = 1L)

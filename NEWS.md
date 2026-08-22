@@ -1,3 +1,16 @@
+# nutpieR 1.8.5
+
+* Safer compilation and sampling: concurrent cache misses now use per-entry
+  locking, cache-pruning inputs are validated, and macOS sampling stops before
+  opening a model when an unpatched `tbbmalloc_proxy` is loaded.
+* `num_warmup = NULL` now follows the adaptation-specific default: 400 for
+  diagonal and 800 for low-rank adaptation.
+* Clearer diagnostics and failure handling: fixed live treedepth inference
+  (`2^depth - 1` leapfrog steps for a complete tree; the old display could be
+  one level low), marked inferred progress depth with `~`, clarified
+  `pars`-filtered R-hat/ESS, and retained valid parameter values when output
+  expansion fails.
+
 # nutpieR 1.8.4
 
 * macOS: fixed the intermittent segfaults during sampling and garbage

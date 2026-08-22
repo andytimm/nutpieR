@@ -8,11 +8,12 @@ nutpie_prune_cache(max_entries = 16L, min_age_days = 14L)
 }
 \arguments{
 \item{max_entries}{Maximum number of valid (fully compiled) cache
-entries to retain. Defaults to 16.}
+entries to retain. Must be a non-negative whole number. Defaults to 16.}
 
 \item{min_age_days}{Minimum age (in days, by \code{ok} marker mtime) before
-an entry is eligible for eviction. Defaults to 14, so frequently
-re-used models aren't evicted just because the cache is hot.}
+an entry is eligible for eviction. Must be a non-negative finite number.
+Defaults to 14, so frequently re-used models aren't evicted just because
+the cache is hot.}
 }
 \value{
 Invisibly, the number of entries removed.
