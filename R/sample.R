@@ -617,7 +617,7 @@ resolve_data <- function(data) {
       stop("Package 'jsonlite' is required to convert list data to JSON.",
            call. = FALSE)
     }
-    return(jsonlite::toJSON(data, auto_unbox = TRUE))
+    return(jsonlite::toJSON(data, auto_unbox = TRUE, digits = NA))
   }
   stop("`data` must be NULL, a JSON string, a .json file path, or a named list.",
        call. = FALSE)

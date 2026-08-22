@@ -1,11 +1,9 @@
 #' Convert a flat draws matrix to posterior::draws_array
 #'
-#' The flat matrix Rust hands us is already laid out (column-major) such that
-#' the (n_draws, n_chains, n_params) shape is just a different `dim` attribute
-#' on the same buffer — no permutation or copy needed. Reassigning `dim`
-#' in-place avoids the full memcpy that `array(flat_matrix, dim = ...)` would
-#' do; on a 10k draws × 4 chains × 1k params (~305 MB) result this is the
-#' difference between ~500 ms and ~2 ms of post-sample R-side work.
+#' The flat matrix is already in `(draw, chain, parameter)` order, so reshaping
+#' needs no permutation. Assigning the standard posterior classes directly
+#' avoids the full-buffer copy made by `posterior::as_draws_array()`'s default
+#' method — about 305 MiB for 10k draws × 4 chains × 1k parameters.
 #'
 #' @param flat_matrix Matrix with (n_draws * n_chains) rows and n_params
 #'   columns. Rows are ordered by chain (chain 1 rows first, then chain 2, etc).
@@ -22,7 +20,8 @@ matrix_to_draws_array <- function(flat_matrix, n_draws, n_chains) {
     chain = seq_len(n_chains),
     variable = param_names
   )
-  posterior::as_draws_array(flat_matrix)
+  class(flat_matrix) <- c("draws_array", "draws", "array")
+  flat_matrix
 }
 
 #' Block-level prefixes from a vector of bridgestan dot-indexed names

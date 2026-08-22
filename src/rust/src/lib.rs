@@ -942,15 +942,9 @@ fn sample_stan(
             &kept_param_names,
         )?;
 
-        // Diagnostic columns to suppress at the R boundary. nuts-rs 0.17.4
-        // populates `unconstrained_draw` and `gradient` unconditionally
-        // regardless of `store_unconstrained` / `store_gradient` (the flags
-        // exist but are not read in `chain.rs::extract_stats`). To match the
-        // documented R-side semantics — and to avoid surfacing one
-        // `ndim_unc`-wide list-of-vectors per draw by default — drop those
-        // columns here unless the user opts in. When nuts-rs starts honouring
-        // the flags, the columns will already be all-null and our existing
-        // `any_non_null` filter will drop them.
+        // The pinned nuts-rs honours these opt-in storage flags and normally
+        // leaves the columns null. Suppress them explicitly so an upstream
+        // regression cannot change the documented R defaults.
         let mut drop_cols: Vec<&str> = Vec::new();
         if !store_unconstrained {
             drop_cols.push("unconstrained_draw");

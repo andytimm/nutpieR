@@ -23,7 +23,7 @@ rename_sampler_config <- function(json_str) {
       cfg$num_warmup <- cfg$num_tune
       cfg$num_tune <- NULL
     }
-    jsonlite::toJSON(cfg, auto_unbox = TRUE)
+    jsonlite::toJSON(cfg, auto_unbox = TRUE, digits = NA)
   }, error = function(e) json_str)
 }
 

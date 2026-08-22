@@ -1,3 +1,14 @@
+# nutpieR 1.8.6
+
+* List-form model data now preserve maximum numeric precision during JSON
+  serialization. Previously, the `jsonlite::toJSON()` default rounded ordinary
+  fixed-decimal values to four decimal places—an error of at most `5e-5` in the
+  data's units—mainly affecting tasks where precision at that scale is
+  scientifically meaningful. JSON strings and files were unaffected. Reported
+  sampler configuration now retains maximum numeric precision too.
+* Reduced result-assembly time and peak memory by avoiding a redundant
+  full-size draws copy.
+
 # nutpieR 1.8.5
 
 * Safer compilation and sampling: concurrent cache misses now use per-entry

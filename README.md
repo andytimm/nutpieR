@@ -128,7 +128,7 @@ defaults: 400 warmup draws for diagonal adaptation and 800 for low-rank.
 
 nutpieR compiles Stan models via the BridgeStan Rust crate and samples using the nuts-rs NUTS sampler. During sampling, Rust calls the compiled Stan shared library directly through BridgeStan's C ABI -- R is not involved in the sampling loop. Each chain runs on its own thread via rayon.
 
-Results are transferred from Rust to R via Apache Arrow with a single copy into R-allocated memory (no extra intermediate buffer), and returned as a `posterior::draws_array`.
+Results are transferred from Rust to R via Apache Arrow and returned as a `posterior::draws_array`.
 
 Compiled artifacts are cached, matching cmdstanr's convention -- repeat calls return in <1s. See `?nutpie_compile_model` for cache controls and `?nutpie_clear_cache` to invalidate.
 

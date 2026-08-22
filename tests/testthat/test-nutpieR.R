@@ -19,11 +19,13 @@ test_that("resolve_data handles JSON string", {
   expect_equal(nutpieR:::resolve_data(json), json)
 })
 
-test_that("resolve_data handles list", {
-  result <- nutpieR:::resolve_data(list(N = 10, y = c(0, 1)))
+test_that("resolve_data handles list without rounding numeric data", {
+  x <- c(0.123456789012345, 0.999999, 1.000001, -0.000049999)
+  result <- nutpieR:::resolve_data(list(N = 10, y = c(0, 1), x = x))
   parsed <- jsonlite::fromJSON(result)
   expect_equal(parsed$N, 10)
   expect_equal(parsed$y, c(0, 1))
+  expect_equal(parsed$x, x)
 })
 
 test_that("resolve_data handles .json file", {
@@ -594,6 +596,16 @@ test_that("sampling with bad data gives R error, not crash", {
 })
 
 # --- sampler_config attribute ------------------------------------------------
+
+test_that("sampler_config renaming preserves numeric precision", {
+  raw <- paste0(
+    '{"num_tune":400,"target_accept":',
+    '0.8123456789012345}'
+  )
+  cfg <- jsonlite::fromJSON(nutpieR:::rename_sampler_config(raw))
+  expect_equal(cfg$num_warmup, 400)
+  expect_equal(cfg$target_accept, 0.8123456789012345)
+})
 
 test_that("sampler_config is parseable JSON capturing effective settings", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
