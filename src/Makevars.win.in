@@ -1,4 +1,4 @@
-TARGET = $(subst 64,x86_64,$(subst 32,i686,$(WIN)))-pc-windows-gnu
+TARGET = @WINDOWS_TARGET@
 
 # Ensure cargo is on PATH (Windows R subprocess may not inherit it)
 CARGO_BIN = $(HOME)/.cargo/bin
