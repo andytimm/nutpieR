@@ -813,9 +813,9 @@ fn sample_stan(
                 return Err(Error::Other(format!("{} must be >= 1, got {}", name, val)));
             }
         }
-        if num_warmup < 0 {
+        if num_warmup <= 0 {
             return Err(Error::Other(format!(
-                "num_warmup must be >= 0, got {}",
+                "num_warmup must be >= 1; zero warmup is not supported by nuts-rs adaptation (got {})",
                 num_warmup
             )));
         }
