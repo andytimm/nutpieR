@@ -20,7 +20,10 @@ nutpie_compile_model(
 \item{code}{A string containing Stan model code.}
 
 \item{stanc_args}{Character vector of extra arguments passed to the
-\code{stanc} compiler (e.g., \code{"--O1"} for optimization).}
+\code{stanc} compiler (e.g., \code{"--O1"} for optimization). Repeated
+\verb{--include-paths=} arguments keep their supplied order. Do not use stanc
+output-mode arguments such as \code{--auto-format} here; if supplied with an
+include model, nutpieR compiles fresh rather than risking a cache hit.}
 
 \item{compile_args}{Character vector of extra arguments passed to \code{make}
 during compilation. On macOS, nutpieR keeps Stan's fast process-wide
@@ -59,9 +62,20 @@ source + flags + BridgeStan version), regardless of whether the model
 was passed as \code{stan_file = ...} or \code{code = "..."}. A subsequent call
 with identical inputs is a near-instant cache hit.
 
-For \code{stan_file = ...}, the transitive \verb{#include} set is hashed
-together with the main file, so editing an included file (or the main
-file itself) busts the cache and triggers a recompile.
+For either \code{stan_file = ...} or inline \code{code = ...}, nutpieR asks the
+bundled \code{stanc} compiler to resolve transitive \verb{#include} files using the
+same ordered include paths as compilation. Their bytes are part of the
+cache key, so editing an included file (or the main file itself) triggers a
+recompile. Include-bearing models are staged as stanc-expanded source. This
+makes nested and external includes reliable, but compiler errors for those
+models refer to the staged expanded source rather than an original include
+line. Unusual stanc output-mode or make/compiler overrides that cannot be
+tracked are compiled fresh without using the persistent cache. For a
+file-based model, that conservative route compiles in the source directory
+under a per-source lock and returns a copied, unique temporary library path.
+It requires that source directory to be writable and contain no spaces;
+otherwise nutpieR stops with guidance rather than using different compiler
+semantics.
 
 The cache is bounded by \code{\link[=nutpie_prune_cache]{nutpie_prune_cache()}},
 which runs automatically at the end of every successful compile

@@ -101,6 +101,33 @@ fn bridgestan_version() -> String {
     bridgestan::VERSION.to_string()
 }
 
+/// Return the bundled stanc binary used by BridgeStan compilation.
+///
+/// This is intentionally native rather than reconstructed in R: the source
+/// cache location is owned by the BridgeStan crate and can vary by platform.
+/// @noRd
+#[extendr]
+fn bridgestan_stanc_path() -> String {
+    or_throw(bridgestan_stanc_path_impl())
+}
+
+fn bridgestan_stanc_path_impl() -> Result<String> {
+    let bs_path = bridgestan::download_bridgestan_src().map_err(r_err)?;
+    let executable = if cfg!(target_os = "windows") {
+        "stanc.exe"
+    } else {
+        "stanc"
+    };
+    let path = bs_path.join("bin").join(executable);
+    if !path.is_file() {
+        return Err(Error::Other(format!(
+            "BridgeStan's bundled stanc was not found at {}",
+            path.display()
+        )));
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// Compile a Stan model to a shared library using BridgeStan.
 /// Downloads BridgeStan sources if needed (first call is slow).
 /// @param stan_file Path to the .stan file.
@@ -1587,6 +1614,7 @@ fn bs_param_constrain_block_impl(
 extendr_module! {
     mod nutpieR;
     fn bridgestan_version;
+    fn bridgestan_stanc_path;
     fn compile_stan_model;
     fn tbb_proxy_live_progress_safe;
     fn ensure_tbb_proxy_patched;
