@@ -45,14 +45,25 @@ or a path to a compiled shared library.}
 \item A JSON string
 \item A path to a \code{.json} file
 \item \code{NULL} for models with no data block
-}}
+}
+
+Named-list data use \code{jsonlite::toJSON(auto_unbox = TRUE, digits = NA)}.
+Scalar values are therefore unboxed, while explicit dimensions are kept.
+Because ordinary length-one vectors and scalars are indistinguishable in R,
+use \code{I(3)} or \code{array(3, dim = 1)} for a one-element vector, and use
+\code{matrix(3, nrow = 1, ncol = 1)} (or an explicitly dimensioned array) for
+a one-by-one matrix. The same rule preserves other singleton axes;
+\code{numeric(0)} is serialized as \code{[]}. JSON strings and files are passed
+through without singleton rewriting. No automatic inference is attempted for an
+ordinary length-one vector.}
 
 \item{num_draws}{Number of post-warmup draws per chain.}
 
-\item{num_warmup}{Number of warmup (tuning) draws per chain. \code{NULL} (the
-default) uses the nuts-rs adaptation-specific default: \code{400} for
-\code{adaptation = "diag"} and \code{800} for \code{adaptation = "low_rank"}. An explicit
-value always takes precedence.}
+\item{num_warmup}{Number of warmup (tuning) draws per chain. Must be
+positive (at least \code{1}); zero warmup is not supported by nuts-rs
+adaptation. \code{NULL} (the default) uses the nuts-rs adaptation-specific
+default: \code{400} for \code{adaptation = "diag"} and \code{800} for
+\code{adaptation = "low_rank"}. An explicit value always takes precedence.}
 
 \item{num_chains}{Number of parallel chains.}
 

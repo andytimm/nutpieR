@@ -11,9 +11,20 @@
 #' was passed as `stan_file = ...` or `code = "..."`. A subsequent call
 #' with identical inputs is a near-instant cache hit.
 #'
-#' For `stan_file = ...`, the transitive `#include` set is hashed
-#' together with the main file, so editing an included file (or the main
-#' file itself) busts the cache and triggers a recompile.
+#' For either `stan_file = ...` or inline `code = ...`, nutpieR asks the
+#' bundled `stanc` compiler to resolve transitive `#include` files using the
+#' same ordered include paths as compilation. Their bytes are part of the
+#' cache key, so editing an included file (or the main file itself) triggers a
+#' recompile. Include-bearing models are staged as stanc-expanded source. This
+#' makes nested and external includes reliable, but compiler errors for those
+#' models refer to the staged expanded source rather than an original include
+#' line. Unusual stanc output-mode or make/compiler overrides that cannot be
+#' tracked are compiled fresh without using the persistent cache. For a
+#' file-based model, that conservative route compiles in the source directory
+#' under a per-source lock and returns a copied, unique temporary library path.
+#' It requires that source directory to be writable and contain no spaces;
+#' otherwise nutpieR stops with guidance rather than using different compiler
+#' semantics.
 #'
 #' The cache is bounded by [`nutpie_prune_cache()`][nutpie_prune_cache],
 #' which runs automatically at the end of every successful compile
@@ -44,7 +55,10 @@
 #'   `code` must be provided.
 #' @param code A string containing Stan model code.
 #' @param stanc_args Character vector of extra arguments passed to the
-#'   `stanc` compiler (e.g., `"--O1"` for optimization).
+#'   `stanc` compiler (e.g., `"--O1"` for optimization). Repeated
+#'   `--include-paths=` arguments keep their supplied order. Do not use stanc
+#'   output-mode arguments such as `--auto-format` here; if supplied with an
+#'   include model, nutpieR compiles fresh rather than risking a cache hit.
 #' @param compile_args Character vector of extra arguments passed to `make`
 #'   during compilation. On macOS, nutpieR keeps Stan's fast process-wide
 #'   `tbbmalloc_proxy` allocator but patches its bundled source to be safe
@@ -109,10 +123,21 @@ nutpie_compile_model <- function(stan_file = NULL, code = NULL,
   use_cache <- cache &&
     !identical(Sys.getenv("NUTPIER_DISABLE_COMPILE_CACHE"), "1")
 
-  bundle <- if (!is.null(code)) {
-    inline_bundle(code)
-  } else {
-    file_bundle(normalizePath(stan_file, mustWork = TRUE))
+  source_path <- if (is.null(stan_file)) NULL else normalizePath(stan_file, mustWork = TRUE)
+  bundle <- bundle_for_compile(source_path, code, stanc_args, compile_args)
+
+  # If an unusual stanc output-mode override prevents us from obtaining both
+  # compiler-resolved dependencies and expanded source, never claim a cache
+  # hit.  A fresh build is slower but cannot silently reuse an old model.
+  if (isTRUE(attr(bundle, "untracked_includes"))) {
+    warning(
+      "Could not safely track #include dependencies with these `stanc_args`; ",
+      "compiling without the persistent cache.",
+      call. = FALSE
+    )
+    return(compile_no_cache_untracked(
+      bundle, source_path, stanc_args, compile_args, verbose
+    ))
   }
 
   if (use_cache) {

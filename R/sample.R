@@ -9,11 +9,22 @@
 #'   - A JSON string
 #'   - A path to a `.json` file
 #'   - `NULL` for models with no data block
+#'
+#'   Named-list data use `jsonlite::toJSON(auto_unbox = TRUE, digits = NA)`.
+#'   Scalar values are therefore unboxed, while explicit dimensions are kept.
+#'   Because ordinary length-one vectors and scalars are indistinguishable in
+#'   R, use `I(3)` or `array(3, dim = 1)` for a one-element vector, and use
+#'   `matrix(3, nrow = 1, ncol = 1)` (or an explicitly dimensioned array) for
+#'   a one-by-one matrix. The same rule preserves other singleton axes;
+#'   `numeric(0)` is serialized as `[]`. JSON strings and files are passed
+#'   through without singleton rewriting. No automatic inference is attempted
+#'   for an ordinary length-one vector.
 #' @param num_draws Number of post-warmup draws per chain.
-#' @param num_warmup Number of warmup (tuning) draws per chain. `NULL` (the
-#'   default) uses the nuts-rs adaptation-specific default: `400` for
-#'   `adaptation = "diag"` and `800` for `adaptation = "low_rank"`. An explicit
-#'   value always takes precedence.
+#' @param num_warmup Number of warmup (tuning) draws per chain. Must be
+#'   positive (at least `1`); zero warmup is not supported by nuts-rs
+#'   adaptation. `NULL` (the default) uses the nuts-rs adaptation-specific
+#'   default: `400` for `adaptation = "diag"` and `800` for
+#'   `adaptation = "low_rank"`. An explicit value always takes precedence.
 #' @param num_chains Number of parallel chains.
 #' @param seed Random seed for reproducibility.
 #' @param max_treedepth Maximum tree depth for NUTS. A complete tree at
@@ -442,7 +453,7 @@ resolve_sample_config <- function(seed, adaptation, low_rank_modified_mass_matri
   }
 
   num_draws <- check_count(num_draws, "num_draws", min = 1L)
-  num_warmup <- check_count(num_warmup, "num_warmup", min = 0L)
+  num_warmup <- check_count(num_warmup, "num_warmup", min = 1L)
   num_chains <- check_count(num_chains, "num_chains", min = 1L)
   refresh <- check_count(refresh, "refresh", min = 0L)
   if (is.null(cores)) {

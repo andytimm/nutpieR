@@ -284,16 +284,16 @@ test_that("editing an #include'd file invalidates the cache", {
   on.exit(unlink(d, recursive = TRUE), add = TRUE)
   prior <- file.path(d, "priors.stan")
   main <- file.path(d, "main.stan")
-  writeLines("// v1", prior)
+  writeLines("real prior_mean() { return 0; }", prior)
   writeLines(c("functions {", "#include priors.stan", "}",
-               "parameters { real x; } model { x ~ normal(0, 1); }"), main)
+               "parameters { real x; } model { x ~ normal(prior_mean(), 1); }"), main)
 
   nutpie_compile_model(stan_file = main, verbose = 0L)
   expect_equal(counter$n, 1L)
 
   # Touch only the included file. With hash-based invalidation this
   # changes the bundle content -> new hash -> recompile.
-  writeLines("// v2", prior)
+  writeLines("real prior_mean() { return 1; }", prior)
   nutpie_compile_model(stan_file = main, verbose = 0L)
   expect_equal(counter$n, 2L)
 })
@@ -317,24 +317,25 @@ test_that("multi-space, missing, and nested #include all invalidate properly", {
   a <- file.path(d, "a.stan")
   b <- file.path(d, "b.stan")
   c <- file.path(d, "c.stan")
-  writeLines("// c v1", c)
+  writeLines("real nested_mean() { return 0; }", c)
   writeLines(c("// b v1", "#include   c.stan"), b)
   writeLines(c("functions {", "#include  b.stan", "}",
-               "parameters { real x; } model { x ~ normal(0, 1); }"), a)
+               "parameters { real x; } model { x ~ normal(nested_mean(), 1); }"), a)
 
   nutpie_compile_model(stan_file = a, verbose = 0L)
   expect_equal(counter$n, 1L)
 
   # Editing the depth-2 include must invalidate -- proves transitive walk.
-  writeLines("// c v2", c)
+  writeLines("real nested_mean() { return 1; }", c)
   nutpie_compile_model(stan_file = a, verbose = 0L)
   expect_equal(counter$n, 2L)
 
-  # Deleting an included file must invalidate -- a missing dep should
-  # never read as "no constraint" (would silently return a stale .so).
+  # A deleted dependency must not return the prior cache entry.  stanc's own
+  # resolver surfaces the missing file before a cache lookup can occur.
   unlink(c)
-  nutpie_compile_model(stan_file = a, verbose = 0L)
-  expect_equal(counter$n, 3L)
+  expect_error(nutpie_compile_model(stan_file = a, verbose = 0L),
+               "include|c\\.stan|Could not find")
+  expect_equal(counter$n, 2L)
 })
 
 test_that("commented-out #include directives are ignored", {
@@ -360,7 +361,10 @@ test_that("commented-out #include directives are ignored", {
     "parameters { real x; } model { x ~ normal(0, 1); }"
   ), main)
 
-  expect_equal(nutpieR:::included_files(main), character())
+  # The gate may conservatively false-positive on a block comment; stanc,
+  # rather than an R parser, remains the authority and reports no dependency.
+  expect_true(nutpieR:::has_possible_include(nutpieR:::read_dep(main)))
+  expect_length(nutpieR:::resolve_included_source(main, character())$dependencies, 0L)
 
   nutpie_compile_model(stan_file = main, verbose = 0L)
   expect_equal(counter$n, 1L)
@@ -607,4 +611,240 @@ test_that("stan_file with relative #include compiles", {
   m <- nutpie_compile_model(stan_file = file.path(d, "main.stan"),
                             verbose = 0L)
   expect_true(file.exists(m$lib_path))
+})
+
+
+test_that("external include edits invalidate inline cache and change the model", {
+  skip_if_no_make()
+  local_isolated_cache()
+
+  d <- tempfile("nutpieR-external-inline-")
+  inc <- file.path(d, "include")
+  dir.create(inc, recursive = TRUE)
+  on.exit(unlink(d, recursive = TRUE), add = TRUE)
+  center <- file.path(inc, "center.stan")
+  writeLines("real center() { return 0; }", center)
+  code <- paste(
+    "functions {", "#include center.stan", "}",
+    "parameters { real x; }", "model { x ~ normal(center(), 0.1); }",
+    sep = "\n"
+  )
+  flags <- paste0("--include-paths=", inc)
+
+  first <- nutpie_compile_model(code = code, stanc_args = flags, verbose = 0L)
+  first_draws <- nutpie_sample(
+    first, data = NULL, num_warmup = 80L, num_draws = 80L,
+    num_chains = 1L, seed = 42L, refresh = 0L
+  )
+  writeLines("real center() { return 10; }", center)
+  second <- nutpie_compile_model(code = code, stanc_args = flags, verbose = 0L)
+  second_draws <- nutpie_sample(
+    second, data = NULL, num_warmup = 80L, num_draws = 80L,
+    num_chains = 1L, seed = 42L, refresh = 0L
+  )
+
+  expect_false(identical(first$lib_path, second$lib_path))
+  expect_lt(mean(as.numeric(first_draws)), 1)
+  expect_gt(mean(as.numeric(second_draws)), 9)
+  # The unchanged expanded source/dependency bytes retain the ordinary hit.
+  expect_identical(
+    nutpie_compile_model(code = code, stanc_args = flags, verbose = 0L)$lib_path,
+    second$lib_path
+  )
+})
+
+test_that("compiler resolution handles nested includes from the main root", {
+  skip_if_no_make()
+  local_isolated_cache()
+
+  d <- tempfile("nutpieR-nested-main-root-")
+  dir.create(file.path(d, "sub"), recursive = TRUE)
+  on.exit(unlink(d, recursive = TRUE), add = TRUE)
+  writeLines("real center() { return 0; }", file.path(d, "center.stan"))
+  writeLines("#include center.stan", file.path(d, "sub", "f.stan"))
+  main <- file.path(d, "main.stan")
+  writeLines(c(
+    "functions {", "#include sub/f.stan", "}",
+    "parameters { real x; }", "model { x ~ normal(center(), 1); }"
+  ), main)
+
+  # This also exercises the fresh staging route: no source-tree layout is
+  # assumed after stanc has expanded the include tree.
+  fresh <- nutpie_compile_model(stan_file = main, cache = FALSE, verbose = 0L)
+  expect_true(file.exists(fresh$lib_path))
+
+  cached <- nutpie_compile_model(stan_file = main, verbose = 0L)
+  cached_draws <- nutpie_sample(
+    cached, data = NULL, num_warmup = 80L, num_draws = 80L,
+    num_chains = 1L, seed = 42L, refresh = 0L
+  )
+  writeLines("real center() { return 2; }", file.path(d, "center.stan"))
+  changed <- nutpie_compile_model(stan_file = main, verbose = 0L)
+  changed_draws <- nutpie_sample(
+    changed, data = NULL, num_warmup = 80L, num_draws = 80L,
+    num_chains = 1L, seed = 42L, refresh = 0L
+  )
+  expect_false(identical(cached$lib_path, changed$lib_path))
+  expect_lt(mean(as.numeric(cached_draws)), 1)
+  expect_gt(mean(as.numeric(changed_draws)), 1)
+})
+
+test_that("stanc include search order is retained when resolving dependencies", {
+  skip_if_no_make()
+  d <- tempfile("nutpieR-include-order-")
+  a <- file.path(d, "a")
+  b <- file.path(d, "b")
+  dir.create(a, recursive = TRUE)
+  dir.create(b, recursive = TRUE)
+  on.exit(unlink(d, recursive = TRUE), add = TRUE)
+  writeLines("real center() { return 1; }", file.path(a, "center.stan"))
+  writeLines("real center() { return 2; }", file.path(b, "center.stan"))
+  main <- file.path(d, "main.stan")
+  writeLines(c("functions {", "#include center.stan", "}",
+               "parameters { real x; } model { x ~ normal(center(), 1); }"), main)
+
+  first <- nutpieR:::resolve_included_source(
+    main, c(paste0("--include-paths=", a), paste0("--include-paths=", b))
+  )
+  second <- nutpieR:::resolve_included_source(
+    main, c(paste0("--include-paths=", b), paste0("--include-paths=", a))
+  )
+  expect_identical(first$dependencies[[1L]]$path, normalizePath(file.path(a, "center.stan")))
+  expect_identical(second$dependencies[[1L]]$path, normalizePath(file.path(b, "center.stan")))
+})
+
+
+test_that("untrackable stanc output modes bypass the persistent include cache", {
+  local_isolated_cache()
+  counter <- new.env(parent = emptyenv())
+  testthat::local_mocked_bindings(
+    compile_stan_model = make_compile_stub(counter),
+    bs_version = function() "TEST.0",
+    bridgestan_version = function() "TEST.0",
+    .package = "nutpieR"
+  )
+  code <- paste("functions {", "#include external.stan", "}",
+                "parameters { real x; } model {}", sep = "\n")
+  expect_warning(
+    first <- nutpie_compile_model(code = code, stanc_args = "--auto-format", verbose = 0L),
+    "without the persistent cache"
+  )
+  expect_warning(
+    second <- nutpie_compile_model(code = code, stanc_args = "--auto-format", verbose = 0L),
+    "without the persistent cache"
+  )
+  expect_equal(counter$n, 2L)
+  expect_false(identical(first$lib_path, second$lib_path))
+  expect_false(startsWith(normalizePath(first$lib_path), normalizePath(nutpie_cache_dir())))
+})
+
+
+test_that("the include gate has no mid-line directive false negative", {
+  expect_true(nutpieR:::has_possible_include(
+    charToRaw("functions { #include f.stan\n} parameters { real x; } model {}")
+  ))
+})
+
+test_that("make compiler overrides bypass tracking before stanc and retain file root", {
+  local_isolated_cache()
+  counter <- new.env(parent = emptyenv())
+  compile_stub <- make_compile_stub(counter)
+  testthat::local_mocked_bindings(
+    compile_stan_model = function(stan_file, stanc_args, compile_args) {
+      counter$source_lock_seen <- any(grepl(
+        "^\\.nutpieR-untracked-.*\\.lock$",
+        list.files(dirname(stan_file), all.files = TRUE)
+      ))
+      compile_stub(stan_file, stanc_args, compile_args)
+    },
+    bridgestan_stanc_path = function() stop("resolver must not run"),
+    bs_version = function() "TEST.0",
+    bridgestan_version = function() "TEST.0",
+    .package = "nutpieR"
+  )
+  d <- tempfile("nutpieR-untracked-root-")
+  dir.create(d)
+  on.exit(unlink(d, recursive = TRUE), add = TRUE)
+  main <- file.path(d, "main.stan")
+  writeLines(c("functions { #include f.stan }", "parameters { real x; } model {}"), main)
+
+  expect_warning(
+    model <- nutpie_compile_model(
+      stan_file = main, compile_args = "STANC=custom-stanc", verbose = 0L
+    ),
+    "without the persistent cache"
+  )
+  expect_equal(counter$n, 1L)
+  # The fallback compiled the user source itself (not a guessed staged tree),
+  # then copied its result to a distinct path for safe dlopen behavior.
+  expect_identical(
+    normalizePath(model$staged_source),
+    normalizePath(main)
+  )
+  expect_false(startsWith(normalizePath(model$lib_path), normalizePath(d)))
+  expect_true(counter$source_lock_seen)
+})
+
+
+test_that("make-local and makefile overrides conservatively disable tracking", {
+  d <- tempfile("nutpieR-make-local-")
+  dir.create(file.path(d, "bin"), recursive = TRUE)
+  dir.create(file.path(d, "make"), recursive = TRUE)
+  fake_stanc <- file.path(d, "bin", "stanc")
+  file.create(fake_stanc)
+  writeLines("# arbitrary local make customization", file.path(d, "make", "local"))
+  on.exit(unlink(d, recursive = TRUE), add = TRUE)
+  expect_true(nutpieR:::stanc_make_override_present(fake_stanc))
+  # These forms are detected before the resolver could invoke bundled stanc.
+  for (arg in c("-f", "-fother.mk", "STANC:=custom", "STANC+=custom",
+                "STANC?=custom", "STANCFLAGS:=--O1", "--eval=STANC=custom",
+                "-ESTANC=custom")) {
+    expect_false(nutpieR:::stanc_tracking_supported(character(), arg))
+  }
+})
+
+test_that("untrackable file source paths with spaces fail before compilation", {
+  d <- tempfile("nutpieR source space ")
+  dir.create(d)
+  on.exit(unlink(d, recursive = TRUE), add = TRUE)
+  main <- file.path(d, "main.stan")
+  writeLines(c("functions { #include f.stan }", "parameters { real x; } model {}"), main)
+  expect_error(
+    suppressWarnings(nutpie_compile_model(
+      stan_file = main, compile_args = "STANC=custom", verbose = 0L
+    )),
+    "writable and have no spaces"
+  )
+})
+
+test_that("a newly shadowing main-root include invalidates a file cache entry", {
+  skip_if_no_make()
+  local_isolated_cache()
+  d <- tempfile("nutpieR-new-shadow-")
+  external <- file.path(d, "external")
+  dir.create(external, recursive = TRUE)
+  on.exit(unlink(d, recursive = TRUE), add = TRUE)
+  writeLines("real center() { return 0; }", file.path(external, "center.stan"))
+  main <- file.path(d, "main.stan")
+  writeLines(c(
+    "functions { #include center.stan }", "parameters { real x; }",
+    "model { x ~ normal(center(), 0.1); }"
+  ), main)
+  flags <- paste0("--include-paths=", external)
+  before <- nutpie_compile_model(stan_file = main, stanc_args = flags, verbose = 0L)
+  before_draws <- nutpie_sample(
+    before, data = NULL, num_warmup = 80L, num_draws = 80L,
+    num_chains = 1L, seed = 42L, refresh = 0L
+  )
+  # BridgeStan prepends the main source root before user paths.  A newly
+  # present file there must supersede the old external resolution and cache.
+  writeLines("real center() { return 3; }", file.path(d, "center.stan"))
+  after <- nutpie_compile_model(stan_file = main, stanc_args = flags, verbose = 0L)
+  after_draws <- nutpie_sample(
+    after, data = NULL, num_warmup = 80L, num_draws = 80L,
+    num_chains = 1L, seed = 42L, refresh = 0L
+  )
+  expect_false(identical(before$lib_path, after$lib_path))
+  expect_lt(mean(as.numeric(before_draws)), 1)
+  expect_gt(mean(as.numeric(after_draws)), 2)
 })

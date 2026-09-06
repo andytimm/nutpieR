@@ -14,9 +14,9 @@ test_that("resolve_data handles NULL", {
   expect_equal(nutpieR:::resolve_data(NULL), "")
 })
 
-test_that("resolve_data handles JSON string", {
-  json <- '{"N": 10}'
-  expect_equal(nutpieR:::resolve_data(json), json)
+test_that("resolve_data leaves JSON strings unchanged", {
+  json <- '{"N": 10, "y": [3]}'
+  expect_identical(nutpieR:::resolve_data(json), json)
 })
 
 test_that("resolve_data handles list without rounding numeric data", {
@@ -28,12 +28,46 @@ test_that("resolve_data handles list without rounding numeric data", {
   expect_equal(parsed$x, x)
 })
 
-test_that("resolve_data handles .json file", {
+test_that("resolve_data preserves explicit singleton dimensions", {
+  result <- nutpieR:::resolve_data(list(
+    scalar_integer = 3L,
+    scalar_real = 3.25,
+    longer_vector = c(1, 2, 3),
+    singleton_vector = I(3),
+    singleton_array = array(3, dim = 1L),
+    row_array = array(c(3, 4), dim = c(1L, 2L)),
+    col_array = array(c(3, 4), dim = c(2L, 1L)),
+    singleton_matrix = matrix(3, nrow = 1L, ncol = 1L),
+    row_matrix = matrix(c(3, 4), nrow = 1L, ncol = 2L),
+    col_matrix = matrix(c(3, 4), nrow = 2L, ncol = 1L),
+    zero = numeric(0)
+  ))
+  expect_match(result, '"scalar_integer":3')
+  expect_match(result, '"scalar_real":3.25')
+  expect_match(result, '"longer_vector":\\[1,2,3\\]')
+  expect_match(result, '"singleton_vector":\\[3\\]')
+  expect_match(result, '"singleton_array":\\[3\\]')
+  expect_match(result, '"row_array":\\[\\[3,4\\]\\]')
+  expect_match(result, '"col_array":\\[\\[3\\],\\[4\\]\\]')
+  expect_match(result, '"singleton_matrix":\\[\\[3\\]\\]')
+  expect_match(result, '"row_matrix":\\[\\[3,4\\]\\]')
+  expect_match(result, '"col_matrix":\\[\\[3\\],\\[4\\]\\]')
+  expect_match(result, '"zero":\\[\\]')
+})
+
+test_that("resolve_data keeps full numeric precision", {
+  x <- 0.123456789012345
+  result <- nutpieR:::resolve_data(list(x = x))
+  expect_match(result, '0\\.123456789012345')
+  expect_equal(jsonlite::fromJSON(result)$x, x)
+})
+
+test_that("resolve_data leaves .json file contents unchanged", {
   tmp <- tempfile(fileext = ".json")
   on.exit(unlink(tmp))
-  writeLines('{"N": 5}', tmp)
-  result <- nutpieR:::resolve_data(tmp)
-  expect_equal(jsonlite::fromJSON(result)$N, 5)
+  json <- '{"N": 5, "y": [3]}'
+  writeChar(json, tmp, eos = NULL)
+  expect_identical(nutpieR:::resolve_data(tmp), json)
 })
 
 test_that("resolve_data rejects invalid input", {
@@ -56,6 +90,76 @@ test_that("check_count enforces optional max", {
     "must be <= 5"
   )
   expect_equal(nutpieR:::check_count(5L, "seed", min = 0L, max = 5L), 5L)
+})
+
+test_that("num_warmup rejects zero for both adaptation strategies", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  for (adaptation in c("diag", "low_rank")) {
+    expect_error(
+      nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                    num_draws = 2, num_warmup = 0, num_chains = 1,
+                    seed = 1L, refresh = 0, adaptation = adaptation),
+      "num_warmup.*(positive|at least 1|>= 1)"
+    )
+  }
+})
+
+test_that("positive warmup remains usable for both adaptation strategies", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  for (adaptation in c("diag", "low_rank")) {
+    expect_s3_class(
+      nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
+                    num_draws = 2, num_warmup = 1, num_chains = 1,
+                    seed = 1L, refresh = 0, adaptation = adaptation),
+      "draws_array"
+    )
+  }
+})
+
+test_that("explicit singleton vector data reaches the Stan model", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+  for (y in list(I(3), array(3, dim = 1L))) {
+    draws <- nutpie_sample(
+      test_models$normal,
+      data = list(N = 1L, y = y),
+      num_draws = 2, num_warmup = 1, num_chains = 1,
+      seed = 1L, refresh = 0
+    )
+    expect_s3_class(draws, "draws_array")
+  }
+})
+
+test_that("zero-length array data remains usable when Stan permits it", {
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  draws <- nutpie_sample(
+    test_models$bernoulli,
+    data = list(N = 0L, y = integer(0)),
+    num_draws = 2, num_warmup = 1, num_chains = 1,
+    seed = 1L, refresh = 0
+  )
+  expect_s3_class(draws, "draws_array")
+})
+
+test_that("native sample_stan rejects zero warmup before constructing sampler", {
+  skip_if(is.null(test_models$normal), "Normal model not compiled")
+  handle <- open_normal_handle()
+  common <- list(
+    handle = handle, num_draws = 2L, num_warmup = 0L, num_chains = 1L,
+    seed = 1L, init_positions = NULL, jitter = FALSE, save_warmup = FALSE,
+    num_cores = 1L, store_divergences = FALSE, store_mass_matrix = FALSE,
+    store_unconstrained = FALSE, store_gradient = FALSE,
+    max_treedepth = NULL, mindepth = NULL, target_accept = NULL,
+    max_energy_error = NULL, extra_doublings = NULL, mass_matrix_gamma = NULL,
+    eigval_cutoff = NULL, keep_indices = NULL, include_tp = TRUE,
+    include_gq = TRUE, progress_callback = NULL
+  )
+  for (adaptation in c("diag", "low_rank")) {
+    expect_error(
+      do.call(nutpieR:::sample_stan,
+              modifyList(common, list(adaptation = adaptation))),
+      "num_warmup.*(positive|at least 1|>= 1)"
+    )
+  }
 })
 
 test_that("nutpie_sample rejects malformed seed", {

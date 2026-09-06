@@ -6,6 +6,10 @@
 #' @noRd
 bridgestan_version <- function() .Call(wrap__bridgestan_version)
 
+#' Path to the bundled stanc executable used by BridgeStan compilation.
+#' @noRd
+bridgestan_stanc_path <- function() .Call(wrap__bridgestan_stanc_path)
+
 #' Compile a Stan model to a shared library using BridgeStan.
 #' Downloads BridgeStan sources if needed (first call is slow).
 #' @param stan_file Path to the .stan file.
