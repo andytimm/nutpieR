@@ -1,5 +1,6 @@
 # nutpieR 1.8.7
 
+* Fixed Windows backslashes in Stan include paths.
 * Fixed stale cache hits after editing external Stan `#include` files, for
   file and inline models. Nested includes now follow stanc's search paths.
 * Documented `I(3)` and explicit arrays/matrices for singleton data.

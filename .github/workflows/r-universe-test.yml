@@ -1,0 +1,14 @@
+name: Test R-universe
+
+on:
+  push:
+    branches: [fix/windows-r-universe]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: r-universe-org/workflows/.github/workflows/build.yml@v3
+    with:
+      universe: andytimm

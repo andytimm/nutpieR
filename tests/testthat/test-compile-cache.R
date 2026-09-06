@@ -629,7 +629,7 @@ test_that("external include edits invalidate inline cache and change the model",
     "parameters { real x; }", "model { x ~ normal(center(), 0.1); }",
     sep = "\n"
   )
-  flags <- paste0("--include-paths=", inc)
+  flags <- paste0("--include-paths=", normalizePath(inc))
 
   first <- nutpie_compile_model(code = code, stanc_args = flags, verbose = 0L)
   first_draws <- nutpie_sample(
@@ -709,8 +709,8 @@ test_that("stanc include search order is retained when resolving dependencies", 
   second <- nutpieR:::resolve_included_source(
     main, c(paste0("--include-paths=", b), paste0("--include-paths=", a))
   )
-  expect_identical(first$dependencies[[1L]]$path, normalizePath(file.path(a, "center.stan")))
-  expect_identical(second$dependencies[[1L]]$path, normalizePath(file.path(b, "center.stan")))
+  expect_identical(first$dependencies[[1L]]$path, normalizePath(file.path(a, "center.stan"), winslash = "/"))
+  expect_identical(second$dependencies[[1L]]$path, normalizePath(file.path(b, "center.stan"), winslash = "/"))
 })
 
 
@@ -830,7 +830,7 @@ test_that("a newly shadowing main-root include invalidates a file cache entry", 
     "functions { #include center.stan }", "parameters { real x; }",
     "model { x ~ normal(center(), 0.1); }"
   ), main)
-  flags <- paste0("--include-paths=", external)
+  flags <- paste0("--include-paths=", normalizePath(external))
   before <- nutpie_compile_model(stan_file = main, stanc_args = flags, verbose = 0L)
   before_draws <- nutpie_sample(
     before, data = NULL, num_warmup = 80L, num_draws = 80L,
