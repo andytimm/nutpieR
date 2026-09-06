@@ -1,3 +1,10 @@
+# nutpieR (development version)
+
+* Fixed stale cache hits after editing external Stan `#include` files, for
+  file and inline models. Nested includes now follow stanc's search paths.
+* Documented `I(3)` and explicit arrays/matrices for singleton data.
+* `num_warmup = 0` now gives a clear error instead of a sampler panic.
+
 # nutpieR 1.8.6
 
 * List-form model data now preserve maximum numeric precision during JSON

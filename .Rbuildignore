@@ -3,6 +3,7 @@
 ^LICENSE\.md$
 ^\.github$
 ^CLAUDE\.md$
+^MAINTENANCE-HANDOFF\.md$
 ^\.claude$
 ^ai_context$
 ^\.vscode$
