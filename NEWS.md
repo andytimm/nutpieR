@@ -1,4 +1,4 @@
-# nutpieR (development version)
+# nutpieR 1.8.7
 
 * Fixed stale cache hits after editing external Stan `#include` files, for
   file and inline models. Nested includes now follow stanc's search paths.
