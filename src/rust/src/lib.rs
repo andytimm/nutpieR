@@ -1001,7 +1001,9 @@ fn sample_stan(
         let stan_model = if kernel.is_null() {
             stan_model
         } else {
-            let pointer = ExternalPtr::<byok::KernelHandle>::try_from(kernel)?;
+            let pointer = ExternalPtr::<byok::KernelHandle>::try_from(kernel).map_err(|_| {
+                r_err("Dead or invalid kernel handle; rebind with nutpie_attach_kernel().")
+            })?;
             let handle = pointer
                 .try_addr()
                 .map_err(|_| r_err("Dead kernel handle; rebind with nutpie_attach_kernel()."))?;
@@ -1816,8 +1818,11 @@ fn evaluation_results(results: Vec<(i32, String, f64, Vec<f64>)>) -> List {
 /// Evaluate a sequence with one same-thread private workspace.
 /// @noRd
 #[extendr]
-fn kernel_evaluate(handle: ExternalPtr<byok::KernelHandle>, points: List) -> List {
+fn kernel_evaluate(handle: Robj, points: List) -> List {
     or_throw((|| -> Result<List> {
+        let handle = ExternalPtr::<byok::KernelHandle>::try_from(handle).map_err(|_| {
+            r_err("Dead or invalid kernel handle; rebind with nutpie_attach_kernel().")
+        })?;
         let bound = handle
             .try_addr()
             .map_err(|_| r_err("Dead kernel handle; rebind with nutpie_attach_kernel()."))?
@@ -1861,8 +1866,11 @@ fn kernel_evaluate(handle: ExternalPtr<byok::KernelHandle>, points: List) -> Lis
 /// Reference evaluation with propto=true and jacobian=true.
 /// @noRd
 #[extendr]
-fn bs_evaluate(handle: ExternalPtr<model::BSHandle>, points: List) -> List {
+fn bs_evaluate(handle: Robj, points: List) -> List {
     or_throw((|| -> Result<List> {
+        let handle = ExternalPtr::<model::BSHandle>::try_from(handle).map_err(|_| {
+            r_err("Dead or invalid reference handle; rebind with nutpie_attach_kernel().")
+        })?;
         let reference = handle
             .try_addr()
             .map_err(|_| r_err("Dead reference handle; rebind with nutpie_attach_kernel()."))?;
