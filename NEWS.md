@@ -1,3 +1,9 @@
+# nutpieR (development)
+
+* Experimental BYOK: attach a native density/gradient kernel to a Stan reference,
+  explicitly compare it with `nutpie_validate_kernel()`, and sample the bound
+  model. Includes a versioned C header and runnable runtime-data example.
+
 # nutpieR 1.8.7
 
 * Fixed stale cache hits after editing external Stan `#include` files, for

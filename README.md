@@ -124,6 +124,30 @@ draws <- nutpie_sample(
 When `num_warmup` is omitted, nutpieR matches nuts-rs's adaptation-specific
 defaults: 400 warmup draws for diagonal adaptation and 800 for low-rank.
 
+### Experimental native kernels (BYOK)
+
+Use a trusted native log-density/gradient kernel with a Stan reference:
+
+```r
+bound <- nutpie_attach_kernel(model, "path/to/kernel.so", data = dat)
+report <- nutpie_validate_kernel(bound)  # explicit, advisory comparison
+fit <- nutpie_sample(bound, seed = 604)  # data are already bound
+```
+
+BridgeStan still supplies initialization, transforms, names and TP/GQ. Kernels
+must match its ordered unconstrained coordinates and `propto = TRUE`,
+`jacobian = TRUE` convention. Bind again to change data. Handles are session-local.
+Checking does not certify native memory safety; trusted kernel code runs inside R.
+
+A runnable runtime-data C producer is included (requires a C/C++ toolchain):
+
+```r
+example <- source(system.file("examples/byok/run.R", package = "nutpieR"))$value
+system.file("include/nutpier_kernel_v1.h", package = "nutpieR")
+```
+
+See `?nutpie_attach_kernel` and `?nutpie_validate_kernel` for the contract.
+
 ## How it works
 
 nutpieR compiles Stan models via the BridgeStan Rust crate and samples using the nuts-rs NUTS sampler. During sampling, Rust calls the compiled Stan shared library directly through BridgeStan's C ABI -- R is not involved in the sampling loop. Each chain runs on its own thread via rayon.
