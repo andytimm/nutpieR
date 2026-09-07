@@ -1668,9 +1668,11 @@ fn bs_unc_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
 #[extendr]
 fn bs_ndim_unc(handle: Robj) -> i32 {
     or_throw((|| -> Result<i32> {
-        let handle = ExternalPtr::<model::BSHandle>::try_from(handle)
-            .map_err(|_| r_err("Dead or invalid reference handle; rebind with nutpie_attach_kernel()."))?;
-        let reference = handle.try_addr()
+        let handle = ExternalPtr::<model::BSHandle>::try_from(handle).map_err(|_| {
+            r_err("Dead or invalid reference handle; rebind with nutpie_attach_kernel().")
+        })?;
+        let reference = handle
+            .try_addr()
             .map_err(|_| r_err("Dead reference handle; rebind with nutpie_attach_kernel()."))?;
         Ok(reference.ndim_unc as i32)
     })())
