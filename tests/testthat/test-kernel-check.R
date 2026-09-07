@@ -111,7 +111,7 @@ test_that("native BYOK fixture matrix passes in bounded child processes", {
   skip_if(Sys.getenv("NUTPIER_RUN_BYOK_TESTS") != "1",
           "set NUTPIER_RUN_BYOK_TESTS=1 after a release install")
   fixture_dir <- normalizePath(test_path("byok-v1"), mustWork = TRUE)
-  for (mode in 0:14) {
+  for (mode in 0:16) {
     log <- tempfile(paste0("byok-mode-", mode, "-"), fileext = ".log")
     status <- system2(file.path(R.home("bin"), "Rscript"),
       c(shQuote(file.path(fixture_dir, "native-case.R")), shQuote(fixture_dir), mode),

@@ -14,7 +14,7 @@ status <- system2(file.path(R.home("bin"), "R"), c("CMD", "SHLIB", "gaussian.c")
                   stdout = "build.log", stderr = "build.log", timeout = 90)
 if (status != 0L) stop(paste(readLines("build.log"), collapse = "\n"))
 lib <- normalizePath(paste0("gaussian", .Platform$dynlib.ext))
-ref <- nutpie_compile_model(file.path(fixture_dir, "gaussian.stan"))
+ref <- nutpie_compile_model(file.path(fixture_dir, if (mode >= 15L) "positive.stan" else "gaussian.stan"))
 data <- list(n = 2L, mu = 1, sigma = 2)
 error <- function(expr, pattern) {
   e <- tryCatch({ force(expr); NULL }, error = identity)
@@ -29,7 +29,7 @@ if (mode %in% c(12L, 13L)) {
     error(nutpie_validate_kernel(bound, points), "workspace failure")
   } else {
     report <- nutpie_validate_kernel(bound, points)
-    stopifnot(identical(report$status, if (mode %in% 0:2) "pass" else "fail"))
+    stopifnot(identical(report$status, if (mode %in% c(0:2, 15L)) "pass" else "fail"))
     if (mode == 3L) stopifnot(report$constant_offset$status == "possible_constant_offset")
     if (mode == 14L) stopifnot(report$repeatability$status == "fail")
   }

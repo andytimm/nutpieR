@@ -13,7 +13,8 @@
 /* 0 runtime, 1 fixed, 2 stateless, 3 offset, 4 swapped gradient,
  * 5 partial output, 6 NaN, 7 domain, 8 fatal poisoned output,
  * 9 unknown status, 10 unterminated message, 11 workspace failure,
- * 12 bind failure, 13 bad version, 14 stateful q1/q2/q1 mismatch.
+ * 12 bind failure, 13 bad version, 14 stateful q1/q2/q1 mismatch,
+ * 15 positive parameter with Jacobian, 16 omitted Jacobian.
  */
 typedef struct { size_t n; double mu, sigma; } bound_t;
 typedef struct { size_t calls; } workspace_t;
@@ -108,9 +109,12 @@ int32_t nutpier_kernel_evaluate(void *bound, void *work, const double *q,
     if (FIXTURE_MODE == 10) { memset(err,'X',cap); return 2; }
     *lp=0;
     for(i=0;i<ndim;++i) {
-        double z=(q[i]-b->mu)/b->sigma;
+        double x=(FIXTURE_MODE >= 15) ? exp(q[i]) : q[i];
+        double z=(x-b->mu)/b->sigma;
         *lp -= 0.5*z*z;
-        if (!(FIXTURE_MODE == 5 && i == ndim-1)) g[i]=-z/b->sigma;
+        if (!(FIXTURE_MODE == 5 && i == ndim-1))
+            g[i]=-z/b->sigma * ((FIXTURE_MODE >= 15) ? x : 1);
+        if (FIXTURE_MODE == 15) { *lp += q[i]; g[i] += 1; }
     }
     if (FIXTURE_MODE == 3) *lp += 10;
     if (FIXTURE_MODE == 4 && ndim >= 2) { double tmp=g[0]; g[0]=g[1]; g[1]=tmp; }

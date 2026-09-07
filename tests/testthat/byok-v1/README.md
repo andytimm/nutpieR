@@ -24,3 +24,10 @@ process. These fixtures do not intentionally crash, hang, overflow buffers,
 or send a foreign exception across the ABI. Passing them proves none of those
 unsafe cases recoverable. Native integration tests require a release build
 and explicit opt-in; pure checker tests do not load these libraries.
+
+Modes 15 and 16 use `positive.stan`: positive vector coordinates transform as
+`x = exp(q)`. Mode 15 supplies `sum(-0.5 * ((exp(q)-mu)/sigma)^2 + q)` and
+its full gradient. Mode 16 deliberately omits the Jacobian and must fail.
+The reference includes transformed parameters and RNG generated quantities
+for separate sampling/output regression tests. These checker cases do not
+assume successful validation proves generated-quantity or sampling behavior.
