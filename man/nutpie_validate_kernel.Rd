@@ -36,13 +36,18 @@ numeric vector for one point. These are not constrained parameter values.}
 \value{
 A \code{nutpie_kernel_check} list containing an overall \code{status} (\code{pass},
 \code{fail}, or \code{inconclusive}), point and coordinate comparisons, repeatability,
-tolerances, and untested checks. Invalid reference points are inconclusive;
-they cannot establish agreement. At least two distinct points are required
-to test interleaved repeatability using one same-thread workspace.
+tolerances, and untested checks. Invalid reference points cannot establish
+agreement. Repeatability requires at least two distinct points: the kernel
+evaluates q1, q2, then q1 again using one workspace on the same thread.
 }
 \description{
-This advisory check runs trusted native code in the current R process. It is
-not a memory-safety test or a certificate. Sampling does not run this check.
-The required target is BridgeStan \verb{propto = TRUE, jacobian = TRUE}.
-A constant log-density offset is reported, never accepted or corrected.
+Compare log density and the full gradient at supplied or generated
+unconstrained points. The target is BridgeStan \verb{propto = TRUE, jacobian = TRUE}.
+Possible constant offsets are reported, not corrected; ordinary tolerances
+still apply.
+}
+\details{
+This advisory check runs trusted native code inside R. It cannot certify
+memory safety or agreement outside the tested points. Sampling does not run
+this check automatically.
 }

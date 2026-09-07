@@ -38,8 +38,9 @@ pub struct BoundKernel {
     evaluate: Evaluate,
     pub ndim: usize,
 }
-// ABI requires shared immutable bound data, concurrent factories/evaluation,
-// and permits destruction on another thread. Library lives through every owner.
+// The ABI requires immutable bound data shared by concurrent factories and
+// evaluations. Destruction may run on another thread. Each owner keeps the
+// library loaded so its callbacks remain valid through destruction.
 unsafe impl Send for BoundKernel {}
 unsafe impl Sync for BoundKernel {}
 impl Drop for BoundKernel {
@@ -251,8 +252,9 @@ impl RunState {
     }
 }
 
-/// Created at worker factory entry; moved into Math on success. Schema-only
-/// factory gets no guard. Counts terminal factory/Math lifetimes, not chains IDs.
+/// Track worker factory/Math completion, not chain IDs. Created at worker
+/// factory entry and moved into Math on success; the schema-only factory has
+/// no guard.
 pub struct WorkerGuard(pub Arc<RunState>);
 impl Drop for WorkerGuard {
     fn drop(&mut self) {

@@ -538,8 +538,7 @@ struct ChainState {
     divergent_draws: Vec<usize>,
 }
 
-/// Sample from a Stan model using nuts-rs NUTS sampler.
-/// Run the sampler with progress reporting. Generic over Settings type.
+/// Extract a caught Rust panic message for the R-facing error.
 fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(text) = payload.downcast_ref::<String>() {
         text.clone()
@@ -550,8 +549,9 @@ fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-/// BYOK retains the joinable owner on every monitor exit. Never call the
-/// consuming wait_timeout error path here. Model completion is a wakeup only.
+/// Run BYOK sampling with progress reporting and retain the joinable owner.
+/// Never use the consuming wait_timeout error path here: it loses the owner.
+/// Completion notifications only wake the monitor; the host must still join.
 fn run_kernel_sampler<S: Settings>(
     stan_model: model::StanModel,
     settings: S,
@@ -636,8 +636,9 @@ fn run_kernel_sampler<S: Settings>(
             }
         }
     }));
-    // abort disconnects commands, joins controller, and resumes any controller
-    // panic *after* join. Rayon scope has already joined all model-using tasks.
+    // abort disconnects commands, joins the controller, then resumes any
+    // controller panic. The Rayon scope has joined all model-using tasks;
+    // this does not mean every Rayon OS thread has exited.
     let joined = catch_unwind(AssertUnwindSafe(|| sampler.abort()));
     if let Some(error) = state.error() {
         return Err(r_err(error));

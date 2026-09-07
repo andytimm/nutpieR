@@ -1,6 +1,6 @@
-/* Illustrative runtime Gaussian kernel. This deliberately narrow parser handles
- * only flat numeric n/mu/sigma data, not general JSON. Use a maintained JSON
- * library for real producers. Compile with R CMD SHLIB; see run.R.
+/* Gaussian kernel with data supplied at bind time. Compile with R CMD SHLIB;
+ * see run.R. The example parser handles only flat numeric n/mu/sigma data,
+ * not general JSON. Use a maintained JSON library for production code.
  */
 #include "nutpier_kernel_v1.h"
 #include <stdlib.h>
@@ -17,9 +17,9 @@ static int fail(char *out, size_t cap, const char *text) {
 static void ws(const char **p, const char *end) {
     while (*p < end && isspace((unsigned char)**p)) ++*p;
 }
-/* Strict flat object parser for numeric n/mu/sigma; arbitrary key order and
- * whitespace, decimal/exponent spellings accepted. No pointer is retained.
- * Extra numeric fields are ignored. Other JSON shapes deliberately rejected.
+/* Parse flat numeric n/mu/sigma data in any key order, with whitespace and
+ * decimal/exponent spellings. Retain no pointer into the input.
+ * Ignore extra numeric fields; reject other JSON shapes.
  */
 static int parse(const char *json, size_t len, bound_t *b) {
     char *copy = (char *)malloc(len+1), *tail;
@@ -76,7 +76,7 @@ int32_t nutpier_kernel_bind(const char *json, size_t len, size_t ndim,
 }
 void nutpier_kernel_destroy(void *b) { free(b); }
 
-/* No scratch is needed. NULL is a successful private workspace. */
+/* This kernel needs no scratch; NULL is a valid private workspace. */
 int32_t nutpier_kernel_workspace(void *bound, void **out, char *err, size_t cap) {
     (void)bound; (void)err; (void)cap; *out = NULL; return 0;
 }

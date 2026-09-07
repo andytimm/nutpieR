@@ -26,9 +26,9 @@ static int fail(char *out, size_t cap, const char *text) {
 static void ws(const char **p, const char *end) {
     while (*p < end && isspace((unsigned char)**p)) ++*p;
 }
-/* Strict flat object parser for numeric n/mu/sigma; arbitrary key order and
- * whitespace, decimal/exponent spellings accepted. No pointer is retained.
- * Extra numeric fields are ignored. Other JSON shapes deliberately rejected.
+/* Parse flat numeric n/mu/sigma data in any key order, with whitespace and
+ * decimal/exponent spellings. Retain no pointer into the input.
+ * Ignore extra numeric fields; reject other JSON shapes.
  */
 static int parse(const char *json, size_t len, bound_t *b) {
     char *copy = (char *)malloc(len+1), *tail;

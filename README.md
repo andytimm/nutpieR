@@ -134,12 +134,15 @@ report <- nutpie_validate_kernel(bound)  # explicit, advisory comparison
 fit <- nutpie_sample(bound, seed = 604)  # data are already bound
 ```
 
-BridgeStan still supplies initialization, transforms, names and TP/GQ. Kernels
-must match its ordered unconstrained coordinates and `propto = TRUE`,
-`jacobian = TRUE` convention. Bind again to change data. Handles are session-local.
-Checking does not certify native memory safety; trusted kernel code runs inside R.
+Bind again to change data. The bound model works only in the current R session.
+BridgeStan still supplies initialization, transforms, parameter names,
+transformed parameters and generated quantities. Kernels must match its ordered
+unconstrained coordinates and `propto = TRUE`, `jacobian = TRUE` convention.
+The check compares numerical results; it cannot certify memory safety.
+Only load trusted kernels: their native code runs inside R and can crash it.
 
-A runnable runtime-data C producer is included (requires a C/C++ toolchain):
+To write a kernel, start with the included C example. It accepts data at bind
+time and requires a C/C++ toolchain:
 
 ```r
 example <- source(system.file("examples/byok/run.R", package = "nutpieR"))$value

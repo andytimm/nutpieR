@@ -1,9 +1,13 @@
 #' Compare a native kernel with its BridgeStan reference
 #'
-#' This advisory check runs trusted native code in the current R process. It is
-#' not a memory-safety test or a certificate. Sampling does not run this check.
-#' The required target is BridgeStan `propto = TRUE, jacobian = TRUE`.
-#' A constant log-density offset is reported, never accepted or corrected.
+#' Compare log density and the full gradient at supplied or generated
+#' unconstrained points. The target is BridgeStan `propto = TRUE, jacobian = TRUE`.
+#' Possible constant offsets are reported, not corrected; ordinary tolerances
+#' still apply.
+#'
+#' This advisory check runs trusted native code inside R. It cannot certify
+#' memory safety or agreement outside the tested points. Sampling does not run
+#' this check automatically.
 #'
 #' @param model A bound model from [nutpie_attach_kernel()].
 #' @param points Numeric matrix with one unconstrained point per row, or a
@@ -16,9 +20,9 @@
 #' @param gradient_atol,gradient_rtol Absolute and relative gradient tolerances.
 #' @return A `nutpie_kernel_check` list containing an overall `status` (`pass`,
 #'   `fail`, or `inconclusive`), point and coordinate comparisons, repeatability,
-#'   tolerances, and untested checks. Invalid reference points are inconclusive;
-#'   they cannot establish agreement. At least two distinct points are required
-#'   to test interleaved repeatability using one same-thread workspace.
+#'   tolerances, and untested checks. Invalid reference points cannot establish
+#'   agreement. Repeatability requires at least two distinct points: the kernel
+#'   evaluates q1, q2, then q1 again using one workspace on the same thread.
 #' @export
 nutpie_validate_kernel <- function(model, points = NULL, num_points = 10L,
                                    seed = 1L, radius = 2,
@@ -57,7 +61,7 @@ nutpie_validate_kernel <- function(model, points = NULL, num_points = 10L,
         nrow(points) < 1L || any(!is.finite(points)))
       stop("points must contain finite unconstrained rows of length ", dim, ".", call. = FALSE)
   }
-  # Append q1, q2, q1 to the SAME native batch: no workspace migration/recreation.
+  # Keep q1, q2, q1 in one native batch so they reuse the same-thread workspace.
   other <- which(vapply(seq_len(nrow(points)), function(i)
     any(points[i, ] != points[1L, ]), logical(1)))
   repeat_rows <- if (length(other)) c(1L, other[1L], 1L) else integer()
@@ -67,7 +71,7 @@ nutpie_validate_kernel <- function(model, points = NULL, num_points = 10L,
                       if (generated) seed else NULL)
 }
 
-# Native adapters are deliberately separate from the pure report logic.
+# Keep native calls separate so report logic can be tested without a library.
 kernel_check_dimension <- function(model) {
   if (!inherits(model, "nutpie_kernel_model"))
     stop("model must be a bound model from nutpie_attach_kernel().", call. = FALSE)

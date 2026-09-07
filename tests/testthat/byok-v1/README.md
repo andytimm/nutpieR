@@ -1,11 +1,14 @@
 # BYOK v1 test producers
 
-`gaussian.c` implements the experimental installed C header. It is test code,
-not a general JSON parser or a producer/compiler feature. It accepts a flat
-numeric object with `n`, `mu`, `sigma`. Key order, whitespace and equivalent
-number spellings do not matter. Extra numeric fields are ignored. Nested or
-string-valued extra fields are deliberately unsupported by this fixture.
-The reference is `gaussian.stan`, using propto=true and jacobian=true.
+These C fixtures test the installed kernel ABI. Run native integration tests
+with a release installation and `NUTPIER_RUN_BYOK_TESTS=1`. Pure checker tests
+do not load these libraries.
+
+`gaussian.c` accepts flat numeric `n`, `mu`, `sigma` data. Key order, whitespace
+and equivalent number spellings do not matter. It ignores extra numeric fields
+but rejects nested or string-valued fields. This is a test parser, not a general
+JSON implementation. The reference is `gaussian.stan`, using `propto=true` and
+`jacobian=true`.
 
 Compile a fresh copy in a temporary directory with `R CMD SHLIB gaussian.c`.
 Set `PKG_CPPFLAGS` to `-I<installed nutpieR/include> -DFIXTURE_MODE=<mode>`.
@@ -19,11 +22,10 @@ poison outputs), 6 successful NaN, 7 domain status, 8 fatal poisoned outputs,
 Normal and fixed variants share one lifecycle ABI and check ordered `x.1`,
 `x.2`, ... unconstrained names. Changing `n` changes the parameter dimension.
 
-Run returned-error and sampling failure cases only in a bounded child R
-process. These fixtures do not intentionally crash, hang, overflow buffers,
-or send a foreign exception across the ABI. Passing them proves none of those
-unsafe cases recoverable. Native integration tests require a release build
-and explicit opt-in; pure checker tests do not load these libraries.
+Run returned-error and sampling failure cases only in a child R process with a
+time limit. These fixtures do not intentionally crash, hang, overflow buffers,
+or send a foreign exception across the ABI. Passing these tests does not show
+that the host can recover from those unsafe cases.
 
 Modes 15 and 16 use `positive.stan`: positive vector coordinates transform as
 `x = exp(q)`. Mode 15 supplies `sum(-0.5 * ((exp(q)-mu)/sigma)^2 + q)` and

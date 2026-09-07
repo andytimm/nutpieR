@@ -10,30 +10,39 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* Experimental trusted in-process ABI. All functions use the C calling convention.
+/* Experimental ABI for trusted kernels running inside R.
+ *
+ * Calls and buffers
+ * All functions use the C calling convention; doubles are IEEE-754 binary64.
  * Inputs are borrowed for the call only. Lengths count bytes/elements, not NUL.
- * Status: 0 success, 1 domain rejection (evaluate only), 2 fatal; others fatal.
- * Error text is UTF-8 in host buffer; NUL terminate when capacity permits.
+ * Buffers do not alias. Callbacks must not call R or retain borrowed buffers
+ * for background work. No exceptions or panics may cross this ABI.
+ *
+ * Ownership and threads
  * Constructors clean partial allocations on failure and publish no handle.
- * Bound data is immutable, concurrently readable; factories may run concurrently.
- * Workspaces are created, evaluated and destroyed on one thread. NULL is valid.
- * Bound/library destruction may run on another thread. Destructors never throw.
- * No exceptions or panics may cross this ABI. All handles survive failed calls.
- * Successful evaluation fills finite logp and every gradient element. Buffers do
- * not alias; failed outputs are ignored. Recoverable errors leave scratch reusable.
- * Density convention: BridgeStan propto=true, jacobian=true, exact ordered
- * unconstrained coordinates. Layout is newline-separated BridgeStan unc names,
+ * Bound data is immutable and concurrently readable. Factories may run
+ * concurrently. Each workspace is created, evaluated and destroyed on one
+ * thread. Bound/library destruction may run on another thread.
+ * Successful bound and workspace handles may be NULL; destructors must accept
+ * these successful NULL handles and never throw. All handles survive failed
+ * calls. Recoverable errors leave scratch reusable.
+ *
+ * Evaluation and errors
+ * Status: 0 success, 1 domain rejection (evaluate only), 2 fatal; others fatal.
+ * Success fills finite logp and every gradient element. Failed outputs are ignored.
+ * Write UTF-8 error text to the host buffer, at most error_capacity bytes
+ * (none if zero). NUL terminate when capacity permits. The host scans at most
+ * capacity bytes, decodes lossily and supplies a fallback when empty. Long
+ * messages may be truncated; the host does not require a trailing NUL.
+ *
+ * Reference and data
+ * Match BridgeStan propto=true, jacobian=true and its exact ordered
+ * unconstrained coordinates. Layout is newline-separated BridgeStan unc names
  * without a trailing newline. Bind must reject dimension/layout mismatches.
- * All doubles are IEEE-754 binary64. Successful bound and workspace handles may
- * be NULL; their destructors must accept these successful NULL handles.
- * Callbacks must not call R or retain borrowed buffers for background work.
- * Error capacity is bytes; write at most capacity bytes (none if zero). Host
- * scans at most capacity bytes, decodes lossily and supplies a fallback when
- * empty. Long messages may be truncated; no trailing NUL is required by host.
- * JSON follows nutpie_attach_kernel documentation (jsonlite auto_unbox=TRUE,
- * digits=NA for lists; JSON strings/files unchanged; absent data becomes {}).
- * Parse values, not byte formatting.
- * Fixed-data kernels must verify meaningful supplied values against embedded data.
+ * JSON follows nutpie_attach_kernel documentation: jsonlite auto_unbox=TRUE,
+ * digits=NA for lists; JSON strings/files unchanged; absent data becomes {}.
+ * Parse values, not byte formatting. Fixed-data kernels must verify meaningful
+ * supplied values against embedded data.
  */
 NUTPIER_KERNEL_EXPORT uint32_t nutpier_kernel_abi_version(void);
 NUTPIER_KERNEL_EXPORT int32_t nutpier_kernel_bind(const char *json, size_t json_len,

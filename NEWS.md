@@ -1,8 +1,8 @@
 # nutpieR (development)
 
-* Experimental BYOK: attach a native density/gradient kernel to a Stan reference,
-  explicitly compare it with `nutpie_validate_kernel()`, and sample the bound
-  model. Includes a versioned C header and runnable runtime-data example.
+* Experimental native kernels (BYOK): attach a trusted density/gradient library
+  with `nutpie_attach_kernel()`, compare it with `nutpie_validate_kernel()`, and
+  sample with `nutpie_sample()`. Includes a versioned C header and runnable example.
 
 # nutpieR 1.8.7
 

@@ -364,8 +364,8 @@ impl StanModel {
 
 impl Drop for StanModel {
     fn drop(&mut self) {
-        // Scoped Maths borrow this model and have ended before its destruction.
-        // This is NOT a join; the host retains the sampler and joins afterwards.
+        // Scoped Maths borrow this model and end before it is destroyed.
+        // This notification does not join; the host still owns and joins the sampler.
         if let Some(state) = &self.run_state {
             state.complete();
         }
