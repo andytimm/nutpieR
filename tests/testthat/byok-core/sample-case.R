@@ -26,7 +26,7 @@ error <- function(expr, pattern) {
   cat("Caught:",conditionMessage(e),"\n")
 }
 stopifnot(environmentIsLocked(bound), bindingIsLocked("data_json",bound))
-error(nutpie_sample(bound,data=NULL,progress="none"),"rebind")
+error(nutpie_sample(bound,data=list(),progress="none"),"rebind")
 for (at in c(1L,2L,19L,100L,500L)) {
   Sys.setenv(NUTPIER_CORE_FAIL_AT=at)
   error(nutpie_sample(bound,num_draws=20L,num_warmup=200L,num_chains=2L,

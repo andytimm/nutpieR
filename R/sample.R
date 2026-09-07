@@ -211,7 +211,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   # immediately after bs_open() below.
   gate_progress_for_tbb("none")
   kernel_bound <- inherits(model, "nutpie_kernel_model")
-  if (kernel_bound && !missing(data)) {
+  if (kernel_bound && !is.null(data)) {
     stop("Do not supply `data` for a bound kernel model; use nutpie_attach_kernel() to rebind.", call. = FALSE)
   }
   lib_path <- if (kernel_bound) model$lib_path else resolve_model(model)
@@ -262,7 +262,13 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   mass_matrix_gamma <- cfg$mass_matrix_gamma
   mass_matrix_eigval_cutoff <- cfg$mass_matrix_eigval_cutoff
 
-  handle <- bs_open(lib_path, data_json, as.integer(seed))
+  handle <- if (kernel_bound) {
+    # Keep the reference realization used at binding, including transformed data.
+    bs_ndim_unc(model$bs_ptr) # Check the session-local pointer before metadata/init.
+    model$bs_ptr
+  } else {
+    bs_open(lib_path, data_json, as.integer(seed))
+  }
   gate_progress_for_tbb("none")
   init_resolved <- resolve_init(init, init_mean, handle, num_chains,
                                 seed = seed)
