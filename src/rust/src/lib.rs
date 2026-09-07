@@ -1872,6 +1872,40 @@ fn kernel_evaluate(handle: Robj, points: List) -> List {
     })())
 }
 
+/// Internal reference-only pilot. No kernel handle is accepted here.
+#[extendr]
+fn bs_reference_pilot(handle: Robj, num_points: i32, seed: i32) -> List {
+    or_throw((|| -> Result<List> {
+        let seed = check_seed(seed)?;
+        if num_points < 2 {
+            return Err(r_err("num_points must be at least two"));
+        }
+        let handle = ExternalPtr::<model::BSHandle>::try_from(handle).map_err(|_| {
+            r_err("Dead or invalid reference handle; rebind with nutpie_attach_kernel().")
+        })?;
+        let reference = handle.try_addr().map_err(|_| {
+            r_err("Dead reference handle; rebind with nutpie_attach_kernel().")
+        })?;
+        let mut settings = DiagNutsSettings::default();
+        settings.num_tune = 200;
+        settings.num_draws = num_points as u64;
+        settings.num_chains = 1;
+        settings.seed = seed as u64;
+        settings.maxdepth = 10;
+        settings.adapt_options.step_size_settings.target_accept = 0.8;
+        let config = serde_json::to_string(&settings).map_err(r_err)?;
+        let traces = run_kernel_sampler(
+            model::StanModel::reference_pilot(reference), settings, 1, false, None
+        )?;
+        let columns: Vec<_> = (0..reference.ndim_unc).collect();
+        let points = build_draws_matrix(&traces, &columns, 0, num_points as usize,
+                                       &reference.unc_names)?;
+        let diagnostics = extract_diagnostics(&traces, 0, num_points as usize,
+                                               &["gradient", "unconstrained_draw"])?;
+        Ok(list!(points = points, diagnostics = diagnostics, sampler_config = config))
+    })())
+}
+
 /// Reference evaluation with propto=true and jacobian=true.
 /// @noRd
 #[extendr]
@@ -1927,6 +1961,7 @@ extendr_module! {
     fn kernel_bind;
     fn kernel_evaluate;
     fn bs_evaluate;
+    fn bs_reference_pilot;
     fn bs_block_names;
     fn bs_block_tp_names;
     fn bs_full_names;

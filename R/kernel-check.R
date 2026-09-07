@@ -1,7 +1,8 @@
 #' Compare a native kernel with its BridgeStan reference
 #'
-#' Compare log density and the full gradient at supplied or generated
-#' unconstrained points. The target is BridgeStan `propto = TRUE, jacobian = TRUE`.
+#' Compare log density and the full gradient at broad random unconstrained
+#' points by default. Use `method = "reference"` to add positions from a short
+#' BridgeStan-only pilot. The target is `propto = TRUE, jacobian = TRUE`.
 #' Possible constant offsets are reported, not corrected; ordinary tolerances
 #' still apply.
 #'
@@ -10,24 +11,46 @@
 #' this check automatically.
 #'
 #' @param model A bound model from [nutpie_attach_kernel()].
-#' @param points Numeric matrix with one unconstrained point per row, or a
+#' @param points Advanced: numeric matrix with one unconstrained point per row, or a
 #'   numeric vector for one point. These are not constrained parameter values.
-#' @param num_points Number of uniform unconstrained points generated when
-#'   `points` is `NULL` (at least two).
+#' @param num_points Number of random points (default method) or retained
+#'   reference-pilot positions when `points` is `NULL` (at least two).
 #' @param seed Seed for generated points. The caller's RNG state is preserved.
-#' @param radius Generated coordinates are uniform on `[-radius, radius]`.
+#' @param radius Broad random coordinates are uniform on `[-radius, radius]`.
+#' @param method `"random"` (default) checks `num_points` broad random points.
+#'   `"reference"` checks `num_points` pilot positions plus four random points.
+#'   Cannot be combined with explicit `points`.
+#' @section Reference pilot:
+#' The pilot reuses the bound reference and its data realization. It uses one
+#' chain/core, 200 warmup iterations, `num_points` retained draws, diagonal
+#' adaptation, target acceptance 0.8, maximum tree depth 10, and uniform
+#' `[-2, 2]` initialization. It never evaluates the kernel and does not expand
+#' constrained outputs or generated quantities.
+#'
+#' This adds sampling cost; elapsed time and retained-draw diagnostics are in
+#' `$pilot`. Failure stops the check, with no random fallback. A short pilot
+#' does not guarantee convergence or typical-set coverage.
 #' @param logp_atol,logp_rtol Absolute and relative log-density tolerances.
 #' @param gradient_atol,gradient_rtol Absolute and relative gradient tolerances.
 #' @return A `nutpie_kernel_check` list containing an overall `status` (`pass`,
 #'   `fail`, or `inconclusive`), point and coordinate comparisons, repeatability,
-#'   tolerances, and untested checks. Invalid reference points cannot establish
+#'   tolerances, and untested checks. `method`, `point_source`, and `groups`
+#'   distinguish explicit, reference-pilot, and random points. Group statuses
+#'   are pointwise; repeatability is reported separately. `pilot` records
+#'   settings, elapsed seconds, and retained-draw diagnostics (or is `NULL`).
+#'   Invalid reference points cannot establish
 #'   agreement. Repeatability requires at least two distinct points: the kernel
 #'   evaluates q1, q2, then q1 again using one workspace on the same thread.
 #' @export
 nutpie_validate_kernel <- function(model, points = NULL, num_points = 10L,
                                    seed = 1L, radius = 2,
                                    logp_atol = 1e-8, logp_rtol = 1e-6,
-                                   gradient_atol = 1e-8, gradient_rtol = 1e-6) {
+                                   gradient_atol = 1e-8, gradient_rtol = 1e-6,
+                                   method = c("random", "reference")) {
+  method <- match.arg(method)
+  if (!is.null(points) && method == "reference")
+    stop('points cannot be combined with method = "reference".', call. = FALSE)
+  pilot <- NULL
   tolerances <- list(logp_atol = logp_atol, logp_rtol = logp_rtol,
                      gradient_atol = gradient_atol, gradient_rtol = gradient_rtol)
   for (name in names(tolerances)) {
@@ -39,7 +62,8 @@ nutpie_validate_kernel <- function(model, points = NULL, num_points = 10L,
   generated <- is.null(points)
   if (generated) {
     if (!is.numeric(num_points) || length(num_points) != 1L ||
-        !is.finite(num_points) || num_points < 2 || num_points != floor(num_points))
+        !is.finite(num_points) || num_points < 2 || num_points > .Machine$integer.max ||
+        num_points != floor(num_points))
       stop("num_points must be an integer of at least two.", call. = FALSE)
     if (!is.numeric(radius) || length(radius) != 1L || !is.finite(radius) || radius <= 0)
       stop("radius must be one finite positive number.", call. = FALSE)
@@ -54,12 +78,29 @@ nutpie_validate_kernel <- function(model, points = NULL, num_points = 10L,
         rm(".Random.seed", envir = .GlobalEnv)
     }, add = TRUE)
     set.seed(as.integer(seed))
-    points <- matrix(stats::runif(num_points * dim, -radius, radius), ncol = dim)
+    if (method == "reference") {
+      result <- kernel_check_pilot(model, as.integer(num_points), as.integer(seed))
+      points <- result$points
+      if (!is.matrix(points) || !is.numeric(points) ||
+          !identical(base::dim(points), c(as.integer(num_points), dim)) ||
+          any(!is.finite(points)))
+        stop("Reference pilot returned incomplete or invalid positions; check discarded.", call. = FALSE)
+      pilot <- result$pilot
+      points <- rbind(points, matrix(stats::runif(4L * dim, -radius, radius), ncol = dim))
+      point_source <- c(rep("reference", num_points), rep("random", 4L))
+    } else {
+      points <- matrix(stats::runif(num_points * dim, -radius, radius), ncol = dim)
+      point_source <- rep("random", num_points)
+    }
   } else {
     if (is.numeric(points) && is.null(base::dim(points))) points <- matrix(points, nrow = 1L)
     if (!is.matrix(points) || !is.numeric(points) || ncol(points) != dim ||
         nrow(points) < 1L || any(!is.finite(points)))
       stop("points must contain finite unconstrained rows of length ", dim, ".", call. = FALSE)
+  }
+  if (!generated) {
+    method <- "explicit"
+    point_source <- rep("explicit", nrow(points))
   }
   # Keep q1, q2, q1 in one native batch so they reuse the same-thread workspace.
   other <- which(vapply(seq_len(nrow(points)), function(i)
@@ -67,8 +108,38 @@ nutpie_validate_kernel <- function(model, points = NULL, num_points = 10L,
   repeat_rows <- if (length(other)) c(1L, other[1L], 1L) else integer()
   evaluation_points <- rbind(points, points[repeat_rows, , drop = FALSE])
   values <- kernel_check_evaluate(model, evaluation_points)
-  kernel_check_report(points, values, tolerances, repeat_rows,
-                      if (generated) seed else NULL)
+  report <- kernel_check_report(points, values, tolerances, repeat_rows,
+                                if (generated) seed else NULL)
+  report$method <- method
+  report$point_source <- point_source
+  report$comparisons$point_source <- point_source
+  if (!is.null(report$gradients))
+    report$gradients$point_source <- point_source[report$gradients$point]
+  report$groups <- do.call(rbind, lapply(unique(point_source), function(source) {
+    statuses <- report$comparisons$status[point_source == source]
+    data.frame(point_source = source, n = length(statuses),
+      status = if (any(statuses == "fail")) "fail" else
+        if (all(statuses == "pass")) "pass" else "inconclusive",
+      pass = sum(statuses == "pass"), fail = sum(statuses == "fail"),
+      inconclusive = sum(statuses == "inconclusive"))
+  }))
+  report$pilot <- pilot
+  report
+}
+
+kernel_check_pilot <- function(model, num_points, seed) {
+  # Check the reference owner before paying for the pilot; never evaluate the kernel.
+  bs_ndim_unc(model$bs_ptr)
+  start <- proc.time()[["elapsed"]]
+  result <- tryCatch(bs_reference_pilot(model$bs_ptr, num_points, seed),
+    error = function(e) stop("Reference pilot failed; check discarded: ",
+                             conditionMessage(e), call. = FALSE))
+  list(points = result$points, pilot = list(
+    settings = list(num_chains = 1L, cores = 1L, num_warmup = 200L,
+      num_draws = num_points, seed = seed, target_accept = 0.8,
+      max_treedepth = 10L, adaptation = "diag", init_radius = 2),
+    elapsed_seconds = unname(proc.time()[["elapsed"]] - start),
+    diagnostics = result$diagnostics, sampler_config = result$sampler_config))
 }
 
 # Keep native calls separate so report logic can be tested without a library.

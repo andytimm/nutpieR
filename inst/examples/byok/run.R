@@ -20,7 +20,9 @@ local({
   bound <- nutpie_attach_kernel(reference,
     normalizePath(paste0("gaussian", .Platform$dynlib.ext)),
     data = list(n = 2L, mu = 1, sigma = 2))
-  report <- nutpie_validate_kernel(bound, seed = 42)
+  # Default: 10 broad random points. Reference mode adds a short pilot:
+  # one BridgeStan-only chain, 200 warmup + 10 draws, then four random points.
+  report <- nutpie_validate_kernel(bound, seed = 42, method = "reference")
   print(report)
   stopifnot(report$status == "pass")
   draws <- nutpie_sample(bound, num_draws = 500, num_warmup = 300,

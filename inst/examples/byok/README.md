@@ -7,7 +7,7 @@ example <- source(system.file("examples/byok/run.R", package = "nutpieR"))$value
 ```
 
 You need a C/C++ toolchain. The script compiles `gaussian.c` with `R CMD SHLIB`
-and its Stan reference, binds data, checks numerical agreement, then samples.
+and its Stan reference, binds data, checks pilot and broad random points separately, then samples.
 Build files stay in a session temporary directory.
 
 ## Writing a kernel

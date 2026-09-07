@@ -130,7 +130,9 @@ Use a trusted native log-density/gradient kernel with a Stan reference:
 
 ```r
 bound <- nutpie_attach_kernel(model, "path/to/kernel.so", data = dat)
-report <- nutpie_validate_kernel(bound)  # explicit, advisory comparison
+report <- nutpie_validate_kernel(bound)  # 10 broad random points; advisory
+# Optional: 200 BridgeStan-only warmup iterations, 10 pilot draws + 4 random points
+report <- nutpie_validate_kernel(bound, method = "reference")
 fit <- nutpie_sample(bound, seed = 604)  # data are already bound
 ```
 

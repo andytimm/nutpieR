@@ -12,6 +12,18 @@ print.nutpie_kernel_check <- function(x, ...) {
   cat("Kernel check: ", x$status, " (advisory); points: ",
       x$counts[["pass"]], " pass, ", x$counts[["fail"]], " fail, ",
       x$counts[["inconclusive"]], " inconclusive\n", sep = "")
+  if (!is.null(x$groups)) for (i in seq_len(nrow(x$groups))) {
+    group <- x$groups[i, ]
+    cat("  ", group$point_source, ": ", group$n, " points; pointwise ", group$status,
+        " (", group$pass, " pass, ", group$fail, " fail, ",
+        group$inconclusive, " inconclusive)\n", sep = "")
+  }
+  if (!is.null(x$pilot)) {
+    s <- x$pilot$settings
+    cat("Reference pilot: 1 chain, ", s$num_warmup, " warmup + ", s$num_draws,
+        " draws; ", number(x$pilot$elapsed_seconds), " s (BridgeStan only)\n", sep = "")
+    cat("Pilot diagnostics: $pilot$diagnostics; short pilot is not a convergence guarantee.\n")
+  }
   cat("Max absolute difference: logp ", maximum(x$comparisons$logp_error),
       "; gradient ", maximum(x$gradients$error), "\n", sep = "")
   reason <- switch(x$repeatability$reason,

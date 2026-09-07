@@ -246,6 +246,7 @@ pub struct StanModel {
     ndim: usize,
     include_tp: bool,
     include_gq: bool,
+    unconstrained_output: bool,
     num_block: usize,
     num_block_tp: usize,
     num_constrained: usize,
@@ -271,6 +272,7 @@ impl StanModel {
             ndim: handle.ndim_unc,
             include_tp: true,
             include_gq: true,
+            unconstrained_output: false,
             num_block: handle.ndim_block,
             num_block_tp: handle.ndim_block_tp,
             num_constrained: handle.ndim_full,
@@ -280,6 +282,17 @@ impl StanModel {
             chain_counter: AtomicUsize::new(0),
             expand_errors: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Reference-only pilot retains the bound realization and stores positions
+    /// directly, without constrained output expansion or generated quantities.
+    pub fn reference_pilot(handle: &BSHandle) -> Self {
+        let mut model = Self::new(handle);
+        model.run_state = Some(Arc::new(crate::byok::RunState::default()));
+        model.unconstrained_output = true;
+        model.num_constrained = handle.ndim_unc;
+        model.constrained_param_names = handle.unc_names.clone();
+        model
     }
 
     pub fn with_kernel(mut self, kernel: Arc<crate::byok::BoundKernel>) -> anyhow::Result<Self> {
@@ -525,6 +538,9 @@ impl<'model> CpuLogpFunc for StanDensity<'model> {
         _rng: &mut R,
         array: &[f64],
     ) -> std::result::Result<Self::ExpandedVector, CpuMathError> {
+        if self.model.unconstrained_output {
+            return Ok(array.to_vec());
+        }
         // Allocate fresh per draw and hand the buffer straight to nuts-rs.
         // Holding a reusable field-buffer would force a per-draw clone()
         // (same allocation count, plus a memcpy) since the trait return

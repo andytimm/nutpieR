@@ -3,6 +3,8 @@
 * Experimental native kernels (BYOK): attach a trusted density/gradient library
   with `nutpie_attach_kernel()`, compare it with `nutpie_validate_kernel()`, and
   sample with `nutpie_sample()`. Includes a versioned C header and runnable example.
+  The checker can use a short BridgeStan-only pilot with `method = "reference"`;
+  broad random points remain the default.
 
 # nutpieR 1.8.7
 

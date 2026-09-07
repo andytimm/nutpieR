@@ -109,6 +109,10 @@ kernel_bind <- function(handle, library, data_json) .Call(wrap__kernel_bind, han
 #' @noRd
 kernel_evaluate <- function(handle, points) .Call(wrap__kernel_evaluate, handle, points)
 
+#' Internal reference-only pilot. No kernel handle is accepted here.
+#' @noRd
+bs_reference_pilot <- function(handle, num_points, seed) .Call(wrap__bs_reference_pilot, handle, num_points, seed)
+
 #' Reference evaluation with propto=true and jacobian=true.
 #' @noRd
 bs_evaluate <- function(handle, points) .Call(wrap__bs_evaluate, handle, points)
