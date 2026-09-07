@@ -691,7 +691,8 @@ test_that("compiler resolution handles nested includes from the main root", {
 
 test_that("stanc include search order is retained when resolving dependencies", {
   skip_if_no_make()
-  d <- tempfile("nutpieR-include-order-")
+  # Exercise literal tildes on every platform, as in Windows RUNNER~1 paths.
+  d <- tempfile("nutpieR~1-include-order-")
   a <- file.path(d, "a")
   b <- file.path(d, "b")
   dir.create(a, recursive = TRUE)
@@ -709,6 +710,8 @@ test_that("stanc include search order is retained when resolving dependencies", 
   second <- nutpieR:::resolve_included_source(
     main, c(paste0("--include-paths=", b), paste0("--include-paths=", a))
   )
+  expect_type(first, "list")
+  expect_type(second, "list")
   expect_identical(first$dependencies[[1L]]$path, normalizePath(file.path(a, "center.stan"), winslash = "/"))
   expect_identical(second$dependencies[[1L]]$path, normalizePath(file.path(b, "center.stan"), winslash = "/"))
 })

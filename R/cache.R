@@ -169,7 +169,10 @@ stanc_tracking_supported <- function(stanc_args, compile_args = character()) {
   # in BridgeStan's make-shell STANCFLAGS string and in system2 argv.  Shell
   # expansion/quoting characters ($, backticks, backslashes, globs, pipes,
   # redirects, etc.) take the direct uncached route.
-  shell_sensitive <- any(!grepl("^[[:alnum:]_./,:=+@%-]+$", args))
+  # An embedded tilde is literal (notably RUNNER~1 in Windows 8.3 paths).
+  # Keep leading/path-list tildes conservative: they can request shell expansion.
+  shell_sensitive <- any(!grepl("^[[:alnum:]_./,:=+@%~-]+$", args)) ||
+    any(grepl("(^|[=:,])~", args))
   make_overrides <- any(grepl(
     paste0(
       "^(?:STANC|STANCFLAGS|MAKEFILES|MAKEFLAGS)(?::|\\+|\\?)?=",

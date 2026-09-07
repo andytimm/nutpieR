@@ -47,3 +47,17 @@ test_that("Windows include flags reach tracking and compilation normalized", {
   expect_identical(seen$tracking, "--include-paths=C:/inc,D:/other")
   expect_identical(seen$compilation, seen$tracking)
 })
+
+test_that("Windows short include paths remain trackable", {
+  testthat::local_mocked_bindings(stanc_make_override_present = function() FALSE,
+                                .package = "nutpieR")
+  flags <- c("--include-paths=C:\\Users\\RUNNER~1\\include",
+             "--include-paths=D:\\OTHER~2\\a,E:\\THIRD~3\\b")
+  normalized <- nutpieR:::normalize_stanc_include_paths(flags, windows = TRUE)
+  expect_true(nutpieR:::stanc_tracking_supported(normalized))
+  for (flag in c("--include-paths=~/include", "--include-paths=~user/include",
+                 "--include-paths=C:/safe,~/include", "--flag=x:~/include",
+                 "--name=$HOME")) {
+    expect_false(nutpieR:::stanc_tracking_supported(flag))
+  }
+})
