@@ -210,8 +210,12 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   # already present. Opening a model can load that allocator, so check again
   # immediately after bs_open() below.
   gate_progress_for_tbb("none")
-  lib_path <- resolve_model(model)
-  data_json <- resolve_data(data)
+  kernel_bound <- inherits(model, "nutpie_kernel_model")
+  if (kernel_bound && !missing(data)) {
+    stop("Do not supply `data` for a bound kernel model; use nutpie_attach_kernel() to rebind.", call. = FALSE)
+  }
+  lib_path <- if (kernel_bound) model$lib_path else resolve_model(model)
+  data_json <- if (kernel_bound) model$data_json else resolve_data(data)
   cfg <- resolve_sample_config(
     seed = seed,
     adaptation = adaptation,
@@ -299,7 +303,8 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
       keep_indices,
       flags$include_tp,
       flags$include_gq,
-      progress_callback
+      progress_callback,
+      kernel = if (kernel_bound) model$kernel_ptr else NULL
     )
   }
 
