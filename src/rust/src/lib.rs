@@ -670,7 +670,11 @@ fn run_kernel_sampler<S: Settings>(
             trace.posterior.num_rows() != rows || trace.sample_stats.num_rows() != rows
         })
     {
-        return Err(r_err("Kernel sampling stopped before all draws completed; run discarded (initialization or worker failure)."));
+        let actual: Vec<_> = traces
+            .iter()
+            .map(|trace| (trace.posterior.num_rows(), trace.sample_stats.num_rows()))
+            .collect();
+        return Err(r_err(format!("Kernel sampling stopped before all draws completed; run discarded (initialization or worker failure). Expected {chains} chains with {rows} rows; got {actual:?}.")));
     }
     Ok(traces)
 }
