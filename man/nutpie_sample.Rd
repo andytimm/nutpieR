@@ -49,13 +49,13 @@ or a path to a compiled shared library.}
 
 Named-list data use \code{jsonlite::toJSON(auto_unbox = TRUE, digits = NA)}.
 Scalar values are therefore unboxed, while explicit dimensions are kept.
-Because ordinary length-one vectors and scalars are indistinguishable in R,
-use \code{I(3)} or \code{array(3, dim = 1)} for a one-element vector, and use
+Because ordinary length-one vectors and scalars are indistinguishable in
+R, use \code{I(3)} or \code{array(3, dim = 1)} for a one-element vector, and use
 \code{matrix(3, nrow = 1, ncol = 1)} (or an explicitly dimensioned array) for
 a one-by-one matrix. The same rule preserves other singleton axes;
-\code{numeric(0)} is serialized as \code{[]}. JSON strings and files are passed
-through without singleton rewriting. No automatic inference is attempted for an
-ordinary length-one vector.}
+\code{numeric(0)} is serialized as \verb{[]}. JSON strings and files are passed
+through without singleton rewriting. No automatic inference is attempted
+for an ordinary length-one vector.}
 
 \item{num_draws}{Number of post-warmup draws per chain.}
 
