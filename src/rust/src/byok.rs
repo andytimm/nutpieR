@@ -209,6 +209,8 @@ pub struct KernelHandle(pub Arc<BoundKernel>);
 /// notification is only a wakeup: the host still joins through Sampler::abort.
 #[derive(Default)]
 pub struct RunState {
+    // Healthy evaluations need only an atomic read, not a shared mutex.
+    error_present: std::sync::atomic::AtomicBool,
     inner: std::sync::Mutex<(bool, Option<String>, usize)>,
     wake: std::sync::Condvar,
 }
@@ -218,6 +220,8 @@ impl RunState {
         if inner.1.is_none() {
             inner.1 = Some(error.to_string());
         }
+        self.error_present
+            .store(true, std::sync::atomic::Ordering::Release);
         self.wake.notify_all();
     }
     pub fn complete(&self) {
@@ -233,6 +237,12 @@ impl RunState {
         inner.0 || inner.1.is_some() || inner.2 >= chains
     }
     pub fn error(&self) -> Option<String> {
+        if !self
+            .error_present
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return None;
+        }
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -263,8 +273,32 @@ mod tests {
         assert!(super::error(2, b"\0").message.contains("without a message"));
     }
     #[test]
+    fn concurrent_failure_publishes_one_owned_error_and_wakes_monitor() {
+        let state = Arc::new(RunState::default());
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        std::thread::scope(|scope| {
+            for message in ["first-a", "first-b"] {
+                let state = state.clone();
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    state.fail(message);
+                });
+            }
+            barrier.wait();
+            assert!(state.wait(std::time::Duration::from_secs(2), usize::MAX));
+            let winner = state.error().expect("failure published before wakeup");
+            assert!(matches!(winner.as_str(), "first-a" | "first-b"));
+            // The first string cannot be replaced by the second writer.
+            state.fail("later");
+            assert_eq!(state.error().as_deref(), Some(winner.as_str()));
+        });
+        assert!(RunState::default().error().is_none());
+    }
+    #[test]
     fn completion_is_a_wakeup_and_first_error_is_owned() {
         let state = Arc::new(RunState::default());
+        assert!(state.error().is_none());
         assert!(!state.wait(std::time::Duration::ZERO, 1));
         drop(WorkerGuard(state.clone()));
         assert!(state.wait(std::time::Duration::ZERO, 1));
