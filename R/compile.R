@@ -124,6 +124,7 @@ nutpie_compile_model <- function(stan_file = NULL, code = NULL,
     !identical(Sys.getenv("NUTPIER_DISABLE_COMPILE_CACHE"), "1")
 
   source_path <- if (is.null(stan_file)) NULL else normalizePath(stan_file, mustWork = TRUE)
+  stanc_args <- normalize_stanc_include_paths(stanc_args)
   bundle <- bundle_for_compile(source_path, code, stanc_args, compile_args)
 
   # If an unusual stanc output-mode override prevents us from obtaining both

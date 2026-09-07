@@ -107,13 +107,26 @@ with_stanc_workdir <- function(path, expr) {
   force(expr)
 }
 
+# BridgeStan puts include flags into a make shell command. On Windows,
+# backslashes in path values are separators, not shell escapes. Normalize only
+# these flags; other arguments must retain the conservative tracking checks.
+normalize_stanc_include_paths <- function(stanc_args,
+                                          windows = .Platform$OS.type == "windows") {
+  args <- as.character(stanc_args)
+  if (windows) {
+    include <- startsWith(args, "--include-paths=")
+    args[include] <- gsub("\\", "/", args[include], fixed = TRUE)
+  }
+  args
+}
+
 # BridgeStan's compile_model prepends --include-paths=<main source directory>
 # before the supplied flags.  Repeat that exact ordered prefix for stanc's
 # resolver.  stanc accumulates repeated include-paths flags, so do not combine,
 # sort, or de-duplicate user flags.
 stanc_args_for_source <- function(stan_file, stanc_args) {
   c(
-    paste0("--include-paths=", dirname(normalizePath(stan_file))),
+    paste0("--include-paths=", dirname(canonical_path(stan_file))),
     as.character(stanc_args)
   )
 }
@@ -156,7 +169,10 @@ stanc_tracking_supported <- function(stanc_args, compile_args = character()) {
   # in BridgeStan's make-shell STANCFLAGS string and in system2 argv.  Shell
   # expansion/quoting characters ($, backticks, backslashes, globs, pipes,
   # redirects, etc.) take the direct uncached route.
-  shell_sensitive <- any(!grepl("^[[:alnum:]_./,:=+@%-]+$", args))
+  # An embedded tilde is literal (notably RUNNER~1 in Windows 8.3 paths).
+  # Keep leading/path-list tildes conservative: they can request shell expansion.
+  shell_sensitive <- any(!grepl("^[[:alnum:]_./,:=+@%~-]+$", args)) ||
+    any(grepl("(^|[=:,])~", args))
   make_overrides <- any(grepl(
     paste0(
       "^(?:STANC|STANCFLAGS|MAKEFILES|MAKEFLAGS)(?::|\\+|\\?)?=",
@@ -176,6 +192,7 @@ stanc_tracking_supported <- function(stanc_args, compile_args = character()) {
 # source-map format for preserving those locations.
 resolve_included_source <- function(stan_file, stanc_args,
                                     compile_args = character()) {
+  stanc_args <- normalize_stanc_include_paths(stanc_args)
   if (!stanc_tracking_supported(stanc_args, compile_args)) {
     return(NULL)
   }
