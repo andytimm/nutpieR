@@ -101,7 +101,7 @@ impl BSHandle {
         } else {
             Some(CString::new(data_json)?)
         };
-        let mut model = bridgestan::Model::new(lib, data.as_deref(), seed)?;
+        let model = bridgestan::Model::new(lib, data.as_deref(), seed)?;
         let block_names = split_csv_names(model.param_names(false, false));
         let block_tp_names = split_csv_names(model.param_names(true, false));
         let full_names = split_csv_names(model.param_names(true, true));
@@ -126,9 +126,19 @@ impl BSHandle {
 
 #[cfg(test)]
 mod tests {
-    use super::add_tbb_to_path;
+    use super::{add_tbb_to_path, expansion_fallbacks};
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn expansion_fallbacks_preserve_the_parameter_prefix_after_tp_failure() {
+        assert_eq!(
+            expansion_fallbacks(true, true, 2, 5),
+            vec![(true, 5), (false, 2)]
+        );
+        assert_eq!(expansion_fallbacks(true, false, 2, 5), vec![(false, 2)]);
+        assert!(expansion_fallbacks(false, false, 2, 5).is_empty());
+    }
 
     #[test]
     fn add_tbb_to_path_uses_platform_path_separator() {
@@ -229,6 +239,8 @@ pub struct StanModel {
     ndim: usize,
     include_tp: bool,
     include_gq: bool,
+    num_block: usize,
+    num_block_tp: usize,
     num_constrained: usize,
     constrained_param_names: Vec<String>,
     /// One position per chain. `len() == 1` means broadcast to all chains.
@@ -250,6 +262,8 @@ impl StanModel {
             ndim: handle.ndim_unc,
             include_tp: true,
             include_gq: true,
+            num_block: handle.ndim_block,
+            num_block_tp: handle.ndim_block_tp,
             num_constrained: handle.ndim_full,
             constrained_param_names: handle.full_names.clone(),
             init_positions: None,
@@ -375,6 +389,24 @@ impl Model for StanModel {
 
 // --- StanDensity: per-chain logp evaluator ---
 
+// On an expansion failure, retry the largest potentially valid output prefix
+// first. GQ can fail while parameters/TP are valid; TP can fail while the
+// parameters block remains valid.
+fn expansion_fallbacks(
+    include_tp: bool,
+    include_gq: bool,
+    num_block: usize,
+    num_block_tp: usize,
+) -> Vec<(bool, usize)> {
+    if include_gq {
+        vec![(true, num_block_tp), (false, num_block)]
+    } else if include_tp {
+        vec![(false, num_block)]
+    } else {
+        Vec::new()
+    }
+}
+
 pub struct StanDensity<'model> {
     model: &'model StanModel,
     rng: bridgestan::Rng<&'model bridgestan::StanLibrary>,
@@ -439,10 +471,36 @@ impl<'model> CpuLogpFunc for StanDensity<'model> {
         match result {
             Ok(()) => Ok(out),
             Err(_) => {
-                // param_constrain failed (e.g. generated quantities bounds violation).
-                // The draw itself is valid — fill expanded vector with NaN and continue.
+                // Expansion failures do not invalidate the sampled unconstrained
+                // position. Preserve the largest safe prefix by retrying without
+                // generated quantities (or without transformed parameters if TP
+                // itself failed), and leave only the unavailable suffix as NaN.
                 self.expand_errors.fetch_add(1, Ordering::Relaxed);
                 out.fill(f64::NAN);
+
+                // First omit GQ while retaining TP. If that fails too, TP
+                // itself is unavailable, so retry with only the parameters
+                // block. Each successful retry overwrites the longest valid
+                // prefix and leaves the unavailable suffix as NaN.
+                let fallbacks = expansion_fallbacks(
+                    include_tp,
+                    include_gq,
+                    self.model.num_block,
+                    self.model.num_block_tp,
+                );
+                for (fallback_tp, fallback_len) in fallbacks {
+                    let mut prefix = vec![0f64; fallback_len];
+                    let no_rng: Option<&mut bridgestan::Rng<&bridgestan::StanLibrary>> = None;
+                    if self
+                        .model
+                        .inner
+                        .param_constrain(array, fallback_tp, false, &mut prefix, no_rng)
+                        .is_ok()
+                    {
+                        out[..fallback_len].copy_from_slice(&prefix);
+                        break;
+                    }
+                }
                 Ok(out)
             }
         }

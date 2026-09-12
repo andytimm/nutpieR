@@ -19,3 +19,4 @@ src/rust/.rustc_info.json
 .vscode/
 benchmarks/results/
 scratch/
+spikes/

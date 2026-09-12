@@ -23,7 +23,7 @@ rename_sampler_config <- function(json_str) {
       cfg$num_warmup <- cfg$num_tune
       cfg$num_tune <- NULL
     }
-    jsonlite::toJSON(cfg, auto_unbox = TRUE)
+    jsonlite::toJSON(cfg, auto_unbox = TRUE, digits = NA)
   }, error = function(e) json_str)
 }
 
@@ -201,7 +201,12 @@ nutpie_diagnostics <- function(draws) {
          call. = FALSE)
   }
   num_chains <- attr(draws, "num_chains") %||% dim(draws)[[2]] %||% 1L
-  out <- structure(diag, class = "nutpie_diagnostics", num_chains = num_chains)
+  out <- structure(
+    diag,
+    class = "nutpie_diagnostics",
+    num_chains = num_chains,
+    variables_filtered = isTRUE(attr(draws, "variables_filtered"))
+  )
   # Reference (not a copy) so print() can compute R-hat/ESS lazily; nothing is
   # computed here, so field access stays cheap.
   attr(out, "draws") <- draws
@@ -260,6 +265,9 @@ print.nutpie_diagnostics <- function(x, ...) {
     if (!is.null(rhat_ess$min_ess_tail)) {
       cat(sprintf("  Min Tail-ESS:  %.0f (%s)\n",
                   rhat_ess$min_ess_tail, rhat_ess$min_ess_tail_var))
+    }
+    if (isTRUE(attr(x, "variables_filtered"))) {
+      cat("  R-hat/ESS cover returned variables only (`pars` filtering was used).\n")
     }
   }
 

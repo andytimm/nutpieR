@@ -3,6 +3,7 @@
 ^LICENSE\.md$
 ^\.github$
 ^CLAUDE\.md$
+^MAINTENANCE-HANDOFF\.md$
 ^\.claude$
 ^ai_context$
 ^\.vscode$
@@ -14,5 +15,6 @@
 ^src/Makevars\.win$
 ^benchmarks$
 ^scratch$
+^spikes$
 ^.*-plan\.md$
 ^tests/testthat/test_models/.*_model\.(so|cache_meta)$

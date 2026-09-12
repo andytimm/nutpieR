@@ -1,8 +1,8 @@
 [package]
 name = "bridgestan"
-version = "2.7.0"
+version = "2.8.0"
 edition = "2021"
-rust-version = "1.69"
+rust-version = "1.85"
 description = "Rust interface for BridgeStan"
 repository = "https://github.com/roualdes/bridgestan"
 license = "BSD-3-Clause"
@@ -23,7 +23,7 @@ download-bridgestan-src = ["dep:ureq", "dep:tar", "dep:flate2", "dep:dirs"]
 
 [dev-dependencies]
 approx = "0.5.1"
-rand = "0.9.0"
+rand = "0.10.0"
 env_logger = "0.11"
 
 [[example]]

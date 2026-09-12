@@ -7,6 +7,62 @@
   prints a periodic status line, and diagnostics cover divergences, tree depth,
   energy, `logp`, step size, and acceptance (so E-BFMI and `nutpie_nuts_params()`
   work).
+# nutpieR 1.8.7
+
+* Fixed Windows backslashes in Stan include paths.
+* Fixed stale cache hits after editing external Stan `#include` files, for
+  file and inline models. Nested includes now follow stanc's search paths.
+* Documented `I(3)` and explicit arrays/matrices for singleton data.
+* `num_warmup = 0` now gives a clear error instead of a sampler panic.
+
+# nutpieR 1.8.6
+
+* List-form model data now preserve maximum numeric precision during JSON
+  serialization. Previously, the `jsonlite::toJSON()` default rounded ordinary
+  fixed-decimal values to four decimal places—an error of at most `5e-5` in the
+  data's units—mainly affecting tasks where precision at that scale is
+  scientifically meaningful. JSON strings and files were unaffected. Reported
+  sampler configuration now retains maximum numeric precision too.
+* Reduced result-assembly time and peak memory by avoiding a redundant
+  full-size draws copy.
+
+# nutpieR 1.8.5
+
+* Safer compilation and sampling: concurrent cache misses now use per-entry
+  locking, cache-pruning inputs are validated, and macOS sampling stops before
+  opening a model when an unpatched `tbbmalloc_proxy` is loaded.
+* `num_warmup = NULL` now follows the adaptation-specific default: 400 for
+  diagonal and 800 for low-rank adaptation.
+* Clearer diagnostics and failure handling: fixed live treedepth inference
+  (`2^depth - 1` leapfrog steps for a complete tree; the old display could be
+  one level low), marked inferred progress depth with `~`, clarified
+  `pars`-filtered R-hat/ESS, and retained valid parameter values when output
+  expansion fails.
+
+# nutpieR 1.8.4
+
+* macOS: fixed the intermittent segfaults during sampling and garbage
+  collection on large models (GitHub #36). The root cause was Stan's
+  process-wide `tbbmalloc_proxy` allocator, whose block-ownership probe could
+  fault on foreign, page-aligned pointers freed by R's GC. nutpieR now patches
+  the bundled proxy source so the allocator is safe to keep, retaining its
+  speed on large, many-chain models. Opt out with `NUTPIER_NO_TBB_PROXY_PATCH=1`
+  (exact value `1`), or compile with `compile_args = "TBB_LIBRARIES=tbb"` to drop
+  the proxy.
+* macOS: cache hits re-apply the proxy patch, so upgrading users with an already
+  cached model pick up the safe allocator without a manual recompile (GitHub #36).
+* macOS: if an unpatched proxy is already loaded, nutpieR now warns for every
+  `progress` mode — the whole session is at risk until R is restarted — not just
+  live progress modes (GitHub #36).
+* Cancelling a run with Ctrl-C now joins the sampler threads before returning,
+  fixing an occasional crash during the garbage collection that follows
+  (GitHub #36).
+
+# nutpieR 1.8.3
+
+* Bumped the bundled BridgeStan to 2.8.0 (Stan 2.39), exposing newer Stan
+  language features such as the numerically stabilised `gamma_lccdf()`
+  (GitHub #38).
 
 # nutpieR 1.8.2
 

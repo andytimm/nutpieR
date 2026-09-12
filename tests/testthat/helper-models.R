@@ -47,6 +47,11 @@ test_models$mvn <- try_compile(
   )
 )
 
+test_models$gq_failure <- try_compile(
+  "gq_failure",
+  stan_file = test_path("test_models", "gq_failure.stan")
+)
+
 # Shared fixtures used by test-init.R, test-helpers.R, test-nutpieR.R.
 
 mvn_mu <- c(1, -2)

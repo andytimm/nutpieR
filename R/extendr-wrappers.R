@@ -1,10 +1,14 @@
 # nolint start
 
-#' Return the linked BridgeStan crate version, e.g. "2.7.0". Used by the
+#' Return the linked BridgeStan crate version, e.g. "2.8.0". Used by the
 #' inline-code compile cache key so a BridgeStan version bump invalidates
 #' cached entries automatically.
 #' @noRd
 bridgestan_version <- function() .Call(wrap__bridgestan_version)
+
+#' Path to the bundled stanc executable used by BridgeStan compilation.
+#' @noRd
+bridgestan_stanc_path <- function() .Call(wrap__bridgestan_stanc_path)
 
 #' Compile a Stan model to a shared library using BridgeStan.
 #' Downloads BridgeStan sources if needed (first call is slow).
@@ -14,6 +18,21 @@ bridgestan_version <- function() .Call(wrap__bridgestan_version)
 #' @return Path to the compiled shared library.
 #' @noRd
 compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__compile_stan_model, stan_file, stanc_args, compile_args)
+
+#' Whether nutpieR's live progress renderer is safe to run given the currently
+#' loaded allocator (GitHub #36). Always TRUE off macOS.
+#' @noRd
+tbb_proxy_live_progress_safe <- function() .Call(wrap__tbb_proxy_live_progress_safe)
+
+#' Re-apply the macOS tbbmalloc_proxy source patch on a compile-cache hit,
+#' without triggering a BridgeStan download (GitHub #36). No-op off macOS.
+#' @noRd
+ensure_tbb_proxy_patched <- function() invisible(.Call(wrap__ensure_tbb_proxy_patched))
+
+#' Stock TBB function text and nutpieR marker, for a test that the bundled proxy
+#' header still matches the verbatim splice (GitHub #36). character(0) off macOS.
+#' @noRd
+tbb_patch_strings <- function() .Call(wrap__tbb_patch_strings)
 
 #' @param handle An `ExternalPtr<BSHandle>` from `bs_open()`.
 #' @param num_draws Number of draws per chain after warmup.
