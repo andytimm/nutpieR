@@ -30,6 +30,10 @@
 #' This adds sampling cost; elapsed time and retained-draw diagnostics are in
 #' `$pilot`. Failure stops the check, with no random fallback. A short pilot
 #' does not guarantee convergence or typical-set coverage.
+#'
+#' @section Guide:
+#' See `system.file("examples/byok/README.md", package = "nutpieR")` for the
+#' producer workflow, layout rules, and interpretation of this check.
 #' @param logp_atol,logp_rtol Absolute and relative log-density tolerances.
 #' @param gradient_atol,gradient_rtol Absolute and relative gradient tolerances.
 #' @return A `nutpie_kernel_check` list containing an overall `status` (`pass`,

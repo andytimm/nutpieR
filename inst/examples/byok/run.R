@@ -17,9 +17,12 @@ local({
   if (status != 0L) stop("Could not compile the example kernel.")
 
   reference <- nutpie_compile_model("gaussian.stan")
+  data <- list(n = 2L, mu = 1, sigma = 2)
+  layout <- nutpie_kernel_layout(reference, data)
+  stopifnot(identical(layout$names, c("x.1", "x.2")),
+            identical(layout$layout, "x.1\nx.2"))
   bound <- nutpie_attach_kernel(reference,
-    normalizePath(paste0("gaussian", .Platform$dynlib.ext)),
-    data = list(n = 2L, mu = 1, sigma = 2))
+    normalizePath(paste0("gaussian", .Platform$dynlib.ext)), data = data)
   # Default: 10 broad random points. Reference mode adds a short pilot:
   # one BridgeStan-only chain, 200 warmup + 10 draws, then four random points.
   report <- nutpie_validate_kernel(bound, seed = 42, method = "reference")
@@ -28,5 +31,5 @@ local({
   draws <- nutpie_sample(bound, num_draws = 500, num_warmup = 300,
                          num_chains = 2, seed = 42, progress = "none")
   print(posterior::summarise_draws(draws))
-  invisible(list(bound = bound, report = report, draws = draws))
+  invisible(list(layout = layout, bound = bound, report = report, draws = draws))
 })

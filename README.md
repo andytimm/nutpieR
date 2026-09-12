@@ -126,32 +126,12 @@ defaults: 400 warmup draws for diagonal adaptation and 800 for low-rank.
 
 ### Experimental native kernels (BYOK)
 
-Use a trusted native log-density/gradient kernel with a Stan reference:
-
-```r
-bound <- nutpie_attach_kernel(model, "path/to/kernel.so", data = dat)
-report <- nutpie_validate_kernel(bound)  # 10 broad random points; advisory
-# Optional: 200 BridgeStan-only warmup iterations, 10 pilot draws + 4 random points
-report <- nutpie_validate_kernel(bound, method = "reference")
-fit <- nutpie_sample(bound, seed = 604)  # data are already bound
-```
-
-Bind again to change data. The bound model works only in the current R session.
-BridgeStan still supplies initialization, transforms, parameter names,
-transformed parameters and generated quantities. Kernels must match its ordered
-unconstrained coordinates and `propto = TRUE`, `jacobian = TRUE` convention.
-The check compares numerical results; it cannot certify memory safety.
-Only load trusted kernels: their native code runs inside R and can crash it.
-
-To write a kernel, start with the included C example. It accepts data at bind
-time and requires a C/C++ toolchain:
-
-```r
-example <- source(system.file("examples/byok/run.R", package = "nutpieR"))$value
-system.file("include/nutpier_kernel_v1.h", package = "nutpieR")
-```
-
-See `?nutpie_attach_kernel` and `?nutpie_validate_kernel` for the contract.
+BYOK lets a trusted native library replace BridgeStan's log-density and
+gradient evaluation while BridgeStan still owns transforms, initialization,
+names, and output. Start with the maintained producer guide at
+[`inst/examples/byok/README.md`](inst/examples/byok/README.md), or open it from
+an installed package with `system.file("examples/byok/README.md", package =
+"nutpieR")`. It links to the runnable `run.R` and the ABI header.
 
 ## How it works
 

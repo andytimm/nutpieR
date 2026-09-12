@@ -73,3 +73,9 @@ This adds sampling cost; elapsed time and retained-draw diagnostics are in
 \verb{$pilot}. Failure stops the check, with no random fallback. A short pilot
 does not guarantee convergence or typical-set coverage.
 }
+
+\section{Guide}{
+
+See \code{system.file("examples/byok/README.md", package = "nutpieR")} for the
+producer workflow, layout rules, and interpretation of this check.
+}

@@ -46,7 +46,8 @@ if (mode %in% c(12L, 13L)) {
     # Bypass attach's matching data snapshot only to probe bind guardrails.
     error(nutpieR:::kernel_bind(bound$bs_ptr, lib, '{"n":3,"mu":1,"sigma":2}'), "dimension")
     wrong <- nutpie_compile_model(file.path(fixture_dir, "layout.stan"))
-    error(nutpie_attach_kernel(wrong, lib, data), "layout")
+    error(nutpie_attach_kernel(wrong, lib, data),
+          'layout mismatch at coordinate 1.*expected "x.1".*received "y.1"')
     saveRDS(bound, "dead.rds")
     dead <- readRDS("dead.rds")
     error(nutpie_validate_kernel(dead, points), "dead|pointer|reattach|rebind")

@@ -24,24 +24,24 @@ parameter names, transformed parameters and generated quantities.
 }
 \details{
 Bind again to change data. Handles work only in the current R session;
-reattach the kernel after restoring a serialized object.
+reattach the kernel after restoring a serialized object. A bound model keeps
+the data snapshot supplied at attach time, and \code{nutpie_sample()} does not
+accept replacement data for it.
 Use \code{\link[=nutpie_validate_kernel]{nutpie_validate_kernel()}} to compare numerical results before sampling.
 This check is advisory; sampling does not run it automatically.
 }
 \section{Writing a kernel}{
 
-The shared library must implement \code{nutpier_kernel_v1.h}, contain its own
-exceptions, and satisfy the header's memory and thread-safety contract.
-Native code runs inside R and can crash or corrupt the process.
-Kernels must match BridgeStan's \code{propto = TRUE}, \code{jacobian = TRUE} convention
-and the reference's ordered unconstrained coordinates.
+The shared library must implement \code{nutpier_kernel_v1.h} and satisfy its
+ownership, buffer, error, and thread-safety contract. Native code runs inside
+R and can crash or corrupt the process. Kernels must match BridgeStan's
+\code{propto = TRUE}, \code{jacobian = TRUE} convention and the reference's ordered
+unconstrained coordinates. See
+\code{system.file("examples/byok/README.md", package = "nutpieR")} for the
+maintained producer workflow.
 
 Data uses the same serialization as \code{\link[=nutpie_sample]{nutpie_sample()}}: lists pass through
-\code{jsonlite::toJSON(auto_unbox = TRUE, digits = NA)}. Length-one atomic
-vectors become scalars, arrays retain dimensions, and missing/nonfinite
-numbers use jsonlite's default JSON strings. Kernels must reject missing,
-nonfinite or wrongly shaped values they cannot use. JSON strings/files
-pass through without canonicalization. A fixed-data kernel (one with embedded
-data) must compare meaningful values, not JSON byte strings. With no data,
-the snapshot is \code{{}}.
+\code{jsonlite::toJSON(auto_unbox = TRUE, digits = NA)}, while JSON strings and
+files pass through unchanged. With no data, the snapshot is \code{{}}. Kernels
+must reject missing, nonfinite, or wrongly shaped values they cannot use.
 }

@@ -23,6 +23,18 @@ static int fail(char *out, size_t cap, const char *text) {
         memcpy(out, text, n); out[n] = 0; }
     return 2;
 }
+static int layout_fail(char *out, size_t cap, size_t coordinate,
+    const char *expected, const char *layout, size_t layout_len, size_t start) {
+    char text[256]; size_t actual_len = 0, shown;
+    while (start + actual_len < layout_len && layout[start + actual_len] != '\n')
+        ++actual_len;
+    shown = actual_len < 60 ? actual_len : 60;
+    snprintf(text, sizeof(text),
+        "layout mismatch at coordinate %lu: expected \"%s\", received \"%.*s\"; "
+        "use raw BridgeStan names and no trailing newline",
+        (unsigned long)coordinate, expected, (int)shown, layout + start);
+    return fail(out, cap, text);
+}
 static void ws(const char **p, const char *end) {
     while (*p < end && isspace((unsigned char)**p)) ++*p;
 }
@@ -67,21 +79,41 @@ uint32_t nutpier_kernel_abi_version(void) { return FIXTURE_MODE == 13 ? 999 : 1;
 int32_t nutpier_kernel_bind(const char *json, size_t len, size_t ndim,
     const char *layout, size_t layout_len, void **out, char *err, size_t cap) {
     bound_t *b = (bound_t *)calloc(1,sizeof(bound_t));
-    size_t i, used=0; char name[80];
+    size_t i, used=0; char name[128];
     *out = NULL;
     if (!b) return fail(err,cap,"allocation failed");
     if (!parse(json,len,b)) { free(b); return fail(err,cap,"expected numeric n, mu, sigma"); }
     if (FIXTURE_MODE == 12) { free(b); return fail(err,cap,"deliberate bind failure after allocation"); }
-    if (ndim != b->n) { free(b); return fail(err,cap,"dimension mismatch"); }
-    for (i=0;i<ndim;++i) {
-        int count=snprintf(name,sizeof(name),"%sx.%lu",i ? "\n" : "",(unsigned long)(i+1));
-        if (count < 0 || used+(size_t)count > layout_len ||
-            memcmp(layout+used,name,(size_t)count)) {
-            free(b); return fail(err,cap,"ordered layout mismatch");
-        }
-        used += (size_t)count;
+    if (ndim != b->n) {
+        snprintf(name, sizeof(name), "dimension mismatch: expected %lu, received %lu",
+            (unsigned long)b->n, (unsigned long)ndim);
+        free(b); return fail(err,cap,name);
     }
-    if (used != layout_len) { free(b); return fail(err,cap,"ordered layout mismatch"); }
+    for (i=0;i<ndim;++i) {
+        size_t actual_len = 0;
+        int count=snprintf(name,sizeof(name),"x.%lu",(unsigned long)(i+1));
+        if (i) {
+            if (used >= layout_len || layout[used] != '\n') {
+                int result = layout_fail(err,cap,i+1,name,layout,layout_len,used);
+                free(b); return result;
+            }
+            ++used;
+        }
+        while (used + actual_len < layout_len && layout[used + actual_len] != '\n')
+            ++actual_len;
+        if (count < 0 || actual_len != (size_t)count ||
+            memcmp(layout+used,name,(size_t)count)) {
+            int result = layout_fail(err,cap,i+1,name,layout,layout_len,used);
+            free(b); return result;
+        }
+        used += actual_len;
+    }
+    if (used != layout_len) {
+        snprintf(name, sizeof(name),
+            "layout has %lu trailing bytes after %lu coordinates; no trailing newline allowed",
+            (unsigned long)(layout_len-used), (unsigned long)ndim);
+        free(b); return fail(err,cap,name);
+    }
     if (FIXTURE_MODE == 1 && (b->n != 2 || b->mu != 1 || b->sigma != 2)) {
         free(b); return fail(err,cap,"fixed data mismatch");
     }
