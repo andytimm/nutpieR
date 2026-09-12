@@ -113,6 +113,14 @@ reference. Match the form used by the model. Include transform Jacobians and
 their derivatives, and keep the algebra stable. A possible constant offset is a
 diagnosis of a translation problem, never a calibration target.
 
+For a lower-bounded scalar, `x = L + exp(q)`: add `q` to the log target, with
+chain-rule gradient `dlogp/dx * exp(q) + 1`. For a doubly bounded scalar, let
+`p = inv_logit(q)` and `x = L + (U - L) * p`: add
+`log(U - L) + log(p) + log1p(-p)`, with gradient
+`dlogp/dx * (U - L) * p * (1 - p) + 1 - 2 * p`. Use stable log-sigmoid forms.
+This reminder is not exhaustive; query BridgeStan and match it for structured
+constraints.
+
 ## Example files
 
 `gaussian.c` is a small data-bound producer. Its parser is deliberately limited
