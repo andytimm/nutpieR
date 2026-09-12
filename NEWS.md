@@ -2,11 +2,14 @@
 
 * New `nutpie_sample_r()`: run NUTS over a log-density supplied as plain R
   functions (`fn` + `grad`), instead of a Stan model — e.g. a preconditioned
-  RTMB/TMB objective (GitHub #26). Single chain only (R is single-threaded). An
-  optional `expand` callback maps each draw to reported quantities, `progress`
-  prints a periodic status line, and diagnostics cover divergences, tree depth,
-  energy, `logp`, step size, and acceptance (so E-BFMI and `nutpie_nuts_params()`
-  work).
+  RTMB/TMB objective (GitHub #26). Single chain only (R is single-threaded).
+  It supports diagonal and low-rank adaptation, including the same low-rank
+  tuning arguments and deprecated `low_rank_modified_mass_matrix` compatibility
+  option as `nutpie_sample()`. An optional `expand` callback maps each draw to
+  reported quantities, `progress` prints a periodic status line, and diagnostics
+  cover divergences, tree depth, energy, `logp`, step size, and acceptance (so
+  E-BFMI and `nutpie_nuts_params()` work).
+
 # nutpieR 1.8.7
 
 * Fixed Windows backslashes in Stan include paths.

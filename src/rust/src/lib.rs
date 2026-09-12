@@ -1034,6 +1034,9 @@ fn sample_stan(
 /// @param save_warmup Whether to return warmup draws + diagnostics.
 /// @param max_treedepth Optional NUTS max tree depth (NULL = nuts-rs default).
 /// @param target_accept Optional target acceptance probability in (0, 1).
+/// @param adaptation One of "diag" or "low_rank".
+/// @param mass_matrix_gamma Optional positive regularisation for low-rank adaptation.
+/// @param eigval_cutoff Optional positive eigenvalue cutoff for low-rank adaptation.
 /// @param progress Whether to print a periodic one-line status to the console.
 /// @return A named list: `draws` (flat, draw-major, length num_draws*ndim),
 ///   `ndim`, `num_draws`, `num_warmup`, `diagnostics`, and (when `save_warmup`)
@@ -1053,6 +1056,9 @@ fn sample_r_density(
     save_warmup: bool,
     max_treedepth: Robj,
     target_accept: Robj,
+    adaptation: &str,
+    mass_matrix_gamma: Robj,
+    eigval_cutoff: Robj,
     progress: bool,
 ) -> List {
     or_throw((|| -> Result<List> {
@@ -1120,161 +1126,197 @@ fn sample_r_density(
         let max_treedepth_opt = opt_count(&max_treedepth, "max_treedepth", 1)?;
         let target_accept_opt = opt_finite_in_open_unit(&target_accept, "target_accept")?;
 
-        let mut settings = DiagNutsSettings {
-            num_tune: num_warmup as u64,
-            num_draws: num_draws as u64,
-            num_chains: 1,
-            seed: seed as u64,
-            ..Default::default()
-        };
-        if let Some(v) = max_treedepth_opt {
-            settings.maxdepth = v as u64;
-        }
-        if let Some(v) = target_accept_opt {
-            settings.adapt_options.step_size_settings.target_accept = v;
-        }
-
-        let callback_stats = Rc::new(RefCell::new(r_density::CallbackStats::default()));
-        let math = CpuMath::new(r_density::RDensity::new(
-            logp_fn,
-            grad_fn,
-            value_grad_fn,
-            ndim,
-            Rc::clone(&callback_stats),
-        ));
-        let mut seed_rng = rand::rngs::StdRng::seed_from_u64(seed as u64);
-        let mut chain = settings.new_chain(0, math, &mut seed_rng);
-        chain.set_position(&init_pos).map_err(|e| {
-            r_err(format!(
-                "could not initialize at the supplied `init` (log density or gradient \
+        macro_rules! run_with_settings {
+            ($settings:expr) => {{
+                let settings = $settings;
+                let callback_stats = Rc::new(RefCell::new(r_density::CallbackStats::default()));
+                let math = CpuMath::new(r_density::RDensity::new(
+                    logp_fn,
+                    grad_fn,
+                    value_grad_fn,
+                    ndim,
+                    Rc::clone(&callback_stats),
+                ));
+                let mut seed_rng = rand::rngs::StdRng::seed_from_u64(seed as u64);
+                let mut chain = settings.new_chain(0, math, &mut seed_rng);
+                chain.set_position(&init_pos).map_err(|e| {
+                    r_err(format!(
+                        "could not initialize at the supplied `init` (log density or gradient \
                  not finite there?): {e:#}"
-            ))
-        })?;
-        // `set_position()` evaluates the callback once to validate the initial
-        // state. Reset counters so callback stats describe the actual warmup +
-        // sampling run and line up with `sampler_seconds`.
-        *callback_stats.borrow_mut() = r_density::CallbackStats::default();
+                    ))
+                })?;
+                // `set_position()` evaluates the callback once to validate the initial
+                // state. Reset counters so callback stats describe the actual warmup +
+                // sampling run and line up with `sampler_seconds`.
+                *callback_stats.borrow_mut() = r_density::CallbackStats::default();
 
-        let n_warmup = num_warmup as usize;
-        let n_draws = num_draws as usize;
+                let n_warmup = num_warmup as usize;
+                let n_draws = num_draws as usize;
 
-        let mut post = DrawAccumulator::with_capacity(n_draws, ndim);
-        // Warmup is only retained when requested, so it starts empty.
-        let mut warm = DrawAccumulator::with_capacity(0, 0);
+                let mut post = DrawAccumulator::with_capacity(n_draws, ndim);
+                // Warmup is only retained when requested, so it starts empty.
+                let mut warm = DrawAccumulator::with_capacity(0, 0);
 
-        let start = Instant::now();
-        let mut divergences = 0usize;
-        if progress {
-            rprintln!(
-                "Sampling (R density): 1 chain, {} draws ({} warmup)",
-                n_draws,
-                n_warmup
-            );
-        }
-
-        let mut last_pump = Instant::now();
-        for i in 0..(n_warmup + n_draws) {
-            // Same interrupt/event-pump discipline as the Stan poll loop: check
-            // for Ctrl-C before re-entering R, and flush front-end consoles
-            // (RStudio/Positron buffer native-call output) a few times a second.
-            if interrupt_pending() {
-                return Err(Error::Other("Sampling interrupted.".into()));
-            }
-            if last_pump.elapsed() >= Duration::from_millis(100) {
+                let start = Instant::now();
+                let mut divergences = 0usize;
                 if progress {
-                    // Carriage return keeps it to a single, self-updating line.
-                    let (phase, done, total) = if i < n_warmup {
-                        ("warmup", i, n_warmup)
-                    } else {
-                        ("sample", i - n_warmup, n_draws)
+                    rprintln!(
+                        "Sampling (R density): 1 chain, {} draws ({} warmup)",
+                        n_draws,
+                        n_warmup
+                    );
+                }
+
+                let mut last_pump = Instant::now();
+                for i in 0..(n_warmup + n_draws) {
+                    // Same interrupt/event-pump discipline as the Stan poll loop: check
+                    // for Ctrl-C before re-entering R, and flush front-end consoles
+                    // (RStudio/Positron buffer native-call output) a few times a second.
+                    if interrupt_pending() {
+                        return Err(Error::Other("Sampling interrupted.".into()));
+                    }
+                    if last_pump.elapsed() >= Duration::from_millis(100) {
+                        if progress {
+                            // Carriage return keeps it to a single, self-updating line.
+                            let (phase, done, total) = if i < n_warmup {
+                                ("warmup", i, n_warmup)
+                            } else {
+                                ("sample", i - n_warmup, n_draws)
+                            };
+                            rprint!("\r  {phase} {done}/{total} | div: {divergences}    ");
+                        }
+                        pump_r_events();
+                        if interrupt_pending() {
+                            return Err(Error::Other("Sampling interrupted.".into()));
+                        }
+                        last_pump = Instant::now();
+                    }
+
+                    // `expanded_draw` (vs `draw`) also yields per-draw Stats — energy,
+                    // tree depth, acceptance. The expanded vector itself is unused: the
+                    // reported draw is the raw position, and any R-side `expand` runs
+                    // there. Field paths into Stats are nuts-rs internals (public, but
+                    // version-coupled): point stats carry energy, the global strategy's
+                    // step-size stats carry mean acceptance.
+                    let (pos, _expanded, stats, prog) = chain.expanded_draw().map_err(r_err)?;
+                    if !prog.tuning && prog.diverging {
+                        divergences += 1;
+                    }
+                    let rec = DrawRecord {
+                        diverging: prog.diverging,
+                        n_steps: prog.num_steps as i32,
+                        step_size: prog.step_size,
+                        depth: stats.depth as i32,
+                        maxdepth_reached: stats.maxdepth_reached,
+                        energy: stats.point.energy,
+                        logp: stats.point.logp,
+                        mean_tree_accept: stats.adapt.step_size.mean_tree_accept,
                     };
-                    rprint!("\r  {phase} {done}/{total} | div: {divergences}    ");
-                }
-                pump_r_events();
-                if interrupt_pending() {
-                    return Err(Error::Other("Sampling interrupted.".into()));
-                }
-                last_pump = Instant::now();
-            }
 
-            // `expanded_draw` (vs `draw`) also yields per-draw Stats — energy,
-            // tree depth, acceptance. The expanded vector itself is unused: the
-            // reported draw is the raw position, and any R-side `expand` runs
-            // there. Field paths into Stats are nuts-rs internals (public, but
-            // version-coupled): point stats carry energy, the global strategy's
-            // step-size stats carry mean acceptance.
-            let (pos, _expanded, stats, prog) = chain.expanded_draw().map_err(r_err)?;
-            if !prog.tuning && prog.diverging {
-                divergences += 1;
-            }
-            let rec = DrawRecord {
-                diverging: prog.diverging,
-                n_steps: prog.num_steps as i32,
-                step_size: prog.step_size,
-                depth: stats.depth as i32,
-                maxdepth_reached: stats.maxdepth_reached,
-                energy: stats.point.energy,
-                logp: stats.point.logp,
-                mean_tree_accept: stats.adapt.step_size.mean_tree_accept,
-            };
-
-            if i < n_warmup {
-                if save_warmup {
-                    warm.push(&pos, &rec);
+                    if i < n_warmup {
+                        if save_warmup {
+                            warm.push(&pos, &rec);
+                        }
+                    } else {
+                        post.push(&pos, &rec);
+                    }
                 }
-            } else {
-                post.push(&pos, &rec);
-            }
+
+                if progress {
+                    rprintln!(
+                        "\r  done: {} draws ({} warmup) in {:.1}s | divergences: {}        ",
+                        n_draws,
+                        n_warmup,
+                        start.elapsed().as_secs_f64(),
+                        divergences
+                    );
+                    pump_r_events();
+                }
+
+                let (draws, diagnostics) = post.into_draws_and_diagnostics();
+
+                let (warmup_draws_robj, warmup_diagnostics_robj): (Robj, Robj) = if save_warmup {
+                    let (w_draws, w_diag) = warm.into_draws_and_diagnostics();
+                    (w_draws.into_robj(), w_diag)
+                } else {
+                    (().into_robj(), ().into_robj())
+                };
+
+                let callback_stats = callback_stats.borrow();
+                let callback_elapsed = callback_stats.elapsed.as_secs_f64();
+                let sampler_elapsed = start.elapsed().as_secs_f64();
+                Ok(list!(
+                    draws = draws,
+                    ndim = ndim as i32,
+                    num_draws = num_draws,
+                    num_warmup = num_warmup,
+                    diagnostics = diagnostics,
+                    callback_stats = list!(
+                        logp_evals = callback_stats.logp_evals as i32,
+                        r_calls = callback_stats.r_calls as i32,
+                        callback_seconds = callback_elapsed,
+                        sampler_seconds = sampler_elapsed,
+                        seconds_per_logp_eval = if callback_stats.logp_evals > 0 {
+                            callback_elapsed / callback_stats.logp_evals as f64
+                        } else {
+                            f64::NAN
+                        },
+                        r_calls_per_logp_eval = if callback_stats.logp_evals > 0 {
+                            callback_stats.r_calls as f64 / callback_stats.logp_evals as f64
+                        } else {
+                            f64::NAN
+                        }
+                    ),
+                    warmup_draws = warmup_draws_robj,
+                    warmup_diagnostics = warmup_diagnostics_robj
+                ))
+            }};
         }
 
-        if progress {
-            rprintln!(
-                "\r  done: {} draws ({} warmup) in {:.1}s | divergences: {}        ",
-                n_draws,
-                n_warmup,
-                start.elapsed().as_secs_f64(),
-                divergences
-            );
-            pump_r_events();
-        }
-
-        let (draws, diagnostics) = post.into_draws_and_diagnostics();
-
-        let (warmup_draws_robj, warmup_diagnostics_robj): (Robj, Robj) = if save_warmup {
-            let (w_draws, w_diag) = warm.into_draws_and_diagnostics();
-            (w_draws.into_robj(), w_diag)
-        } else {
-            (().into_robj(), ().into_robj())
-        };
-
-        let callback_stats = callback_stats.borrow();
-        let callback_elapsed = callback_stats.elapsed.as_secs_f64();
-        let sampler_elapsed = start.elapsed().as_secs_f64();
-        Ok(list!(
-            draws = draws,
-            ndim = ndim as i32,
-            num_draws = num_draws,
-            num_warmup = num_warmup,
-            diagnostics = diagnostics,
-            callback_stats = list!(
-                logp_evals = callback_stats.logp_evals as i32,
-                r_calls = callback_stats.r_calls as i32,
-                callback_seconds = callback_elapsed,
-                sampler_seconds = sampler_elapsed,
-                seconds_per_logp_eval = if callback_stats.logp_evals > 0 {
-                    callback_elapsed / callback_stats.logp_evals as f64
-                } else {
-                    f64::NAN
-                },
-                r_calls_per_logp_eval = if callback_stats.logp_evals > 0 {
-                    callback_stats.r_calls as f64 / callback_stats.logp_evals as f64
-                } else {
-                    f64::NAN
+        match adaptation {
+            "diag" => {
+                let mut settings = DiagNutsSettings {
+                    num_tune: num_warmup as u64,
+                    num_draws: num_draws as u64,
+                    num_chains: 1,
+                    seed: seed as u64,
+                    ..Default::default()
+                };
+                if let Some(v) = max_treedepth_opt {
+                    settings.maxdepth = v as u64;
                 }
-            ),
-            warmup_draws = warmup_draws_robj,
-            warmup_diagnostics = warmup_diagnostics_robj
-        ))
+                if let Some(v) = target_accept_opt {
+                    settings.adapt_options.step_size_settings.target_accept = v;
+                }
+                run_with_settings!(settings)
+            }
+            "low_rank" => {
+                let mut settings = LowRankNutsSettings {
+                    num_tune: num_warmup as u64,
+                    num_draws: num_draws as u64,
+                    num_chains: 1,
+                    seed: seed as u64,
+                    ..Default::default()
+                };
+                if let Some(v) = max_treedepth_opt {
+                    settings.maxdepth = v as u64;
+                }
+                if let Some(v) = target_accept_opt {
+                    settings.adapt_options.step_size_settings.target_accept = v;
+                }
+                if let Some(v) = opt_finite_positive_f64(&mass_matrix_gamma, "mass_matrix_gamma")? {
+                    settings.adapt_options.mass_matrix_options.gamma = v;
+                }
+                if let Some(v) = opt_finite_positive_f64(&eigval_cutoff, "eigval_cutoff")? {
+                    settings.adapt_options.mass_matrix_options.eigval_cutoff = v;
+                }
+                run_with_settings!(settings)
+            }
+            other => Err(Error::Other(format!(
+                "adaptation must be one of \"diag\" or \"low_rank\", got \"{}\"",
+                other
+            ))),
+        }
     })())
 }
 

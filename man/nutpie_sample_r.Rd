@@ -16,6 +16,10 @@ nutpie_sample_r(
   save_warmup = FALSE,
   max_treedepth = NULL,
   target_accept = NULL,
+  adaptation = c("diag", "low_rank", "low-rank"),
+  low_rank_modified_mass_matrix = FALSE,
+  mass_matrix_gamma = NULL,
+  mass_matrix_eigval_cutoff = NULL,
   expand = NULL,
   progress = interactive()
 )
@@ -53,6 +57,18 @@ vector, \code{ndim} defaults to its length.}
 \item{max_treedepth}{Optional NUTS maximum tree depth.}
 
 \item{target_accept}{Optional target acceptance probability in \verb{(0, 1)}.}
+
+\item{adaptation}{Mass matrix adaptation strategy: \code{"diag"} (the default)
+or \code{"low_rank"}. \code{"low-rank"} is accepted as an alias.}
+
+\item{low_rank_modified_mass_matrix}{Deprecated. If \code{TRUE}, equivalent to
+\code{adaptation = "low_rank"}.}
+
+\item{mass_matrix_gamma}{Optional positive regularisation parameter for
+low-rank mass matrix adaptation. Ignored unless low-rank adaptation is used.}
+
+\item{mass_matrix_eigval_cutoff}{Optional positive eigenvalue cutoff for
+low-rank mass matrix adaptation. Ignored unless low-rank adaptation is used.}
 
 \item{expand}{A \verb{function(y)} mapping an unconstrained draw to the values you
 want reported — e.g. the back-transform from a preconditioned space, or

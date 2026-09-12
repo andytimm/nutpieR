@@ -140,6 +140,55 @@ test_that("seed makes runs reproducible", {
                ignore_attr = TRUE)
 })
 
+test_that("low-rank adaptation accepts current and compatibility arguments", {
+  fn <- mvn_logp(mvn_mu, mvn_sigma)
+  gr <- mvn_grad(mvn_mu, mvn_sigma)
+  fit <- nutpie_sample_r(
+    fn, gr, ndim = 2, num_draws = 100, num_warmup = 100, seed = 19,
+    adaptation = "low_rank", mass_matrix_gamma = 1e-4,
+    mass_matrix_eigval_cutoff = 2
+  )
+  expect_s3_class(fit, "draws_array")
+  expect_true(all(is.finite(as.matrix(posterior::as_draws_matrix(fit)))))
+  expect_true(all(is.finite(nutpie_diagnostics(fit)$energy)))
+
+  expect_warning(
+    old_fit <- nutpie_sample_r(
+      fn, gr, ndim = 2, num_draws = 20, num_warmup = 20, seed = 20,
+      low_rank_modified_mass_matrix = TRUE, mass_matrix_gamma = 1e-4,
+      mass_matrix_eigval_cutoff = 2
+    ),
+    "deprecated"
+  )
+  expect_s3_class(old_fit, "draws_array")
+  expect_s3_class(
+    nutpie_sample_r(fn, gr, ndim = 2, num_draws = 20, num_warmup = 20,
+                    seed = 21, adaptation = "low-rank"),
+    "draws_array"
+  )
+})
+
+test_that("low-rank tuning options validate only for low-rank adaptation", {
+  fn <- mvn_logp(mvn_mu, mvn_sigma)
+  gr <- mvn_grad(mvn_mu, mvn_sigma)
+  expect_error(
+    nutpie_sample_r(fn, gr, ndim = 2, adaptation = "low_rank",
+                    mass_matrix_gamma = 0),
+    "mass_matrix_gamma"
+  )
+  expect_error(
+    nutpie_sample_r(fn, gr, ndim = 2, adaptation = "low_rank",
+                    mass_matrix_eigval_cutoff = 0),
+    "mass_matrix_eigval_cutoff"
+  )
+  expect_s3_class(
+    nutpie_sample_r(fn, gr, ndim = 2, num_draws = 10, num_warmup = 10,
+                    seed = 22, mass_matrix_gamma = 0,
+                    mass_matrix_eigval_cutoff = 0),
+    "draws_array"
+  )
+})
+
 test_that("default variable names are y1..yd, ndim inferred from init", {
   fit <- nutpie_sample_r(mvn_logp(mvn_mu, mvn_sigma),
                          mvn_grad(mvn_mu, mvn_sigma),

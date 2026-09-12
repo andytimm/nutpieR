@@ -47,6 +47,14 @@
 #'   (see [nutpie_warmup_draws()]). Default `FALSE`.
 #' @param max_treedepth Optional NUTS maximum tree depth.
 #' @param target_accept Optional target acceptance probability in `(0, 1)`.
+#' @param adaptation Mass matrix adaptation strategy: `"diag"` (the default)
+#'   or `"low_rank"`. `"low-rank"` is accepted as an alias.
+#' @param low_rank_modified_mass_matrix Deprecated. If `TRUE`, equivalent to
+#'   `adaptation = "low_rank"`.
+#' @param mass_matrix_gamma Optional positive regularisation parameter for
+#'   low-rank mass matrix adaptation. Ignored unless low-rank adaptation is used.
+#' @param mass_matrix_eigval_cutoff Optional positive eigenvalue cutoff for
+#'   low-rank mass matrix adaptation. Ignored unless low-rank adaptation is used.
 #' @param expand A `function(y)` mapping an unconstrained draw to the values you
 #'   want reported — e.g. the back-transform from a preconditioned space, or
 #'   derived quantities. Called once per kept draw (never in the leapfrog hot
@@ -97,6 +105,10 @@ nutpie_sample_r <- function(fn = NULL, grad = NULL, value_grad = NULL,
                             num_draws = 1000L, num_warmup = 1000L,
                             seed = NULL, save_warmup = FALSE,
                             max_treedepth = NULL, target_accept = NULL,
+                            adaptation = c("diag", "low_rank", "low-rank"),
+                            low_rank_modified_mass_matrix = FALSE,
+                            mass_matrix_gamma = NULL,
+                            mass_matrix_eigval_cutoff = NULL,
                             expand = NULL, progress = interactive()) {
   if (is.null(value_grad)) {
     if (!is.function(fn)) stop("`fn` must be a function.", call. = FALSE)
@@ -112,8 +124,34 @@ nutpie_sample_r <- function(fn = NULL, grad = NULL, value_grad = NULL,
 
   num_draws <- check_count(num_draws, "num_draws", min = 1L)
   num_warmup <- check_count(num_warmup, "num_warmup", min = 1L)
-  max_treedepth <- check_optional_count(max_treedepth, "max_treedepth", min = 1L)
-  target_accept <- check_optional_probability(target_accept, "target_accept")
+  adaptation <- match.arg(adaptation, c("diag", "low_rank", "low-rank"))
+  if (identical(adaptation, "low-rank")) adaptation <- "low_rank"
+  low_rank_modified_mass_matrix <- check_flag(
+    low_rank_modified_mass_matrix, "low_rank_modified_mass_matrix"
+  )
+  if (low_rank_modified_mass_matrix) {
+    warning(
+      "`low_rank_modified_mass_matrix` is deprecated; use ",
+      "`adaptation = \"low_rank\"` instead. ",
+      "`low_rank_modified_mass_matrix` will be removed in a future version.",
+      call. = FALSE
+    )
+    adaptation <- "low_rank"
+  }
+  tuning <- validate_tuning_options(
+    adaptation = adaptation,
+    max_treedepth = max_treedepth,
+    mindepth = NULL,
+    extra_doublings = NULL,
+    target_accept = target_accept,
+    max_energy_error = NULL,
+    mass_matrix_gamma = mass_matrix_gamma,
+    mass_matrix_eigval_cutoff = mass_matrix_eigval_cutoff
+  )
+  max_treedepth <- tuning$max_treedepth
+  target_accept <- tuning$target_accept
+  mass_matrix_gamma <- tuning$mass_matrix_gamma
+  mass_matrix_eigval_cutoff <- tuning$mass_matrix_eigval_cutoff
   save_warmup <- check_flag(save_warmup, "save_warmup")
   progress <- check_flag(progress, "progress")
   if (is.null(seed)) {
@@ -136,6 +174,9 @@ nutpie_sample_r <- function(fn = NULL, grad = NULL, value_grad = NULL,
     save_warmup = save_warmup,
     max_treedepth = max_treedepth,
     target_accept = target_accept,
+    adaptation = adaptation,
+    mass_matrix_gamma = mass_matrix_gamma,
+    eigval_cutoff = mass_matrix_eigval_cutoff,
     progress = progress
   )
 
