@@ -172,7 +172,9 @@ nutpie_sample_r <- function(fn = NULL, grad = NULL, value_grad = NULL,
     num_warmup = num_warmup,
     seed = seed,
     save_warmup = save_warmup,
-    max_treedepth = max_treedepth,
+    # `check_optional_count()` returns an integer, but extendr Robj numeric
+    # scalars must be REAL for Rust's `opt_count()`.
+    max_treedepth = opt_double(max_treedepth, "max_treedepth"),
     target_accept = target_accept,
     adaptation = adaptation,
     mass_matrix_gamma = mass_matrix_gamma,

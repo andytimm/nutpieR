@@ -146,10 +146,11 @@ test_that("old fully positional calls keep expand and progress slots", {
   # These are every positional slot in the pre-low-rank signature. In
   # particular, the final two must still be `expand` and `progress`.
   fit <- nutpie_sample_r(
-    fn, gr, NULL, 2L, c(0, 0), 10L, 10L, 18L, FALSE, NULL, NULL,
+    fn, gr, NULL, 2L, c(0, 0), 10L, 10L, 18L, FALSE, 3L, NULL,
     function(y) c(total = y[1] + y[2]), FALSE
   )
   expect_equal(posterior::variables(fit), "total")
+  expect_lte(max(nutpie_diagnostics(fit)$depth), 3L)
 })
 
 test_that("low-rank adaptation accepts current and compatibility arguments", {
