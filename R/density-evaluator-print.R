@@ -1,5 +1,5 @@
 #' @export
-print.nutpie_kernel_check <- function(x, ...) {
+print.nutpie_density_evaluator_check <- function(x, ...) {
   number <- function(value) format(value, digits = 3, trim = TRUE)
   maximum <- function(values) {
     values <- values[!is.na(values)]
@@ -9,7 +9,7 @@ print.nutpie_kernel_check <- function(x, ...) {
     text <- gsub("[[:cntrl:][:space:]]+", " ", text)
     if (nchar(text) > 160L) paste0(substr(text, 1L, 157L), "...") else text
   }
-  cat("Kernel check: ", x$status, " (advisory); points: ",
+  cat("Density evaluator check: ", x$status, " (advisory); points: ",
       x$counts[["pass"]], " pass, ", x$counts[["fail"]], " fail, ",
       x$counts[["inconclusive"]], " inconclusive\n", sep = "")
   if (!is.null(x$groups)) for (i in seq_len(nrow(x$groups))) {
@@ -39,7 +39,7 @@ print.nutpie_kernel_check <- function(x, ...) {
     bad_gradient <- which(x$gradients$point == row$point & !x$gradients$pass)
     coordinate <- if (length(bad_gradient))
       paste0(", coordinate ", x$gradients$coordinate[bad_gradient[1L]]) else ""
-    message <- if (nzchar(row$kernel_message)) row$kernel_message else row$reference_message
+    message <- if (nzchar(row$evaluator_message)) row$evaluator_message else row$reference_message
     cat("First failure: point ", row$point, coordinate, " (", row$reason, ")",
         if (nzchar(message)) paste0(": ", short(message)) else "", "\n", sep = "")
   }

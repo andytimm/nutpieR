@@ -1,7 +1,7 @@
-# BYOK v1 test producers
+# BYOLD v1 test producers
 
-These C fixtures test the installed kernel ABI. Run native integration tests
-with a release installation and `NUTPIER_RUN_BYOK_TESTS=1`. Pure checker tests
+These C fixtures test the installed evaluator ABI. Run native integration tests
+with a release installation and `NUTPIER_RUN_BYOLD_TESTS=1`. Pure checker tests
 do not load these libraries.
 
 `gaussian.c` accepts flat numeric `n`, `mu`, `sigma` data. Key order, whitespace

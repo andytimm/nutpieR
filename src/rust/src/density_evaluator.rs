@@ -1,4 +1,4 @@
-//! Trusted in-process kernel ABI. No R API is called by kernel owners or workspaces.
+//! Trusted in-process density evaluator ABI. No R API is called by evaluator owners or workspaces.
 use libloading::Library;
 use std::ffi::{c_char, c_void};
 use std::marker::PhantomData;
@@ -29,7 +29,7 @@ type Evaluate = unsafe extern "C" fn(
     usize,
 ) -> i32;
 
-pub struct BoundKernel {
+pub struct BoundDensityEvaluator {
     _library: Library,
     bound: *mut c_void,
     destroy: Destroy,
@@ -41,28 +41,28 @@ pub struct BoundKernel {
 // The ABI requires immutable bound data shared by concurrent factories and
 // evaluations. Destruction may run on another thread. Each owner keeps the
 // library loaded so its callbacks remain valid through destruction.
-unsafe impl Send for BoundKernel {}
-unsafe impl Sync for BoundKernel {}
-impl Drop for BoundKernel {
+unsafe impl Send for BoundDensityEvaluator {}
+unsafe impl Sync for BoundDensityEvaluator {}
+impl Drop for BoundDensityEvaluator {
     fn drop(&mut self) {
         unsafe { (self.destroy)(self.bound) }
     }
 }
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("Kernel status {status}: {message}")]
-pub struct KernelError {
+#[error("Density evaluator status {status}: {message}")]
+pub struct DensityEvaluatorError {
     pub status: i32,
     pub message: String,
 }
-impl nuts_rs::LogpError for KernelError {
+impl nuts_rs::LogpError for DensityEvaluatorError {
     fn is_recoverable(&self) -> bool {
         self.status == 1
     }
 }
-fn error(status: i32, bytes: &[u8]) -> KernelError {
+fn error(status: i32, bytes: &[u8]) -> DensityEvaluatorError {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     let text = String::from_utf8_lossy(&bytes[..end]);
-    KernelError {
+    DensityEvaluatorError {
         status: if status == 1 { 1 } else { 2 },
         message: if text.is_empty() {
             format!("native call returned status {status} without a message")
@@ -71,7 +71,7 @@ fn error(status: i32, bytes: &[u8]) -> KernelError {
         },
     }
 }
-impl BoundKernel {
+impl BoundDensityEvaluator {
     pub fn bind(
         path: &str,
         json: &str,
@@ -87,18 +87,18 @@ impl BoundKernel {
         // version before allowing a constructor to publish an owned allocation.
         unsafe {
             let library = Library::new(path)?;
-            let version =
-                *library.get::<unsafe extern "C" fn() -> u32>(b"nutpier_kernel_abi_version\0")?;
+            let version = *library
+                .get::<unsafe extern "C" fn() -> u32>(b"nutpier_density_evaluator_abi_version\0")?;
             anyhow::ensure!(
                 version() == 1,
-                "Unsupported kernel ABI version (expected 1)"
+                "Unsupported evaluator ABI version (expected 1)"
             );
-            let bind = *library.get::<Bind>(b"nutpier_kernel_bind\0")?;
-            let destroy = *library.get::<Destroy>(b"nutpier_kernel_destroy\0")?;
-            let create = *library.get::<Create>(b"nutpier_kernel_workspace\0")?;
+            let bind = *library.get::<Bind>(b"nutpier_density_evaluator_bind\0")?;
+            let destroy = *library.get::<Destroy>(b"nutpier_density_evaluator_destroy\0")?;
+            let create = *library.get::<Create>(b"nutpier_density_evaluator_workspace\0")?;
             let drop_workspace =
-                *library.get::<DropWorkspace>(b"nutpier_kernel_workspace_destroy\0")?;
-            let evaluate = *library.get::<Evaluate>(b"nutpier_kernel_evaluate\0")?;
+                *library.get::<DropWorkspace>(b"nutpier_density_evaluator_workspace_destroy\0")?;
+            let evaluate = *library.get::<Evaluate>(b"nutpier_density_evaluator_evaluate\0")?;
             let mut bound = std::ptr::null_mut();
             let mut message = [0u8; 1024];
             let status = bind(
@@ -140,7 +140,7 @@ impl BoundKernel {
             return Err(error(status, &message).into());
         }
         Ok(Workspace {
-            kernel: self.clone(),
+            evaluator: self.clone(),
             pointer,
             _same_thread: PhantomData,
         })
@@ -149,30 +149,34 @@ impl BoundKernel {
 // Deliberately !Send and !Sync. The checker and nuts-rs factory keep this value
 // on its creation thread, including destruction during Rust unwinding.
 pub struct Workspace {
-    kernel: Arc<BoundKernel>,
+    evaluator: Arc<BoundDensityEvaluator>,
     pointer: *mut c_void,
     _same_thread: PhantomData<Rc<()>>,
 }
 impl Drop for Workspace {
     fn drop(&mut self) {
-        unsafe { (self.kernel.drop_workspace)(self.kernel.bound, self.pointer) }
+        unsafe { (self.evaluator.drop_workspace)(self.evaluator.bound, self.pointer) }
     }
 }
 impl Workspace {
-    pub fn evaluate(&mut self, position: &[f64], gradient: &mut [f64]) -> Result<f64, KernelError> {
-        let fail = |message: &str| KernelError {
+    pub fn evaluate(
+        &mut self,
+        position: &[f64],
+        gradient: &mut [f64],
+    ) -> Result<f64, DensityEvaluatorError> {
+        let fail = |message: &str| DensityEvaluatorError {
             status: 2,
             message: message.into(),
         };
-        if position.len() != self.kernel.ndim || gradient.len() != self.kernel.ndim {
+        if position.len() != self.evaluator.ndim || gradient.len() != self.evaluator.ndim {
             return Err(fail(
                 "position/gradient length differs from bound dimension",
             ));
         }
         if !position.iter().all(|x| x.is_finite()) {
-            return Err(KernelError {
+            return Err(DensityEvaluatorError {
                 status: 1,
-                message: "Nonfinite proposal rejected before kernel evaluation".into(),
+                message: "Nonfinite proposal rejected before density evaluation".into(),
             });
         }
         // Poisoning catches partial writes, including stale finite scratch output.
@@ -180,8 +184,8 @@ impl Workspace {
         let mut logp = f64::NAN;
         let mut message = [0u8; 1024];
         let status = unsafe {
-            (self.kernel.evaluate)(
-                self.kernel.bound,
+            (self.evaluator.evaluate)(
+                self.evaluator.bound,
                 self.pointer,
                 position.as_ptr(),
                 position.len(),
@@ -204,7 +208,7 @@ impl Workspace {
 }
 
 /// Session-local external pointer payload. No R objects inside native ownership.
-pub struct KernelHandle(pub Arc<BoundKernel>);
+pub struct DensityEvaluatorHandle(pub Arc<BoundDensityEvaluator>);
 
 /// Per-run native notification, never persisted in a binding. A completion
 /// notification is only a wakeup: the host still joins through Sampler::abort.

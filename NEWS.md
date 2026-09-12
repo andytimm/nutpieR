@@ -1,8 +1,10 @@
 # nutpieR (development)
 
-* Experimental BYOK support attaches trusted native density/gradient kernels,
-  checks them against BridgeStan, and samples through the same API. Includes a
-  versioned C ABI, layout helper, and runnable producer example.
+* Experimental Bring Your Own Log Density (BYOLD) support attaches custom
+  density evaluators that return the unconstrained log density and full
+  gradient. BridgeStan remains the reference, and the NUTS sampler is unchanged.
+  Includes numerical checks, a versioned C ABI, a layout helper, and a runnable
+  evaluator example.
 
 # nutpieR 1.8.7
 

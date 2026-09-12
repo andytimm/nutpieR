@@ -210,12 +210,12 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   # already present. Opening a model can load that allocator, so check again
   # immediately after bs_open() below.
   gate_progress_for_tbb("none")
-  kernel_bound <- inherits(model, "nutpie_kernel_model")
-  if (kernel_bound && !is.null(data)) {
-    stop("Do not supply `data` for a bound kernel model; use nutpie_attach_kernel() to rebind.", call. = FALSE)
+  evaluator_bound <- inherits(model, "nutpie_density_evaluator_model")
+  if (evaluator_bound && !is.null(data)) {
+    stop("Do not supply `data` for a bound evaluator model; use nutpie_attach_density_evaluator() to rebind.", call. = FALSE)
   }
-  lib_path <- if (kernel_bound) model$lib_path else resolve_model(model)
-  data_json <- if (kernel_bound) model$data_json else resolve_data(data)
+  lib_path <- if (evaluator_bound) model$lib_path else resolve_model(model)
+  data_json <- if (evaluator_bound) model$data_json else resolve_data(data)
   cfg <- resolve_sample_config(
     seed = seed,
     adaptation = adaptation,
@@ -262,7 +262,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   mass_matrix_gamma <- cfg$mass_matrix_gamma
   mass_matrix_eigval_cutoff <- cfg$mass_matrix_eigval_cutoff
 
-  handle <- if (kernel_bound) {
+  handle <- if (evaluator_bound) {
     # Keep the reference realization used at binding, including transformed data.
     bs_ndim_unc(model$bs_ptr) # Check the session-local pointer before metadata/init.
     model$bs_ptr
@@ -310,7 +310,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
       flags$include_tp,
       flags$include_gq,
       progress_callback,
-      kernel = if (kernel_bound) model$kernel_ptr else NULL
+      evaluator = if (evaluator_bound) model$evaluator_ptr else NULL
     )
   }
 

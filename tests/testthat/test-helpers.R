@@ -66,10 +66,10 @@ test_that("nutpie_param_names `unconstrained` is deprecated for both values", {
   expect_true("sigma" %in% names_full)
 })
 
-test_that("nutpie_kernel_layout returns the exact producer-facing layout", {
+test_that("nutpie_density_layout returns the exact producer-facing layout", {
   skip_if(is.null(test_models$normal), "Normal model not compiled")
 
-  layout <- nutpie_kernel_layout(test_models$normal, data = normal_data())
+  layout <- nutpie_density_layout(test_models$normal, data = normal_data())
   expect_named(layout, c("ndim", "names", "layout"))
   expect_identical(layout$ndim, as.integer(length(layout$names)))
   expect_identical(layout$layout, paste(layout$names, collapse = "\n"))

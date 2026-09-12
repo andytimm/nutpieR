@@ -57,7 +57,7 @@ fn interrupt_pending() -> bool {
     }
 }
 
-mod byok;
+mod density_evaluator;
 mod model;
 
 /// Convert any Display error to an extendr Error. Uses anyhow's alternate
@@ -549,10 +549,10 @@ fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-/// Run BYOK sampling with progress reporting and retain the joinable owner.
+/// Run sampling with progress reporting and retain the joinable owner.
 /// Never use the consuming wait_timeout error path here: it loses the owner.
 /// Completion notifications only wake the monitor; the host must still join.
-fn run_kernel_sampler<S: Settings>(
+fn run_joinable_sampler<S: Settings>(
     stan_model: model::StanModel,
     settings: S,
     num_cores: i32,
@@ -602,7 +602,7 @@ fn run_kernel_sampler<S: Settings>(
         Ok(Err(error)) => return Err(r_err(error)),
         Err(panic) => {
             return Err(r_err(format!(
-                "Kernel sampler startup panicked: {}",
+                "Sampler startup panicked: {}",
                 panic_text(panic)
             )))
         }
@@ -646,7 +646,7 @@ fn run_kernel_sampler<S: Settings>(
     match monitored {
         Err(panic) => {
             return Err(r_err(format!(
-                "Kernel sampler monitor panicked: {}",
+                "Sampler monitor panicked: {}",
                 panic_text(panic)
             )))
         }
@@ -654,12 +654,7 @@ fn run_kernel_sampler<S: Settings>(
         Ok(Ok(())) => (),
     }
     let traces = match joined {
-        Err(panic) => {
-            return Err(r_err(format!(
-                "Kernel sampler panicked: {}",
-                panic_text(panic)
-            )))
-        }
+        Err(panic) => return Err(r_err(format!("Sampler panicked: {}", panic_text(panic)))),
         Ok(Err(error)) => return Err(r_err(error)),
         Ok(Ok((Some(error), _))) => return Err(r_err(error)),
         Ok(Ok((None, traces))) => traces,
@@ -675,7 +670,7 @@ fn run_kernel_sampler<S: Settings>(
             .iter()
             .map(|trace| (trace.posterior.num_rows(), trace.sample_stats.num_rows()))
             .collect();
-        return Err(r_err(format!("Kernel sampling stopped before all draws completed; run discarded (initialization or worker failure). Expected {chains} chains with {rows} rows; got {actual:?}.")));
+        return Err(r_err(format!("Sampling stopped before all draws completed; run discarded (initialization or worker failure). Expected {chains} chains with {rows} rows; got {actual:?}.")));
     }
     Ok(traces)
 }
@@ -688,7 +683,7 @@ fn run_sampler<S: Settings>(
     progress_cb: Option<Function>,
 ) -> Result<Vec<ArrowTrace>> {
     if stan_model.run_state.is_some() {
-        return run_kernel_sampler(stan_model, settings, num_cores, save_warmup, progress_cb);
+        return run_joinable_sampler(stan_model, settings, num_cores, save_warmup, progress_cb);
     }
     let mut progress_cb = progress_cb;
     let use_callback = progress_cb.is_some();
@@ -942,7 +937,7 @@ fn sample_stan(
     include_tp: bool,
     include_gq: bool,
     progress_callback: Robj,
-    #[extendr(default = "NULL")] kernel: Robj,
+    #[extendr(default = "NULL")] evaluator: Robj,
 ) -> List {
     or_throw((|| -> Result<List> {
         // Defensive guards before unsigned casts. The R wrapper validates these
@@ -999,16 +994,16 @@ fn sample_stan(
             .and_then(|m| m.with_constrain_flags(&handle, include_tp, include_gq))
             .map_err(r_err)?;
 
-        let stan_model = if kernel.is_null() {
+        let stan_model = if evaluator.is_null() {
             stan_model
         } else {
-            let pointer = ExternalPtr::<byok::KernelHandle>::try_from(kernel).map_err(|_| {
-                r_err("Dead or invalid kernel handle; rebind with nutpie_attach_kernel().")
+            let pointer = ExternalPtr::<density_evaluator::DensityEvaluatorHandle>::try_from(evaluator).map_err(|_| {
+                r_err("Dead or invalid evaluator handle; rebind with nutpie_attach_density_evaluator().")
             })?;
-            let handle = pointer
-                .try_addr()
-                .map_err(|_| r_err("Dead kernel handle; rebind with nutpie_attach_kernel()."))?;
-            stan_model.with_kernel(handle.0.clone()).map_err(r_err)?
+            let handle = pointer.try_addr().map_err(|_| {
+                r_err("Dead evaluator handle; rebind with nutpie_attach_density_evaluator().")
+            })?;
+            stan_model.with_evaluator(handle.0.clone()).map_err(r_err)?
         };
         let ndim = stan_model.num_constrained();
         let all_param_names: &[String] = stan_model.constrained_param_names();
@@ -1669,11 +1664,13 @@ fn bs_unc_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
 fn bs_ndim_unc(handle: Robj) -> i32 {
     or_throw((|| -> Result<i32> {
         let handle = ExternalPtr::<model::BSHandle>::try_from(handle).map_err(|_| {
-            r_err("Dead or invalid reference handle; rebind with nutpie_attach_kernel().")
+            r_err(
+                "Dead or invalid reference handle; rebind with nutpie_attach_density_evaluator().",
+            )
         })?;
-        let reference = handle
-            .try_addr()
-            .map_err(|_| r_err("Dead reference handle; rebind with nutpie_attach_kernel()."))?;
+        let reference = handle.try_addr().map_err(|_| {
+            r_err("Dead reference handle; rebind with nutpie_attach_density_evaluator().")
+        })?;
         Ok(reference.ndim_unc as i32)
     })())
 }
@@ -1778,18 +1775,26 @@ fn bs_param_constrain_block_impl(
     Ok(out)
 }
 
-/// Bind a trusted native kernel to an opened BridgeStan reference.
+/// Bind a trusted density evaluator to an opened BridgeStan reference.
 /// @noRd
 #[extendr]
-fn kernel_bind(handle: ExternalPtr<model::BSHandle>, library: &str, data_json: &str) -> Robj {
+fn density_evaluator_bind(
+    handle: ExternalPtr<model::BSHandle>,
+    library: &str,
+    data_json: &str,
+) -> Robj {
     or_throw((|| -> Result<Robj> {
-        let reference = handle
-            .try_addr()
-            .map_err(|_| r_err("Dead reference handle; rebind with nutpie_attach_kernel()."))?;
-        let bound =
-            byok::BoundKernel::bind(library, data_json, reference.ndim_unc, &reference.unc_names)
-                .map_err(r_err)?;
-        Ok(ExternalPtr::new(byok::KernelHandle(bound)).into())
+        let reference = handle.try_addr().map_err(|_| {
+            r_err("Dead reference handle; rebind with nutpie_attach_density_evaluator().")
+        })?;
+        let bound = density_evaluator::BoundDensityEvaluator::bind(
+            library,
+            data_json,
+            reference.ndim_unc,
+            &reference.unc_names,
+        )
+        .map_err(r_err)?;
+        Ok(ExternalPtr::new(density_evaluator::DensityEvaluatorHandle(bound)).into())
     })())
 }
 
@@ -1827,14 +1832,16 @@ fn evaluation_results(results: Vec<(i32, String, f64, Vec<f64>)>) -> List {
 /// Evaluate a sequence with one same-thread private workspace.
 /// @noRd
 #[extendr]
-fn kernel_evaluate(handle: Robj, points: List) -> List {
+fn density_evaluator_evaluate(handle: Robj, points: List) -> List {
     or_throw((|| -> Result<List> {
-        let handle = ExternalPtr::<byok::KernelHandle>::try_from(handle).map_err(|_| {
-            r_err("Dead or invalid kernel handle; rebind with nutpie_attach_kernel().")
+        let handle = ExternalPtr::<density_evaluator::DensityEvaluatorHandle>::try_from(handle).map_err(|_| {
+            r_err("Dead or invalid evaluator handle; rebind with nutpie_attach_density_evaluator().")
         })?;
         let bound = handle
             .try_addr()
-            .map_err(|_| r_err("Dead kernel handle; rebind with nutpie_attach_kernel()."))?
+            .map_err(|_| {
+                r_err("Dead evaluator handle; rebind with nutpie_attach_density_evaluator().")
+            })?
             .0
             .clone();
         let points = checked_points(points, bound.ndim)?;
@@ -1847,7 +1854,7 @@ fn kernel_evaluate(handle: Robj, points: List) -> List {
                     if fatal {
                         return (
                             2,
-                            "Skipped after fatal kernel error".into(),
+                            "Skipped after fatal evaluator error".into(),
                             f64::NAN,
                             vec![f64::NAN; bound.ndim],
                         );
@@ -1872,7 +1879,7 @@ fn kernel_evaluate(handle: Robj, points: List) -> List {
     })())
 }
 
-/// Internal reference-only pilot. No kernel handle is accepted here.
+/// Internal reference-only pilot. No evaluator handle is accepted here.
 #[extendr]
 fn bs_reference_pilot(handle: Robj, num_points: i32, seed: i32) -> List {
     or_throw((|| -> Result<List> {
@@ -1881,11 +1888,13 @@ fn bs_reference_pilot(handle: Robj, num_points: i32, seed: i32) -> List {
             return Err(r_err("num_points must be at least two"));
         }
         let handle = ExternalPtr::<model::BSHandle>::try_from(handle).map_err(|_| {
-            r_err("Dead or invalid reference handle; rebind with nutpie_attach_kernel().")
+            r_err(
+                "Dead or invalid reference handle; rebind with nutpie_attach_density_evaluator().",
+            )
         })?;
-        let reference = handle
-            .try_addr()
-            .map_err(|_| r_err("Dead reference handle; rebind with nutpie_attach_kernel()."))?;
+        let reference = handle.try_addr().map_err(|_| {
+            r_err("Dead reference handle; rebind with nutpie_attach_density_evaluator().")
+        })?;
         let mut settings = DiagNutsSettings::default();
         settings.num_tune = 200;
         settings.num_draws = num_points as u64;
@@ -1894,7 +1903,7 @@ fn bs_reference_pilot(handle: Robj, num_points: i32, seed: i32) -> List {
         settings.maxdepth = 10;
         settings.adapt_options.step_size_settings.target_accept = 0.8;
         let config = serde_json::to_string(&settings).map_err(r_err)?;
-        let traces = run_kernel_sampler(
+        let traces = run_joinable_sampler(
             model::StanModel::reference_pilot(reference),
             settings,
             1,
@@ -1929,11 +1938,13 @@ fn bs_reference_pilot(handle: Robj, num_points: i32, seed: i32) -> List {
 fn bs_evaluate(handle: Robj, points: List) -> List {
     or_throw((|| -> Result<List> {
         let handle = ExternalPtr::<model::BSHandle>::try_from(handle).map_err(|_| {
-            r_err("Dead or invalid reference handle; rebind with nutpie_attach_kernel().")
+            r_err(
+                "Dead or invalid reference handle; rebind with nutpie_attach_density_evaluator().",
+            )
         })?;
-        let reference = handle
-            .try_addr()
-            .map_err(|_| r_err("Dead reference handle; rebind with nutpie_attach_kernel()."))?;
+        let reference = handle.try_addr().map_err(|_| {
+            r_err("Dead reference handle; rebind with nutpie_attach_density_evaluator().")
+        })?;
         let points = checked_points(points, reference.ndim_unc)?;
         let results = points
             .into_iter()
@@ -1975,8 +1986,8 @@ extendr_module! {
     fn tbb_patch_strings;
     fn sample_stan;
     fn bs_open;
-    fn kernel_bind;
-    fn kernel_evaluate;
+    fn density_evaluator_bind;
+    fn density_evaluator_evaluate;
     fn bs_evaluate;
     fn bs_reference_pilot;
     fn bs_block_names;

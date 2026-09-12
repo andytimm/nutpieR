@@ -205,13 +205,13 @@ pub enum StanLogpError {
     #[error("Non-finite logp: {0}")]
     BadLogp(f64),
     #[error(transparent)]
-    Kernel(#[from] crate::byok::KernelError),
+    DensityEvaluator(#[from] crate::density_evaluator::DensityEvaluatorError),
 }
 
 impl nuts_rs::LogpError for StanLogpError {
     fn is_recoverable(&self) -> bool {
         match self {
-            Self::Kernel(error) => error.status == 1,
+            Self::DensityEvaluator(error) => error.status == 1,
             _ => true,
         }
     }
@@ -240,8 +240,8 @@ thread_local! {
 }
 
 pub struct StanModel {
-    kernel: Option<Arc<crate::byok::BoundKernel>>,
-    pub run_state: Option<Arc<crate::byok::RunState>>,
+    evaluator: Option<Arc<crate::density_evaluator::BoundDensityEvaluator>>,
+    pub run_state: Option<Arc<crate::density_evaluator::RunState>>,
     inner: Arc<bridgestan::Model<Arc<bridgestan::StanLibrary>>>,
     ndim: usize,
     include_tp: bool,
@@ -266,7 +266,7 @@ pub struct StanModel {
 impl StanModel {
     pub fn new(handle: &BSHandle) -> Self {
         StanModel {
-            kernel: None,
+            evaluator: None,
             run_state: None,
             inner: Arc::clone(&handle.model),
             ndim: handle.ndim_unc,
@@ -288,20 +288,23 @@ impl StanModel {
     /// directly, without constrained output expansion or generated quantities.
     pub fn reference_pilot(handle: &BSHandle) -> Self {
         let mut model = Self::new(handle);
-        model.run_state = Some(Arc::new(crate::byok::RunState::default()));
+        model.run_state = Some(Arc::new(crate::density_evaluator::RunState::default()));
         model.unconstrained_output = true;
         model.num_constrained = handle.ndim_unc;
         model.constrained_param_names = handle.unc_names.clone();
         model
     }
 
-    pub fn with_kernel(mut self, kernel: Arc<crate::byok::BoundKernel>) -> anyhow::Result<Self> {
+    pub fn with_evaluator(
+        mut self,
+        evaluator: Arc<crate::density_evaluator::BoundDensityEvaluator>,
+    ) -> anyhow::Result<Self> {
         anyhow::ensure!(
-            kernel.ndim == self.ndim,
-            "Kernel/reference dimension mismatch"
+            evaluator.ndim == self.ndim,
+            "Density evaluator/reference dimension mismatch"
         );
-        self.kernel = Some(kernel);
-        self.run_state = Some(Arc::new(crate::byok::RunState::default()));
+        self.evaluator = Some(evaluator);
+        self.run_state = Some(Arc::new(crate::density_evaluator::RunState::default()));
         Ok(self)
     }
 
@@ -396,12 +399,12 @@ impl Model for StanModel {
         } else {
             self.run_state
                 .as_ref()
-                .map(|state| crate::byok::WorkerGuard(state.clone()))
+                .map(|state| crate::density_evaluator::WorkerGuard(state.clone()))
         };
         MY_CHAIN_ID.with(|c| c.set(Some(chain_id)));
 
-        let kernel_workspace = match &self.kernel {
-            Some(kernel) => match kernel.workspace() {
+        let evaluator_workspace = match &self.evaluator {
+            Some(evaluator) => match evaluator.workspace() {
                 Ok(workspace) => Some(workspace),
                 Err(error) => {
                     if let Some(state) = &self.run_state {
@@ -419,7 +422,7 @@ impl Model for StanModel {
             error
         })?;
         Ok(CpuMath::new(StanDensity {
-            kernel_workspace,
+            evaluator_workspace,
             _worker_guard: worker_guard,
             model: self,
             rng: bs_rng,
@@ -476,8 +479,8 @@ fn expansion_fallbacks(
 }
 
 pub struct StanDensity<'model> {
-    kernel_workspace: Option<crate::byok::Workspace>,
-    _worker_guard: Option<crate::byok::WorkerGuard>,
+    evaluator_workspace: Option<crate::density_evaluator::Workspace>,
+    _worker_guard: Option<crate::density_evaluator::WorkerGuard>,
     model: &'model StanModel,
     rng: bridgestan::Rng<&'model bridgestan::StanLibrary>,
     expand_errors: Arc<AtomicUsize>,
@@ -505,14 +508,16 @@ impl<'model> CpuLogpFunc for StanDensity<'model> {
         position: &[f64],
         gradient: &mut [f64],
     ) -> std::result::Result<f64, Self::LogpError> {
-        if let Some(workspace) = &mut self.kernel_workspace {
+        if let Some(workspace) = &mut self.evaluator_workspace {
             if let Some(message) = self
                 .model
                 .run_state
                 .as_ref()
                 .and_then(|state| state.error())
             {
-                return Err(crate::byok::KernelError { status: 2, message }.into());
+                return Err(
+                    crate::density_evaluator::DensityEvaluatorError { status: 2, message }.into(),
+                );
             }
             return workspace.evaluate(position, gradient).map_err(|error| {
                 if error.status != 1 {

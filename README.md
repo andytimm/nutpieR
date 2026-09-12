@@ -124,13 +124,15 @@ draws <- nutpie_sample(
 When `num_warmup` is omitted, nutpieR matches nuts-rs's adaptation-specific
 defaults: 400 warmup draws for diagonal adaptation and 800 for low-rank.
 
-### Experimental native kernels (BYOK)
+### Bring Your Own Log Density (BYOLD)
 
-BYOK lets a trusted native library replace BridgeStan's log-density and
-gradient evaluation while BridgeStan still owns transforms, initialization,
-names, and output. Start with the maintained producer guide at
-[`inst/examples/byok/README.md`](inst/examples/byok/README.md), or open it from
-an installed package with `system.file("examples/byok/README.md", package =
+Bring Your Own Log Density (BYOLD) lets you attach a custom density evaluator:
+a trusted shared library that returns the unconstrained log density and
+full gradient. It replaces BridgeStan's evaluator; nutpieR still runs the same
+nuts-rs NUTS sampler. BridgeStan continues to handle transforms,
+initialization, names, and output. Start with the evaluator-writing guide at
+[`inst/examples/byold/README.md`](inst/examples/byold/README.md), or open it from
+an installed package with `system.file("examples/byold/README.md", package =
 "nutpieR")`. It links to the runnable `run.R` and the ABI header.
 
 ## How it works

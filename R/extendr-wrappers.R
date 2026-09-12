@@ -93,7 +93,7 @@ tbb_patch_strings <- function() .Call(wrap__tbb_patch_strings)
 #' @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 #'   sampler_config (JSON), and optionally warmup_draws and warmup_diagnostics.
 #' @noRd
-sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq, progress_callback, kernel = NULL) .Call(wrap__sample_stan, handle, num_draws, num_warmup, num_chains, seed, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq, progress_callback, kernel)
+sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq, progress_callback, evaluator = NULL) .Call(wrap__sample_stan, handle, num_draws, num_warmup, num_chains, seed, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq, progress_callback, evaluator)
 
 #' Open a BridgeStan model and return an `ExternalPtr<BSHandle>` that caches
 #' parameter-name metadata. The handle may be used by any of the `bs_*`
@@ -101,15 +101,15 @@ sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, init_po
 #' @noRd
 bs_open <- function(lib_path, data_json, seed) .Call(wrap__bs_open, lib_path, data_json, seed)
 
-#' Bind a trusted native kernel to an opened BridgeStan reference.
+#' Bind a trusted density evaluator to an opened BridgeStan reference.
 #' @noRd
-kernel_bind <- function(handle, library, data_json) .Call(wrap__kernel_bind, handle, library, data_json)
+density_evaluator_bind <- function(handle, library, data_json) .Call(wrap__density_evaluator_bind, handle, library, data_json)
 
 #' Evaluate a sequence with one same-thread private workspace.
 #' @noRd
-kernel_evaluate <- function(handle, points) .Call(wrap__kernel_evaluate, handle, points)
+density_evaluator_evaluate <- function(handle, points) .Call(wrap__density_evaluator_evaluate, handle, points)
 
-#' Internal reference-only pilot. No kernel handle is accepted here.
+#' Internal reference-only pilot. No evaluator handle is accepted here.
 #' @noRd
 bs_reference_pilot <- function(handle, num_points, seed) .Call(wrap__bs_reference_pilot, handle, num_points, seed)
 

@@ -1,23 +1,23 @@
 # Isolate checker orchestration from the native DLL for the fast test tier.
 pilot_checker <- function() {
-  env <- new.env(parent = environment(nutpie_validate_kernel))
-  validate <- nutpie_validate_kernel
+  env <- new.env(parent = environment(nutpie_validate_density_evaluator))
+  validate <- nutpie_validate_density_evaluator
   environment(validate) <- env
-  env$kernel_check_dimension <- function(model) 2L
+  env$evaluator_check_dimension <- function(model) 2L
   env$pilot_calls <- 0L
   env$batches <- list()
-  env$kernel_check_pilot <- function(model, num_points, seed) {
+  env$evaluator_check_pilot <- function(model, num_points, seed) {
     env$pilot_calls <- env$pilot_calls + 1L
     list(points = matrix(seq_len(num_points * 2L), ncol = 2L),
          pilot = list(settings = list(num_draws = num_points, seed = seed),
                       diagnostics = list(marker = "reference only"), elapsed_seconds = 0.1))
   }
-  env$kernel_check_evaluate <- function(model, points) {
+  env$evaluator_check_evaluate <- function(model, points) {
     env$batches[[length(env$batches) + 1L]] <- points
     values <- lapply(seq_len(nrow(points)), function(i)
       list(status = "ok", message = "", logp = -sum(points[i, ]^2) / 2,
            gradient = -points[i, ]))
-    list(reference = values, kernel = values)
+    list(reference = values, evaluator = values)
   }
   list(validate = validate, env = env)
 }
@@ -34,7 +34,7 @@ pilot_rng_restore <- function() {
 
 test_that("default random and explicit points never start a reference pilot", {
   x <- pilot_checker()
-  x$env$kernel_check_pilot <- function(...) stop("unexpected pilot")
+  x$env$evaluator_check_pilot <- function(...) stop("unexpected pilot")
   default <- x$validate(NULL, num_points = 3L, seed = 9L)
   random <- x$validate(NULL, num_points = 3L, seed = 9L, method = "random")
   expect_identical(default$points, random$points)
@@ -85,7 +85,7 @@ test_that("reference generation restores present and absent RNG state on every e
     x <- pilot_checker()
     x$validate(NULL, method = "reference", num_points = 2L)
     check_rng()
-    x$env$kernel_check_pilot <- function(...) {
+    x$env$evaluator_check_pilot <- function(...) {
       stats::runif(2)
       stop("pilot deliberately failed")
     }
@@ -93,7 +93,7 @@ test_that("reference generation restores present and absent RNG state on every e
     expect_length(x$env$batches, 1L) # no fallback evaluation
     check_rng()
     x <- pilot_checker()
-    x$env$kernel_check_evaluate <- function(...) stop("batch deliberately failed")
+    x$env$evaluator_check_evaluate <- function(...) stop("batch deliberately failed")
     expect_error(x$validate(NULL, method = "reference"), "batch deliberately failed")
     check_rng()
   }
@@ -113,13 +113,13 @@ test_that("mixed point groups cannot hide inconclusive or failed probes", {
   for (bad_source in c("reference", "random")) {
     for (bad_status in c("inconclusive", "fail")) {
       x <- pilot_checker()
-      original <- x$env$kernel_check_evaluate
+      original <- x$env$evaluator_check_evaluate
       row <- if (bad_source == "reference") 1L else 4L
-      x$env$kernel_check_evaluate <- function(model, points) {
+      x$env$evaluator_check_evaluate <- function(model, points) {
         values <- original(model, points)
         if (bad_status == "inconclusive")
           values$reference[[row]] <- list(status = "domain", message = "outside domain")
-        else values$kernel[[row]]$gradient[2L] <- 1000
+        else values$evaluator[[row]]$gradient[2L] <- 1000
         values
       }
       result <- x$validate(NULL, method = "reference", num_points = 3L)
@@ -141,7 +141,7 @@ test_that("incomplete or nonfinite pilot rows are discarded without fallback", {
   for (points in list(matrix(1, 1, 2), matrix(1, 3, 1),
                       matrix(NA_real_, 3, 2), matrix(Inf, 3, 2), 1:6)) {
     x <- pilot_checker()
-    x$env$kernel_check_pilot <- function(...) list(points = points, pilot = list())
+    x$env$evaluator_check_pilot <- function(...) list(points = points, pilot = list())
     expect_error(x$validate(NULL, method = "reference", num_points = 3L),
                  "incomplete|invalid|discarded")
     expect_length(x$env$batches, 0L)
@@ -150,7 +150,7 @@ test_that("incomplete or nonfinite pilot rows are discarded without fallback", {
 
 
 test_that("pilot helper sends only the reference owner and records fixed settings", {
-  helper <- kernel_check_pilot
+  helper <- evaluator_check_pilot
   env <- new.env(parent = environment(helper))
   environment(helper) <- env
   owner <- new.env()
@@ -165,7 +165,7 @@ test_that("pilot helper sends only the reference owner and records fixed setting
     list(points = matrix(1:6, ncol = 2), diagnostics = list(marker = TRUE),
          sampler_config = "native config")
   }
-  result <- helper(list(bs_ptr = owner, kernel_ptr = "must not be used"), 3L, 42L)
+  result <- helper(list(bs_ptr = owner, evaluator_ptr = "must not be used"), 3L, 42L)
   expect_equal(result$points, matrix(1:6, ncol = 2))
   expect_identical(result$pilot$settings, list(num_chains = 1L, cores = 1L,
     num_warmup = 200L, num_draws = 3L, seed = 42L, target_accept = 0.8,
@@ -180,14 +180,14 @@ test_that("pilot helper sends only the reference owner and records fixed setting
 pilot_native_regression <- function() {
   library(nutpieR)
   fixture <- commandArgs(trailingOnly = TRUE)[[1L]]
-  work <- tempfile("byok-pilot-")
+  work <- tempfile("byold-pilot-")
   dir.create(work)
   old <- setwd(work)
   on.exit({ setwd(old); unlink(work, recursive = TRUE) }, add = TRUE)
   stopifnot(file.copy(file.path(fixture, "gaussian.c"), work))
   include <- system.file("include", package = "nutpieR")
   stopifnot(nzchar(include))
-  # Every kernel evaluation fails and poisons its outputs. A successful pilot
+  # Every evaluator evaluation fails and poisons its outputs. A successful pilot
   # therefore cannot have used this producer for its trajectory or expansion.
   Sys.setenv(PKG_CPPFLAGS = paste0('-I"', include, '" -DFIXTURE_MODE=8'))
   status <- system2(file.path(R.home("bin"), "R"), c("CMD", "SHLIB", "gaussian.c"),
@@ -201,10 +201,10 @@ pilot_native_regression <- function() {
     model { x ~ normal(centre, sigma); }
     generated quantities { real forbidden = 0; reject("pilot ran generated quantities"); }
   ')
-  bound <- nutpie_attach_kernel(reference, lib, list(n = 2L, mu = 0, sigma = 0.01))
+  bound <- nutpie_attach_density_evaluator(reference, lib, list(n = 2L, mu = 0, sigma = 0.01))
   origin <- nutpieR:::bs_evaluate(bound$bs_ptr, list(c(0, 0)))[[1L]]
   centre <- origin$gradient[1L] * 0.0001
-  pilot <- function(seed) nutpieR:::kernel_check_pilot(bound, 8L, seed)
+  pilot <- function(seed) nutpieR:::evaluator_check_pilot(bound, 8L, seed)
   set.seed(817)
   rng <- .Random.seed
   a <- pilot(42L)
@@ -225,10 +225,10 @@ pilot_native_regression <- function() {
   }
   after <- nutpieR:::bs_evaluate(bound$bs_ptr, list(c(0, 0)))[[1L]]
   stopifnot(identical(origin, after))
-  report <- nutpie_validate_kernel(bound, method = "reference", num_points = 8L, seed = 42L)
+  report <- nutpie_validate_density_evaluator(bound, method = "reference", num_points = 8L, seed = 42L)
   stopifnot(report$status == "fail", nrow(report$points) == 12L,
             all(report$comparisons$status == "fail"), !is.null(report$pilot))
-  # A dead kernel handle is irrelevant to the reference-only native entrypoint.
+  # A dead evaluator handle is irrelevant to the reference-only native entrypoint.
   dead <- unserialize(serialize(bound, NULL))
   native <- nutpieR:::bs_reference_pilot(bound$bs_ptr, 8L, 42L)
   stopifnot(!is.null(native$points), !is.null(native$diagnostics),
@@ -239,10 +239,10 @@ pilot_native_regression <- function() {
                                         ignore.case = TRUE))
   }
   error(nutpieR:::bs_reference_pilot(dead$bs_ptr, 8L, 42L))
-  error(nutpie_validate_kernel(dead, method = "reference", num_points = 8L))
+  error(nutpie_validate_density_evaluator(dead, method = "reference", num_points = 8L))
   # Keep a live reference with the serialized (dead) producer handle.
-  reference_only <- list(bs_ptr = bound$bs_ptr, kernel_ptr = dead$kernel_ptr)
-  only_reference <- nutpieR:::kernel_check_pilot(reference_only, 8L, 42L)
+  reference_only <- list(bs_ptr = bound$bs_ptr, evaluator_ptr = dead$evaluator_ptr)
+  only_reference <- nutpieR:::evaluator_check_pilot(reference_only, 8L, 42L)
   stopifnot(identical(a$points, only_reference$points))
   # Simplex dimension differs from constrained output, and the target is
   # asymmetric. Retained coordinates must be unconstrained, not a truncated
@@ -253,7 +253,7 @@ pilot_native_regression <- function() {
     generated quantities { real forbidden = 0; reject("unexpected GQ"); }
   ')
   simplex_ptr <- nutpieR:::bs_open(simplex$lib_path, "{}", 0L)
-  s <- nutpieR:::kernel_check_pilot(list(bs_ptr = simplex_ptr), 24L, 42L)
+  s <- nutpieR:::evaluator_check_pilot(list(bs_ptr = simplex_ptr), 24L, 42L)
   stopifnot(identical(dim(s$points), c(24L, 2L)), all(is.finite(s$points)),
             any(s$points < 0 | s$points > 1))
   ordered <- nutpie_compile_model(code = '
@@ -261,7 +261,7 @@ pilot_native_regression <- function() {
     model { first ~ normal(10, 0.1); second ~ normal(-10, 0.1); }
   ')
   ordered_ptr <- nutpieR:::bs_open(ordered$lib_path, "{}", 0L)
-  o <- nutpieR:::kernel_check_pilot(list(bs_ptr = ordered_ptr), 8L, 42L)
+  o <- nutpieR:::evaluator_check_pilot(list(bs_ptr = ordered_ptr), 8L, 42L)
   stopifnot(identical(dim(o$points), c(8L, 2L)),
             all(abs(o$points[, 1L] - 10) < 1), all(abs(o$points[, 2L] + 10) < 1))
   impossible <- nutpie_compile_model(code = '
@@ -269,7 +269,7 @@ pilot_native_regression <- function() {
     model { target += negative_infinity(); }
   ')
   impossible_ptr <- nutpieR:::bs_open(impossible$lib_path, "{}", 0L)
-  failure <- tryCatch(nutpieR:::kernel_check_pilot(list(bs_ptr = impossible_ptr), 2L, 42L),
+  failure <- tryCatch(nutpieR:::evaluator_check_pilot(list(bs_ptr = impossible_ptr), 2L, 42L),
                       error = identity)
   stopifnot(inherits(failure, "error"),
             grepl("Reference pilot failed", conditionMessage(failure)))
@@ -279,24 +279,24 @@ pilot_native_regression <- function() {
                     stdout = "good-build.log", stderr = "good-build.log", timeout = 90)
   if (status != 0L) stop(paste(readLines("good-build.log"), collapse = "\n"))
   good_ref <- nutpie_compile_model(file.path(fixture, "gaussian.stan"))
-  good <- nutpie_attach_kernel(good_ref,
+  good <- nutpie_attach_density_evaluator(good_ref,
     normalizePath(paste0("gaussian_good", .Platform$dynlib.ext)),
     list(n = 2L, mu = 1, sigma = 2))
   draw <- function() nutpie_sample(good, num_draws = 8L, num_warmup = 200L,
                                    num_chains = 1L, cores = 1L, seed = 42L, progress = "none")
   before <- draw()
-  check <- nutpie_validate_kernel(good, method = "reference", num_points = 8L, seed = 43L)
+  check <- nutpie_validate_density_evaluator(good, method = "reference", num_points = 8L, seed = 43L)
   after <- draw()
   stopifnot(check$status == "pass", identical(as.numeric(before), as.numeric(after)))
   cat("REFERENCE PILOT REGRESSIONS PASSED\n")
 }
 
 test_that("native reference pilots are isolated and bounded", {
-  skip_if(Sys.getenv("NUTPIER_RUN_BYOK_TESTS") != "1",
-          "set NUTPIER_RUN_BYOK_TESTS=1 after a release install")
-  fixture <- normalizePath(test_path("byok-v1"), mustWork = TRUE)
-  script <- tempfile("byok-pilot-", fileext = ".R")
-  log <- tempfile("byok-pilot-", fileext = ".log")
+  skip_if(Sys.getenv("NUTPIER_RUN_BYOLD_TESTS") != "1",
+          "set NUTPIER_RUN_BYOLD_TESTS=1 after a release install")
+  fixture <- normalizePath(test_path("byold-v1"), mustWork = TRUE)
+  script <- tempfile("byold-pilot-", fileext = ".R")
+  log <- tempfile("byold-pilot-", fileext = ".log")
   on.exit(unlink(script), add = TRUE)
   writeLines(c("run <-", deparse(pilot_native_regression), "run()"), script)
   status <- system2(file.path(R.home("bin"), "Rscript"),
