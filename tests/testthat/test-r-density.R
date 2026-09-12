@@ -140,6 +140,18 @@ test_that("seed makes runs reproducible", {
                ignore_attr = TRUE)
 })
 
+test_that("old fully positional calls keep expand and progress slots", {
+  fn <- mvn_logp(mvn_mu, mvn_sigma)
+  gr <- mvn_grad(mvn_mu, mvn_sigma)
+  # These are every positional slot in the pre-low-rank signature. In
+  # particular, the final two must still be `expand` and `progress`.
+  fit <- nutpie_sample_r(
+    fn, gr, NULL, 2L, c(0, 0), 10L, 10L, 18L, FALSE, NULL, NULL,
+    function(y) c(total = y[1] + y[2]), FALSE
+  )
+  expect_equal(posterior::variables(fit), "total")
+})
+
 test_that("low-rank adaptation accepts current and compatibility arguments", {
   fn <- mvn_logp(mvn_mu, mvn_sigma)
   gr <- mvn_grad(mvn_mu, mvn_sigma)

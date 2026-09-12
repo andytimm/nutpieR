@@ -47,6 +47,13 @@
 #'   (see [nutpie_warmup_draws()]). Default `FALSE`.
 #' @param max_treedepth Optional NUTS maximum tree depth.
 #' @param target_accept Optional target acceptance probability in `(0, 1)`.
+#' @param expand A `function(y)` mapping an unconstrained draw to the values you
+#'   want reported — e.g. the back-transform from a preconditioned space, or
+#'   derived quantities. Called once per kept draw (never in the leapfrog hot
+#'   loop). Should return a numeric vector; if named, the names become the
+#'   variable names. Default: report `y` as `y1..y{ndim}`.
+#' @param progress Whether to print a periodic one-line status to the console.
+#'   Defaults to `TRUE` in interactive sessions.
 #' @param adaptation Mass matrix adaptation strategy: `"diag"` (the default)
 #'   or `"low_rank"`. `"low-rank"` is accepted as an alias.
 #' @param low_rank_modified_mass_matrix Deprecated. If `TRUE`, equivalent to
@@ -55,13 +62,6 @@
 #'   low-rank mass matrix adaptation. Ignored unless low-rank adaptation is used.
 #' @param mass_matrix_eigval_cutoff Optional positive eigenvalue cutoff for
 #'   low-rank mass matrix adaptation. Ignored unless low-rank adaptation is used.
-#' @param expand A `function(y)` mapping an unconstrained draw to the values you
-#'   want reported — e.g. the back-transform from a preconditioned space, or
-#'   derived quantities. Called once per kept draw (never in the leapfrog hot
-#'   loop). Should return a numeric vector; if named, the names become the
-#'   variable names. Default: report `y` as `y1..y{ndim}`.
-#' @param progress Whether to print a periodic one-line status to the console.
-#'   Defaults to `TRUE` in interactive sessions.
 #'
 #' @return A [posterior::draws_array] carrying the same diagnostics attributes
 #'   that [nutpie_diagnostics()] and the posterior/bayesplot tooling consume, so
@@ -105,11 +105,11 @@ nutpie_sample_r <- function(fn = NULL, grad = NULL, value_grad = NULL,
                             num_draws = 1000L, num_warmup = 1000L,
                             seed = NULL, save_warmup = FALSE,
                             max_treedepth = NULL, target_accept = NULL,
+                            expand = NULL, progress = interactive(),
                             adaptation = c("diag", "low_rank", "low-rank"),
                             low_rank_modified_mass_matrix = FALSE,
                             mass_matrix_gamma = NULL,
-                            mass_matrix_eigval_cutoff = NULL,
-                            expand = NULL, progress = interactive()) {
+                            mass_matrix_eigval_cutoff = NULL) {
   if (is.null(value_grad)) {
     if (!is.function(fn)) stop("`fn` must be a function.", call. = FALSE)
     if (!is.function(grad)) stop("`grad` must be a function.", call. = FALSE)

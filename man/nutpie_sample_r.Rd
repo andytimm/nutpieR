@@ -16,12 +16,12 @@ nutpie_sample_r(
   save_warmup = FALSE,
   max_treedepth = NULL,
   target_accept = NULL,
+  expand = NULL,
+  progress = interactive(),
   adaptation = c("diag", "low_rank", "low-rank"),
   low_rank_modified_mass_matrix = FALSE,
   mass_matrix_gamma = NULL,
-  mass_matrix_eigval_cutoff = NULL,
-  expand = NULL,
-  progress = interactive()
+  mass_matrix_eigval_cutoff = NULL
 )
 }
 \arguments{
@@ -58,6 +58,15 @@ vector, \code{ndim} defaults to its length.}
 
 \item{target_accept}{Optional target acceptance probability in \verb{(0, 1)}.}
 
+\item{expand}{A \verb{function(y)} mapping an unconstrained draw to the values you
+want reported — e.g. the back-transform from a preconditioned space, or
+derived quantities. Called once per kept draw (never in the leapfrog hot
+loop). Should return a numeric vector; if named, the names become the
+variable names. Default: report \code{y} as \verb{y1..y\{ndim\}}.}
+
+\item{progress}{Whether to print a periodic one-line status to the console.
+Defaults to \code{TRUE} in interactive sessions.}
+
 \item{adaptation}{Mass matrix adaptation strategy: \code{"diag"} (the default)
 or \code{"low_rank"}. \code{"low-rank"} is accepted as an alias.}
 
@@ -69,15 +78,6 @@ low-rank mass matrix adaptation. Ignored unless low-rank adaptation is used.}
 
 \item{mass_matrix_eigval_cutoff}{Optional positive eigenvalue cutoff for
 low-rank mass matrix adaptation. Ignored unless low-rank adaptation is used.}
-
-\item{expand}{A \verb{function(y)} mapping an unconstrained draw to the values you
-want reported — e.g. the back-transform from a preconditioned space, or
-derived quantities. Called once per kept draw (never in the leapfrog hot
-loop). Should return a numeric vector; if named, the names become the
-variable names. Default: report \code{y} as \verb{y1..y\{ndim\}}.}
-
-\item{progress}{Whether to print a periodic one-line status to the console.
-Defaults to \code{TRUE} in interactive sessions.}
 }
 \value{
 A \link[posterior:draws_array]{posterior::draws_array} carrying the same diagnostics attributes
