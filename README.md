@@ -128,7 +128,8 @@ defaults: 400 warmup draws for diagonal adaptation and 800 for low-rank.
 
 Bring Your Own Density Kernel lets you attach a custom density kernel.
 A density kernel is a shared library that computes a Stan model’s unconstrained
-log density and full gradient. It replaces BridgeStan density evaluation.
+log density and full gradient. It replaces BridgeStan density evaluation. Only
+attach libraries you trust. Native code runs in R and can crash or corrupt it.
 The nuts-rs NUTS sampler is unchanged. BridgeStan continues to handle transforms,
 initialization, names, and output. Start with the kernel-writing guide at
 [`inst/examples/density-kernel/README.md`](inst/examples/density-kernel/README.md), or open it from

@@ -60,7 +60,8 @@ nutpie_density_layout <- function(reference, data = NULL) {
 #' @param reference A compiled Stan model from [nutpie_compile_model()].
 #' @param library Path to a shared library implementing ABI version 1.
 #' @param data Reference and density kernel data, as for [nutpie_sample()].
-#' @return An immutable, session-local `nutpie_density_kernel_model`.
+#' @return An immutable, session-local `nutpie_density_kernel_model` that also
+#'   inherits from `nutpie_model`.
 #' @export
 nutpie_attach_density_kernel <- function(reference, library, data = NULL) {
   if (inherits(reference, "nutpie_density_kernel_model")) {

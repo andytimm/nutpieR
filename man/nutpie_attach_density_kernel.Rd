@@ -14,7 +14,8 @@ nutpie_attach_density_kernel(reference, library, data = NULL)
 \item{data}{Reference and density kernel data, as for \code{\link[=nutpie_sample]{nutpie_sample()}}.}
 }
 \value{
-An immutable, session-local \code{nutpie_density_kernel_model}.
+An immutable, session-local \code{nutpie_density_kernel_model} that also
+inherits from \code{nutpie_model}.
 }
 \description{
 Bind a trusted shared library to a Stan reference and a data snapshot, then

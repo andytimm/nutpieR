@@ -61,9 +61,9 @@ system2(file.path(R.home("bin"), "R"), c("CMD", "SHLIB", "gaussian.c"))
 ```
 
 Use the library that the build actually produced. `R CMD SHLIB` follows
-`.Platform$dynlib.ext`; macOS Cargo builds commonly produce `.dylib` instead.
-Do not guess the suffix or move between build directories. Run the build from
-the intended directory, then use `normalizePath()` on the resulting file:
+`.Platform$dynlib.ext`. Do not guess the suffix or move between build
+directories. Run the build from the intended directory, then use
+`normalizePath()` on the resulting file:
 
 ```r
 library_path <- normalizePath(
