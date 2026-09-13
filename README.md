@@ -124,6 +124,13 @@ draws <- nutpie_sample(
 When `num_warmup` is omitted, nutpieR matches nuts-rs's adaptation-specific
 defaults: 400 warmup draws for diagonal adaptation and 800 for low-rank.
 
+### Bring Your Own Density Kernel
+
+Bring Your Own Density Kernel is an experimental feature which allows you to attach a custom density kernel, which often provides significant (several times) speedups. A density kernel is a small shared library that computes a model’s unconstrained log density and full gradient. It replaces BridgeStan density evaluation, but continues to use the underlying nuts-rs NUTS sampler.
+
+To write your own kernel, I'd suggest starting with the kernel-writing guide at
+[`inst/examples/density-kernel/README.md`](inst/examples/density-kernel/README.md). As simple kernel writing and validation is quite well-handled by modern LLMs, this documentation more than others in the package is optimized for LLM consumption.
+
 ## How it works
 
 nutpieR compiles Stan models via the BridgeStan Rust crate and samples using the nuts-rs NUTS sampler. During sampling, Rust calls the compiled Stan shared library directly through BridgeStan's C ABI -- R is not involved in the sampling loop. Each chain runs on its own thread via rayon.

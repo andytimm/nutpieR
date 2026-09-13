@@ -693,6 +693,14 @@ test_that("cli callback only advances by new draws", {
   expect_equal(updates[[1]]$extra$phase, "warmup")  # all chains still tuning
 })
 
+expect_sampling_time <- function(draws) {
+  sampling_time <- attr(draws, "sampling_time")
+  expect_type(sampling_time, "double")
+  expect_length(sampling_time, 1L)
+  expect_true(is.finite(sampling_time))
+  expect_gte(sampling_time, 0)
+}
+
 test_that("explicit cli progress samples successfully", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
   skip_if_not_installed("cli")
@@ -707,6 +715,7 @@ test_that("explicit cli progress samples successfully", {
     type = "output"
   )
   expect_s3_class(draws, "draws_array")
+  expect_sampling_time(draws)
 })
 
 test_that("explicit text progress samples successfully", {
@@ -722,6 +731,7 @@ test_that("explicit text progress samples successfully", {
     type = "output"
   )
   expect_s3_class(draws, "draws_array")
+  expect_sampling_time(draws)
 })
 
 test_that("progress arguments fail before sampling on malformed inputs", {
@@ -765,6 +775,7 @@ test_that("progress = 'none' produces no console output", {
     )
   )
   expect_s3_class(draws, "draws_array")
+  expect_sampling_time(draws)
 })
 
 test_that("suppressMessages silences text progress callbacks", {

@@ -36,8 +36,10 @@ nutpie_sample(
 )
 }
 \arguments{
-\item{model}{A \code{"nutpie_model"} object from \code{\link[=nutpie_compile_model]{nutpie_compile_model()}},
-or a path to a compiled shared library.}
+\item{model}{A \code{"nutpie_model"} object from \code{\link[=nutpie_compile_model]{nutpie_compile_model()}}, a
+path to a compiled shared library, or a bound
+\code{"nutpie_density_kernel_model"}. A bound kernel model uses the data
+attached with \code{\link[=nutpie_attach_density_kernel]{nutpie_attach_density_kernel()}}, so \code{data} must be omitted.}
 
 \item{data}{Model data. Can be:
 \itemize{
@@ -49,13 +51,13 @@ or a path to a compiled shared library.}
 
 Named-list data use \code{jsonlite::toJSON(auto_unbox = TRUE, digits = NA)}.
 Scalar values are therefore unboxed, while explicit dimensions are kept.
-Because ordinary length-one vectors and scalars are indistinguishable in R,
-use \code{I(3)} or \code{array(3, dim = 1)} for a one-element vector, and use
+Because ordinary length-one vectors and scalars are indistinguishable in
+R, use \code{I(3)} or \code{array(3, dim = 1)} for a one-element vector, and use
 \code{matrix(3, nrow = 1, ncol = 1)} (or an explicitly dimensioned array) for
 a one-by-one matrix. The same rule preserves other singleton axes;
-\code{numeric(0)} is serialized as \code{[]}. JSON strings and files are passed
-through without singleton rewriting. No automatic inference is attempted for an
-ordinary length-one vector.}
+\code{numeric(0)} is serialized as \verb{[]}. JSON strings and files are passed
+through without singleton rewriting. No automatic inference is attempted
+for an ordinary length-one vector.}
 
 \item{num_draws}{Number of post-warmup draws per chain.}
 
@@ -225,9 +227,12 @@ A \code{posterior::draws_array} with dimensions
 \verb{(num_draws, num_chains, n_params)}. Sampler diagnostics are attached
 as an attribute and can be retrieved with \code{\link[=nutpie_diagnostics]{nutpie_diagnostics()}}; see
 \code{?nutpie_diagnostics} for the chain / draw indexing convention (1-indexed,
-phase-relative). The attributes \code{"num_warmup"} and \code{"num_draws"} record
-the sampling configuration (accessible via \code{attr(draws, "num_warmup")}
-etc.). The \code{"sampler_config"} attribute is a JSON string capturing the
+phase-relative). The \code{"sampling_time"} attribute is elapsed seconds for
+the native sampling call, including sampler work, progress callbacks, and
+native result extraction, but excluding R setup and result assembly. The
+attributes \code{"num_warmup"} and \code{"num_draws"} record the sampling
+configuration (accessible via \code{attr(draws, "num_warmup")} etc.). The
+\code{"sampler_config"} attribute is a JSON string capturing the
 \emph{effective} \code{nuts-rs} settings used (including any defaults that were
 left unspecified by the caller, and exposing \code{num_warmup} to match the
 function argument name); parse with \code{\link[jsonlite:fromJSON]{jsonlite::fromJSON()}}.

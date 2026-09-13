@@ -57,6 +57,7 @@ fn interrupt_pending() -> bool {
     }
 }
 
+mod density_kernel;
 mod model;
 
 /// Convert any Display error to an extendr Error. Uses anyhow's alternate
@@ -537,8 +538,143 @@ struct ChainState {
     divergent_draws: Vec<usize>,
 }
 
-/// Sample from a Stan model using nuts-rs NUTS sampler.
-/// Run the sampler with progress reporting. Generic over Settings type.
+/// Extract a caught Rust panic message for the R-facing error.
+fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).into()
+    } else {
+        "non-string Rust panic".into()
+    }
+}
+
+/// Run sampling with progress reporting and retain the joinable owner.
+/// Never use the consuming wait_timeout error path here: it loses the owner.
+/// Completion notifications only wake the monitor; the host must still join.
+fn run_joinable_sampler<S: Settings>(
+    stan_model: model::StanModel,
+    settings: S,
+    num_cores: i32,
+    save_warmup: bool,
+    mut progress_cb: Option<Function>,
+) -> Result<Vec<ArrowTrace>> {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    let state = stan_model.run_state.as_ref().unwrap().clone();
+    let chains = settings.num_chains();
+    let rows = settings.hint_num_draws()
+        + if save_warmup {
+            settings.hint_num_tune()
+        } else {
+            0
+        };
+    let progress_state = Arc::new(Mutex::new(Vec::<ChainState>::new()));
+    let snapshot = progress_state.clone();
+    let callback = progress_cb.as_ref().map(|_| ProgressCallback {
+        callback: Box::new(move |_, progress: Box<[ChainProgress]>| {
+            *snapshot.lock().unwrap_or_else(|e| e.into_inner()) = progress
+                .iter()
+                .enumerate()
+                .map(|(i, c)| ChainState {
+                    chain: i + 1,
+                    finished_draws: c.finished_draws,
+                    total_draws: c.total_draws,
+                    divergences: c.divergences,
+                    tuning: c.tuning,
+                    started: c.started,
+                    latest_num_steps: c.latest_num_steps,
+                    total_num_steps: c.total_num_steps,
+                    step_size: c.step_size,
+                    runtime: c.runtime,
+                    divergent_draws: c.divergent_draws.clone(),
+                })
+                .collect();
+        }),
+        rate: Duration::from_millis(100),
+    });
+    let mut config = ArrowConfig::default();
+    config.store_warmup = save_warmup;
+    let created = catch_unwind(AssertUnwindSafe(|| {
+        Sampler::new(stan_model, settings, config, num_cores as usize, callback)
+    }));
+    let sampler = match created {
+        Ok(Ok(sampler)) => sampler,
+        Ok(Err(error)) => return Err(r_err(error)),
+        Err(panic) => {
+            return Err(r_err(format!(
+                "Sampler startup panicked: {}",
+                panic_text(panic)
+            )))
+        }
+    };
+    // The sampler remains outside the caught monitor closure. Even a monitor
+    // panic reaches abort below before an R-facing error is constructed.
+    let monitored = catch_unwind(AssertUnwindSafe(|| -> std::result::Result<(), String> {
+        loop {
+            if state.wait(Duration::from_millis(200), chains) {
+                return Ok(());
+            }
+            if interrupt_pending() {
+                return Err("Sampling interrupted.".into());
+            }
+            pump_r_events();
+            if interrupt_pending() {
+                return Err("Sampling interrupted.".into());
+            }
+            if let Some(cb) = &progress_cb {
+                let current = progress_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                if !current.is_empty() {
+                    let arguments =
+                        Pairlist::from_pairs([("", Robj::from(build_progress_snapshot(&current)))]);
+                    if cb.call(arguments).is_err() {
+                        progress_cb = None;
+                    }
+                }
+            }
+        }
+    }));
+    // abort disconnects commands, joins the controller, then resumes any
+    // controller panic. The Rayon scope has joined all model-using tasks;
+    // this does not mean every Rayon OS thread has exited.
+    let joined = catch_unwind(AssertUnwindSafe(|| sampler.abort()));
+    if let Some(error) = state.error() {
+        return Err(r_err(error));
+    }
+    match monitored {
+        Err(panic) => {
+            return Err(r_err(format!(
+                "Sampler monitor panicked: {}",
+                panic_text(panic)
+            )))
+        }
+        Ok(Err(error)) => return Err(r_err(error)),
+        Ok(Ok(())) => (),
+    }
+    let traces = match joined {
+        Err(panic) => return Err(r_err(format!("Sampler panicked: {}", panic_text(panic)))),
+        Ok(Err(error)) => return Err(r_err(error)),
+        Ok(Ok((Some(error), _))) => return Err(r_err(error)),
+        Ok(Ok((None, traces))) => traces,
+    };
+    // abort does not drain worker results. Ordinary worker errors can therefore
+    // return partial traces without Some(error); reject them before R allocation.
+    if traces.len() != chains
+        || traces.iter().any(|trace| {
+            trace.posterior.num_rows() != rows || trace.sample_stats.num_rows() != rows
+        })
+    {
+        let actual: Vec<_> = traces
+            .iter()
+            .map(|trace| (trace.posterior.num_rows(), trace.sample_stats.num_rows()))
+            .collect();
+        return Err(r_err(format!("Sampling stopped before all draws completed; run discarded (initialization or worker failure). Expected {chains} chains with {rows} rows; got {actual:?}.")));
+    }
+    Ok(traces)
+}
+
 fn run_sampler<S: Settings>(
     stan_model: model::StanModel,
     settings: S,
@@ -546,6 +682,9 @@ fn run_sampler<S: Settings>(
     save_warmup: bool,
     progress_cb: Option<Function>,
 ) -> Result<Vec<ArrowTrace>> {
+    if stan_model.run_state.is_some() {
+        return run_joinable_sampler(stan_model, settings, num_cores, save_warmup, progress_cb);
+    }
     let mut progress_cb = progress_cb;
     let use_callback = progress_cb.is_some();
 
@@ -798,6 +937,7 @@ fn sample_stan(
     include_tp: bool,
     include_gq: bool,
     progress_callback: Robj,
+    #[extendr(default = "NULL")] kernel: Robj,
 ) -> List {
     or_throw((|| -> Result<List> {
         // Defensive guards before unsigned casts. The R wrapper validates these
@@ -846,11 +986,25 @@ fn sample_stan(
             Some(out)
         };
 
+        handle
+            .try_addr()
+            .map_err(|_| r_err("Dead reference handle; reopen or rebind the model."))?;
         let stan_model = model::StanModel::new(&handle)
             .with_init_positions(init_positions_raw, jitter)
             .and_then(|m| m.with_constrain_flags(&handle, include_tp, include_gq))
             .map_err(r_err)?;
 
+        let stan_model = if kernel.is_null() {
+            stan_model
+        } else {
+            let pointer = ExternalPtr::<density_kernel::DensityKernelHandle>::try_from(kernel).map_err(|_| {
+                r_err("Dead or invalid kernel handle; rebind with nutpie_attach_density_kernel().")
+            })?;
+            let handle = pointer.try_addr().map_err(|_| {
+                r_err("Dead kernel handle; rebind with nutpie_attach_density_kernel().")
+            })?;
+            stan_model.with_kernel(handle.0.clone()).map_err(r_err)?
+        };
         let ndim = stan_model.num_constrained();
         let all_param_names: &[String] = stan_model.constrained_param_names();
 
@@ -1507,8 +1661,16 @@ fn bs_unc_names(handle: ExternalPtr<model::BSHandle>) -> Vec<String> {
 /// Number of unconstrained parameters.
 /// @noRd
 #[extendr]
-fn bs_ndim_unc(handle: ExternalPtr<model::BSHandle>) -> i32 {
-    handle.ndim_unc as i32
+fn bs_ndim_unc(handle: Robj) -> i32 {
+    or_throw((|| -> Result<i32> {
+        let handle = ExternalPtr::<model::BSHandle>::try_from(handle).map_err(|_| {
+            r_err("Dead or invalid reference handle; rebind with nutpie_attach_density_kernel().")
+        })?;
+        let reference = handle.try_addr().map_err(|_| {
+            r_err("Dead reference handle; rebind with nutpie_attach_density_kernel().")
+        })?;
+        Ok(reference.ndim_unc as i32)
+    })())
 }
 
 /// Number of block-level constrained parameters (no TP, no GQ).
@@ -1611,6 +1773,202 @@ fn bs_param_constrain_block_impl(
     Ok(out)
 }
 
+/// Bind a trusted density kernel to an opened BridgeStan reference.
+/// @noRd
+#[extendr]
+fn density_kernel_bind(
+    handle: ExternalPtr<model::BSHandle>,
+    library: &str,
+    data_json: &str,
+) -> Robj {
+    or_throw((|| -> Result<Robj> {
+        let reference = handle.try_addr().map_err(|_| {
+            r_err("Dead reference handle; rebind with nutpie_attach_density_kernel().")
+        })?;
+        let bound = density_kernel::BoundDensityKernel::bind(
+            library,
+            data_json,
+            reference.ndim_unc,
+            &reference.unc_names,
+        )
+        .map_err(r_err)?;
+        Ok(ExternalPtr::new(density_kernel::DensityKernelHandle(bound)).into())
+    })())
+}
+
+fn checked_points(points: List, ndim: usize) -> Result<Vec<Vec<f64>>> {
+    points
+        .iter()
+        .map(|(_, point)| {
+            let values = point
+                .as_real_vector()
+                .ok_or_else(|| r_err("points must be a list of double vectors"))?;
+            if values.len() != ndim || !values.iter().all(|x| x.is_finite()) {
+                return Err(r_err(
+                    "Each point must be finite and match the bound dimension",
+                ));
+            }
+            Ok(values)
+        })
+        .collect()
+}
+fn evaluation_results(results: Vec<(i32, String, f64, Vec<f64>)>) -> List {
+    List::from_values(
+        results
+            .into_iter()
+            .map(|(status, message, logp, gradient)| {
+                list!(
+                    status = status,
+                    message = message,
+                    logp = logp,
+                    gradient = gradient
+                )
+            }),
+    )
+}
+
+/// Evaluate a sequence with one same-thread private workspace.
+/// @noRd
+#[extendr]
+fn density_kernel_evaluate(handle: Robj, points: List) -> List {
+    or_throw((|| -> Result<List> {
+        let handle =
+            ExternalPtr::<density_kernel::DensityKernelHandle>::try_from(handle).map_err(|_| {
+                r_err("Dead or invalid kernel handle; rebind with nutpie_attach_density_kernel().")
+            })?;
+        let bound = handle
+            .try_addr()
+            .map_err(|_| r_err("Dead kernel handle; rebind with nutpie_attach_density_kernel()."))?
+            .0
+            .clone();
+        let points = checked_points(points, bound.ndim)?;
+        let results = {
+            let mut workspace = bound.workspace().map_err(r_err)?;
+            let mut fatal = false;
+            points
+                .into_iter()
+                .map(|point| {
+                    if fatal {
+                        return (
+                            2,
+                            "Skipped after fatal kernel error".into(),
+                            f64::NAN,
+                            vec![f64::NAN; bound.ndim],
+                        );
+                    }
+                    let mut gradient = vec![f64::NAN; bound.ndim];
+                    match workspace.evaluate(&point, &mut gradient) {
+                        Ok(logp) => (0, String::new(), logp, gradient),
+                        Err(error) => {
+                            fatal = error.status != 1;
+                            (
+                                error.status,
+                                error.message,
+                                f64::NAN,
+                                vec![f64::NAN; bound.ndim],
+                            )
+                        }
+                    }
+                })
+                .collect()
+        }; // Workspace destroyed before allocating returned R objects.
+        Ok(evaluation_results(results))
+    })())
+}
+
+/// Internal reference-only pilot. No kernel handle is accepted here.
+#[extendr]
+fn bs_reference_pilot(handle: Robj, num_points: i32, seed: i32) -> List {
+    or_throw((|| -> Result<List> {
+        let seed = check_seed(seed)?;
+        if num_points < 2 {
+            return Err(r_err("num_points must be at least two"));
+        }
+        let handle = ExternalPtr::<model::BSHandle>::try_from(handle).map_err(|_| {
+            r_err("Dead or invalid reference handle; rebind with nutpie_attach_density_kernel().")
+        })?;
+        let reference = handle.try_addr().map_err(|_| {
+            r_err("Dead reference handle; rebind with nutpie_attach_density_kernel().")
+        })?;
+        let mut settings = DiagNutsSettings::default();
+        settings.num_tune = 200;
+        settings.num_draws = num_points as u64;
+        settings.num_chains = 1;
+        settings.seed = seed as u64;
+        settings.maxdepth = 10;
+        settings.adapt_options.step_size_settings.target_accept = 0.8;
+        let config = serde_json::to_string(&settings).map_err(r_err)?;
+        let traces = run_joinable_sampler(
+            model::StanModel::reference_pilot(reference),
+            settings,
+            1,
+            false,
+            None,
+        )?;
+        let columns: Vec<_> = (0..reference.ndim_unc).collect();
+        let points = build_draws_matrix(
+            &traces,
+            &columns,
+            0,
+            num_points as usize,
+            &reference.unc_names,
+        )?;
+        let diagnostics = extract_diagnostics(
+            &traces,
+            0,
+            num_points as usize,
+            &["gradient", "unconstrained_draw"],
+        )?;
+        Ok(list!(
+            points = points,
+            diagnostics = diagnostics,
+            sampler_config = config
+        ))
+    })())
+}
+
+/// Reference evaluation with propto=true and jacobian=true.
+/// @noRd
+#[extendr]
+fn bs_evaluate(handle: Robj, points: List) -> List {
+    or_throw((|| -> Result<List> {
+        let handle = ExternalPtr::<model::BSHandle>::try_from(handle).map_err(|_| {
+            r_err("Dead or invalid reference handle; rebind with nutpie_attach_density_kernel().")
+        })?;
+        let reference = handle.try_addr().map_err(|_| {
+            r_err("Dead reference handle; rebind with nutpie_attach_density_kernel().")
+        })?;
+        let points = checked_points(points, reference.ndim_unc)?;
+        let results = points
+            .into_iter()
+            .map(|point| {
+                let mut gradient = vec![f64::NAN; reference.ndim_unc];
+                match reference
+                    .model
+                    .log_density_gradient(&point, true, true, &mut gradient)
+                {
+                    Ok(logp) if logp.is_finite() && gradient.iter().all(|x| x.is_finite()) => {
+                        (0, String::new(), logp, gradient)
+                    }
+                    Ok(_) => (
+                        1,
+                        "Reference returned nonfinite output".into(),
+                        f64::NAN,
+                        vec![f64::NAN; reference.ndim_unc],
+                    ),
+                    Err(error) => (
+                        1,
+                        error.to_string(),
+                        f64::NAN,
+                        vec![f64::NAN; reference.ndim_unc],
+                    ),
+                }
+            })
+            .collect();
+        Ok(evaluation_results(results))
+    })())
+}
+
 extendr_module! {
     mod nutpieR;
     fn bridgestan_version;
@@ -1621,6 +1979,10 @@ extendr_module! {
     fn tbb_patch_strings;
     fn sample_stan;
     fn bs_open;
+    fn density_kernel_bind;
+    fn density_kernel_evaluate;
+    fn bs_evaluate;
+    fn bs_reference_pilot;
     fn bs_block_names;
     fn bs_block_tp_names;
     fn bs_full_names;

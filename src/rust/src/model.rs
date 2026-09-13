@@ -204,11 +204,16 @@ pub enum StanLogpError {
     BridgeStan(#[from] bridgestan::BridgeStanError),
     #[error("Non-finite logp: {0}")]
     BadLogp(f64),
+    #[error(transparent)]
+    DensityKernel(#[from] crate::density_kernel::DensityKernelError),
 }
 
 impl nuts_rs::LogpError for StanLogpError {
     fn is_recoverable(&self) -> bool {
-        true // all errors become divergences, not panics
+        match self {
+            Self::DensityKernel(error) => error.status == 1,
+            _ => true,
+        }
     }
 }
 
@@ -235,10 +240,13 @@ thread_local! {
 }
 
 pub struct StanModel {
+    kernel: Option<Arc<crate::density_kernel::BoundDensityKernel>>,
+    pub run_state: Option<Arc<crate::density_kernel::RunState>>,
     inner: Arc<bridgestan::Model<Arc<bridgestan::StanLibrary>>>,
     ndim: usize,
     include_tp: bool,
     include_gq: bool,
+    unconstrained_output: bool,
     num_block: usize,
     num_block_tp: usize,
     num_constrained: usize,
@@ -258,10 +266,13 @@ pub struct StanModel {
 impl StanModel {
     pub fn new(handle: &BSHandle) -> Self {
         StanModel {
+            kernel: None,
+            run_state: None,
             inner: Arc::clone(&handle.model),
             ndim: handle.ndim_unc,
             include_tp: true,
             include_gq: true,
+            unconstrained_output: false,
             num_block: handle.ndim_block,
             num_block_tp: handle.ndim_block_tp,
             num_constrained: handle.ndim_full,
@@ -271,6 +282,30 @@ impl StanModel {
             chain_counter: AtomicUsize::new(0),
             expand_errors: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Reference-only pilot retains the bound realization and stores positions
+    /// directly, without constrained output expansion or generated quantities.
+    pub fn reference_pilot(handle: &BSHandle) -> Self {
+        let mut model = Self::new(handle);
+        model.run_state = Some(Arc::new(crate::density_kernel::RunState::default()));
+        model.unconstrained_output = true;
+        model.num_constrained = handle.ndim_unc;
+        model.constrained_param_names = handle.unc_names.clone();
+        model
+    }
+
+    pub fn with_kernel(
+        mut self,
+        kernel: Arc<crate::density_kernel::BoundDensityKernel>,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            kernel.ndim == self.ndim,
+            "Density kernel/reference dimension mismatch"
+        );
+        self.kernel = Some(kernel);
+        self.run_state = Some(Arc::new(crate::density_kernel::RunState::default()));
+        Ok(self)
     }
 
     pub fn num_constrained(&self) -> usize {
@@ -343,16 +378,52 @@ impl StanModel {
     }
 }
 
+impl Drop for StanModel {
+    fn drop(&mut self) {
+        // Scoped Maths borrow this model and end before it is destroyed.
+        // This notification does not join; the host still owns and joins the sampler.
+        if let Some(state) = &self.run_state {
+            state.complete();
+        }
+    }
+}
+
 impl Model for StanModel {
     type Math<'model> = CpuMath<StanDensity<'model>>;
 
     fn math<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> anyhow::Result<Self::Math<'_>> {
         // Claim a chain id for this worker thread. See MY_CHAIN_ID doc comment.
         let chain_id = self.chain_counter.fetch_add(1, Ordering::SeqCst);
+        let worker_guard = if chain_id == 0 {
+            None
+        } else {
+            self.run_state
+                .as_ref()
+                .map(|state| crate::density_kernel::WorkerGuard(state.clone()))
+        };
         MY_CHAIN_ID.with(|c| c.set(Some(chain_id)));
 
-        let bs_rng = self.inner.new_rng(rng.next_u32())?;
+        let kernel_workspace = match &self.kernel {
+            Some(kernel) => match kernel.workspace() {
+                Ok(workspace) => Some(workspace),
+                Err(error) => {
+                    if let Some(state) = &self.run_state {
+                        state.fail(&error);
+                    }
+                    return Err(error);
+                }
+            },
+            None => None,
+        };
+        let bs_rng = self.inner.new_rng(rng.next_u32()).map_err(|error| {
+            if let Some(state) = &self.run_state {
+                state.fail(&error);
+            }
+            error
+        })?;
         Ok(CpuMath::new(StanDensity {
+            kernel_workspace,
+            _worker_guard: worker_guard,
             model: self,
             rng: bs_rng,
             expand_errors: Arc::clone(&self.expand_errors),
@@ -387,7 +458,7 @@ impl Model for StanModel {
     }
 }
 
-// --- StanDensity: per-chain logp evaluator ---
+// --- StanDensity: per-chain logp kernel ---
 
 // On an expansion failure, retry the largest potentially valid output prefix
 // first. GQ can fail while parameters/TP are valid; TP can fail while the
@@ -408,6 +479,8 @@ fn expansion_fallbacks(
 }
 
 pub struct StanDensity<'model> {
+    kernel_workspace: Option<crate::density_kernel::Workspace>,
+    _worker_guard: Option<crate::density_kernel::WorkerGuard>,
     model: &'model StanModel,
     rng: bridgestan::Rng<&'model bridgestan::StanLibrary>,
     expand_errors: Arc<AtomicUsize>,
@@ -435,6 +508,26 @@ impl<'model> CpuLogpFunc for StanDensity<'model> {
         position: &[f64],
         gradient: &mut [f64],
     ) -> std::result::Result<f64, Self::LogpError> {
+        if let Some(workspace) = &mut self.kernel_workspace {
+            if let Some(message) = self
+                .model
+                .run_state
+                .as_ref()
+                .and_then(|state| state.error())
+            {
+                return Err(
+                    crate::density_kernel::DensityKernelError { status: 2, message }.into(),
+                );
+            }
+            return workspace.evaluate(position, gradient).map_err(|error| {
+                if error.status != 1 {
+                    if let Some(state) = &self.model.run_state {
+                        state.fail(&error);
+                    }
+                }
+                error.into()
+            });
+        }
         let lp = self
             .model
             .inner
@@ -450,6 +543,9 @@ impl<'model> CpuLogpFunc for StanDensity<'model> {
         _rng: &mut R,
         array: &[f64],
     ) -> std::result::Result<Self::ExpandedVector, CpuMathError> {
+        if self.model.unconstrained_output {
+            return Ok(array.to_vec());
+        }
         // Allocate fresh per draw and hand the buffer straight to nuts-rs.
         // Holding a reusable field-buffer would force a per-draw clone()
         // (same allocation count, plus a memcpy) since the trait return

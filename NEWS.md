@@ -1,3 +1,12 @@
+# nutpieR 1.9.0
+
+* Added experimental Bring Your Own Density Kernel support. A custom density
+  kernel computes a Stan model’s unconstrained log density and full gradient.
+  BridgeStan remains the reference, and the NUTS sampler is unchanged. Includes
+  numerical checks, a versioned C ABI, a layout helper, and a runnable example.
+* `nutpie_sample()` now stores elapsed native sampling time in the
+  `"sampling_time"` draws attribute (#47).
+
 # nutpieR 1.8.7
 
 * Fixed Windows backslashes in Stan include paths.

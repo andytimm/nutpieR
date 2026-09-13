@@ -1,12 +1,16 @@
+#' Return the linked BridgeStan crate version, e.g. "2.8.0". Used by the
+
 # nolint start
 
-#' Return the linked BridgeStan crate version, e.g. "2.8.0". Used by the
 #' inline-code compile cache key so a BridgeStan version bump invalidates
 #' cached entries automatically.
 #' @noRd
 bridgestan_version <- function() .Call(wrap__bridgestan_version)
 
-#' Path to the bundled stanc executable used by BridgeStan compilation.
+#' Return the bundled stanc binary used by BridgeStan compilation.
+#'
+#' This is intentionally native rather than reconstructed in R: the source
+#' cache location is owned by the BridgeStan crate and can vary by platform.
 #' @noRd
 bridgestan_stanc_path <- function() .Call(wrap__bridgestan_stanc_path)
 
@@ -24,13 +28,21 @@ compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__
 #' @noRd
 tbb_proxy_live_progress_safe <- function() .Call(wrap__tbb_proxy_live_progress_safe)
 
-#' Re-apply the macOS tbbmalloc_proxy source patch on a compile-cache hit,
-#' without triggering a BridgeStan download (GitHub #36). No-op off macOS.
+#' Cache-hit companion to the compile-time patch. `compile_via_cache()` (R)
+#' returns a cached model without ever calling into Rust, so an upgrading user
+#' whose model is already cached would never re-run `ensure_safe_tbb_proxy` and
+#' would keep shipping the stale, unpatched dylib. This re-applies the patch,
+#' but ONLY when the BridgeStan source tree already exists on disk — it must
+#' never trigger the ~235 MB download on a cache hit. macOS-cheap, idempotent,
+#' and a no-op elsewhere.
 #' @noRd
-ensure_tbb_proxy_patched <- function() invisible(.Call(wrap__ensure_tbb_proxy_patched))
+ensure_tbb_proxy_patched <- function() .Call(wrap__ensure_tbb_proxy_patched)
 
-#' Stock TBB function text and nutpieR marker, for a test that the bundled proxy
-#' header still matches the verbatim splice (GitHub #36). character(0) off macOS.
+#' Expose the stock TBB function text and the nutpieR marker to R so a test can
+#' assert the bundled proxy header still matches one of them — a BridgeStan/TBB
+#' bump that broke the verbatim splice would then fail loudly instead of
+#' silently reverting macOS users to the unpatched proxy (GitHub #36). Returns
+#' `c(stock, marker)` on macOS, `character(0)` elsewhere.
 #' @noRd
 tbb_patch_strings <- function() .Call(wrap__tbb_patch_strings)
 
@@ -39,7 +51,6 @@ tbb_patch_strings <- function() .Call(wrap__tbb_patch_strings)
 #' @param num_warmup Number of warmup (tuning) draws per chain.
 #' @param num_chains Number of parallel chains.
 #' @param seed Random seed.
-#' @param refresh Print progress every `refresh` draws per chain (0 = no progress).
 #' @param init_positions Optional list of numeric vectors (one per chain, or length 1 = broadcast).
 #' @param jitter If TRUE, apply ±0.5 uniform jitter per coordinate.
 #' @param save_warmup Whether to return warmup draws.
@@ -48,7 +59,8 @@ tbb_patch_strings <- function() .Call(wrap__tbb_patch_strings)
 #' @param store_mass_matrix Whether to store the mass matrix at each draw.
 #' @param store_unconstrained Whether to store the unconstrained position at each draw.
 #' @param store_gradient Whether to store the gradient at each draw.
-#' @param adaptation One of "diag", "low_rank", or "low-rank".
+#' @param adaptation One of "diag" or "low_rank". The R wrapper accepts
+#'   "low-rank" as a Python-style alias and normalises it before calling.
 #' @param max_treedepth Optional maximum tree depth for NUTS. NULL keeps the
 #'   nuts-rs default.
 #' @param mindepth Optional minimum tree depth for NUTS.
@@ -72,17 +84,38 @@ tbb_patch_strings <- function() .Call(wrap__tbb_patch_strings)
 #'   (including any `*_rng` calls) entirely. Must imply `include_tp = TRUE`
 #'   when `TRUE`, since GQ may reference TP.
 #' @param progress_callback NULL or an R closure invoked on each poll wakeup
-#'   with one argument: a list of per-chain progress snapshots.
+#'   with one argument: a list of `num_chains` per-chain snapshots
+#'   (`chain`, `finished_draws`, `total_draws`, `divergences`, `tuning`,
+#'   `started`, `latest_num_steps`, `total_num_steps`, `step_size`, `runtime`,
+#'   `divergent_draws`). When supplied, the built-in per-chain text log is
+#'   suppressed; errors raised by the closure are warned once and further calls
+#'   suppressed for the run.
 #' @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 #'   sampler_config (JSON), and optionally warmup_draws and warmup_diagnostics.
 #' @noRd
-sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq, progress_callback) .Call(wrap__sample_stan, handle, num_draws, num_warmup, num_chains, seed, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq, progress_callback)
+sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq, progress_callback, kernel = NULL) .Call(wrap__sample_stan, handle, num_draws, num_warmup, num_chains, seed, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq, progress_callback, kernel)
 
 #' Open a BridgeStan model and return an `ExternalPtr<BSHandle>` that caches
 #' parameter-name metadata. The handle may be used by any of the `bs_*`
 #' accessor functions without re-opening the shared library.
 #' @noRd
 bs_open <- function(lib_path, data_json, seed) .Call(wrap__bs_open, lib_path, data_json, seed)
+
+#' Bind a trusted density kernel to an opened BridgeStan reference.
+#' @noRd
+density_kernel_bind <- function(handle, library, data_json) .Call(wrap__density_kernel_bind, handle, library, data_json)
+
+#' Evaluate a sequence with one same-thread private workspace.
+#' @noRd
+density_kernel_evaluate <- function(handle, points) .Call(wrap__density_kernel_evaluate, handle, points)
+
+#' Internal reference-only pilot. No kernel handle is accepted here.
+#' @noRd
+bs_reference_pilot <- function(handle, num_points, seed) .Call(wrap__bs_reference_pilot, handle, num_points, seed)
+
+#' Reference evaluation with propto=true and jacobian=true.
+#' @noRd
+bs_evaluate <- function(handle, points) .Call(wrap__bs_evaluate, handle, points)
 
 #' Block-level parameter names (no transformed parameters / generated
 #' quantities), dot-indexed. Length equals `bs_ndim_block()`.
