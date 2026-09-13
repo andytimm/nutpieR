@@ -66,8 +66,8 @@ static int parse(const char *json, size_t len, bound_t *b) {
     free(copy); return 1;
  bad: free(copy); return 0;
 }
-uint32_t nutpier_density_kernel_abi_version(void) { return 1; }
-int32_t nutpier_density_kernel_bind(const char *json, size_t len, size_t ndim,
+NUTPIER_DENSITY_KERNEL_EXPORT uint32_t nutpier_density_kernel_abi_version(void) { return 1; }
+NUTPIER_DENSITY_KERNEL_EXPORT int32_t nutpier_density_kernel_bind(const char *json, size_t len, size_t ndim,
     const char *layout, size_t layout_len, void **out, char *err, size_t cap) {
     bound_t *b = (bound_t *)calloc(1,sizeof(bound_t));
     size_t i, used=0; char name[128];
@@ -106,16 +106,16 @@ int32_t nutpier_density_kernel_bind(const char *json, size_t len, size_t ndim,
     }
     *out=b; return 0;
 }
-void nutpier_density_kernel_destroy(void *b) { free(b); }
+NUTPIER_DENSITY_KERNEL_EXPORT void nutpier_density_kernel_destroy(void *b) { free(b); }
 
 /* This kernel needs no scratch; NULL is a valid private workspace. */
-int32_t nutpier_density_kernel_workspace(void *bound, void **out, char *err, size_t cap) {
+NUTPIER_DENSITY_KERNEL_EXPORT int32_t nutpier_density_kernel_workspace(void *bound, void **out, char *err, size_t cap) {
     (void)bound; (void)err; (void)cap; *out = NULL; return 0;
 }
-void nutpier_density_kernel_workspace_destroy(void *bound, void *workspace) {
+NUTPIER_DENSITY_KERNEL_EXPORT void nutpier_density_kernel_workspace_destroy(void *bound, void *workspace) {
     (void)bound; (void)workspace;
 }
-int32_t nutpier_density_kernel_evaluate(void *bound, void *workspace, const double *q,
+NUTPIER_DENSITY_KERNEL_EXPORT int32_t nutpier_density_kernel_evaluate(void *bound, void *workspace, const double *q,
     size_t ndim, double *lp, double *gradient, char *err, size_t cap) {
     const bound_t *b = (const bound_t *)bound;
     (void)workspace;

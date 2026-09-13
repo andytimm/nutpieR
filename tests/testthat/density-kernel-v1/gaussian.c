@@ -75,8 +75,8 @@ static int parse(const char *json, size_t len, bound_t *b) {
     free(copy); return 1;
  bad: free(copy); return 0;
 }
-uint32_t nutpier_density_kernel_abi_version(void) { return FIXTURE_MODE == 13 ? 999 : 1; }
-int32_t nutpier_density_kernel_bind(const char *json, size_t len, size_t ndim,
+NUTPIER_DENSITY_KERNEL_EXPORT uint32_t nutpier_density_kernel_abi_version(void) { return FIXTURE_MODE == 13 ? 999 : 1; }
+NUTPIER_DENSITY_KERNEL_EXPORT int32_t nutpier_density_kernel_bind(const char *json, size_t len, size_t ndim,
     const char *layout, size_t layout_len, void **out, char *err, size_t cap) {
     bound_t *b = (bound_t *)calloc(1,sizeof(bound_t));
     size_t i, used=0; char name[128];
@@ -119,16 +119,16 @@ int32_t nutpier_density_kernel_bind(const char *json, size_t len, size_t ndim,
     }
     *out=b; return 0;
 }
-void nutpier_density_kernel_destroy(void *b) { free(b); }
-int32_t nutpier_density_kernel_workspace(void *b, void **out, char *err, size_t cap) {
+NUTPIER_DENSITY_KERNEL_EXPORT void nutpier_density_kernel_destroy(void *b) { free(b); }
+NUTPIER_DENSITY_KERNEL_EXPORT int32_t nutpier_density_kernel_workspace(void *b, void **out, char *err, size_t cap) {
     (void)b; *out=NULL;
     if (FIXTURE_MODE == 11) return fail(err,cap,"deliberate workspace failure");
     if (FIXTURE_MODE == 2) return 0;
     *out=calloc(1,sizeof(workspace_t));
     return *out ? 0 : fail(err,cap,"allocation failed");
 }
-void nutpier_density_kernel_workspace_destroy(void *b, void *w) { (void)b; free(w); }
-int32_t nutpier_density_kernel_evaluate(void *bound, void *work, const double *q,
+NUTPIER_DENSITY_KERNEL_EXPORT void nutpier_density_kernel_workspace_destroy(void *b, void *w) { (void)b; free(w); }
+NUTPIER_DENSITY_KERNEL_EXPORT int32_t nutpier_density_kernel_evaluate(void *bound, void *work, const double *q,
     size_t ndim, double *lp, double *g, char *err, size_t cap) {
     const bound_t *b=(const bound_t *)bound;
     workspace_t *w=(workspace_t *)work; size_t i;
