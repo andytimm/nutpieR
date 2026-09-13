@@ -38,7 +38,7 @@ jobs:
         run: rustc --version && cargo --version
       - name: Install nutpieR
         shell: Rscript {0}
-        run: devtools::install(quick = TRUE, upgrade = "never")
+        run: devtools::install(quick = TRUE, upgrade = FALSE)
       - name: Run density kernel tests
         shell: Rscript {0}
         run: devtools::test(filter = "density-kernel")
