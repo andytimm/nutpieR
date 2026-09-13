@@ -1,23 +1,14 @@
-/* Test producer, not a general JSON library or an evaluator generator.
- * Build with R CMD SHLIB and -I/path/to/nutpieR/include. See README.md.
+/* Gaussian kernel with data supplied at bind time. Compile with R CMD SHLIB;
+ * see run.R. The example parser handles only flat numeric n/mu/sigma data,
+ * not general JSON. Use a maintained JSON library for production code.
  */
-#include "nutpier_density_evaluator_v1.h"
+#include "nutpier_density_kernel_v1.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
 #include <ctype.h>
-#ifndef FIXTURE_MODE
-#define FIXTURE_MODE 0
-#endif
-/* 0 runtime, 1 fixed, 2 stateless, 3 offset, 4 swapped gradient,
- * 5 partial output, 6 NaN, 7 domain, 8 fatal poisoned output,
- * 9 unknown status, 10 unterminated message, 11 workspace failure,
- * 12 bind failure, 13 bad version, 14 stateful q1/q2/q1 mismatch,
- * 15 positive parameter with Jacobian, 16 omitted Jacobian.
- */
 typedef struct { size_t n; double mu, sigma; } bound_t;
-typedef struct { size_t calls; } workspace_t;
 static int fail(char *out, size_t cap, const char *text) {
     if (cap) { size_t n = strlen(text); if (n >= cap) n = cap-1;
         memcpy(out, text, n); out[n] = 0; }
@@ -75,15 +66,14 @@ static int parse(const char *json, size_t len, bound_t *b) {
     free(copy); return 1;
  bad: free(copy); return 0;
 }
-uint32_t nutpier_density_evaluator_abi_version(void) { return FIXTURE_MODE == 13 ? 999 : 1; }
-int32_t nutpier_density_evaluator_bind(const char *json, size_t len, size_t ndim,
+uint32_t nutpier_density_kernel_abi_version(void) { return 1; }
+int32_t nutpier_density_kernel_bind(const char *json, size_t len, size_t ndim,
     const char *layout, size_t layout_len, void **out, char *err, size_t cap) {
     bound_t *b = (bound_t *)calloc(1,sizeof(bound_t));
     size_t i, used=0; char name[128];
     *out = NULL;
     if (!b) return fail(err,cap,"allocation failed");
     if (!parse(json,len,b)) { free(b); return fail(err,cap,"expected numeric n, mu, sigma"); }
-    if (FIXTURE_MODE == 12) { free(b); return fail(err,cap,"deliberate bind failure after allocation"); }
     if (ndim != b->n) {
         snprintf(name, sizeof(name), "dimension mismatch: expected %lu, received %lu",
             (unsigned long)b->n, (unsigned long)ndim);
@@ -114,43 +104,33 @@ int32_t nutpier_density_evaluator_bind(const char *json, size_t len, size_t ndim
             (unsigned long)(layout_len-used), (unsigned long)ndim);
         free(b); return fail(err,cap,name);
     }
-    if (FIXTURE_MODE == 1 && (b->n != 2 || b->mu != 1 || b->sigma != 2)) {
-        free(b); return fail(err,cap,"fixed data mismatch");
-    }
     *out=b; return 0;
 }
-void nutpier_density_evaluator_destroy(void *b) { free(b); }
-int32_t nutpier_density_evaluator_workspace(void *b, void **out, char *err, size_t cap) {
-    (void)b; *out=NULL;
-    if (FIXTURE_MODE == 11) return fail(err,cap,"deliberate workspace failure");
-    if (FIXTURE_MODE == 2) return 0;
-    *out=calloc(1,sizeof(workspace_t));
-    return *out ? 0 : fail(err,cap,"allocation failed");
+void nutpier_density_kernel_destroy(void *b) { free(b); }
+
+/* This kernel needs no scratch; NULL is a valid private workspace. */
+int32_t nutpier_density_kernel_workspace(void *bound, void **out, char *err, size_t cap) {
+    (void)bound; (void)err; (void)cap; *out = NULL; return 0;
 }
-void nutpier_density_evaluator_workspace_destroy(void *b, void *w) { (void)b; free(w); }
-int32_t nutpier_density_evaluator_evaluate(void *bound, void *work, const double *q,
-    size_t ndim, double *lp, double *g, char *err, size_t cap) {
-    const bound_t *b=(const bound_t *)bound;
-    workspace_t *w=(workspace_t *)work; size_t i;
-    if (w) ++w->calls;
+void nutpier_density_kernel_workspace_destroy(void *bound, void *workspace) {
+    (void)bound; (void)workspace;
+}
+int32_t nutpier_density_kernel_evaluate(void *bound, void *workspace, const double *q,
+    size_t ndim, double *lp, double *gradient, char *err, size_t cap) {
+    const bound_t *b = (const bound_t *)bound;
+    (void)workspace;
     if (ndim != b->n) return fail(err,cap,"evaluation dimension mismatch");
-    if (FIXTURE_MODE == 7) { fail(err,cap,"deliberate domain rejection"); return 1; }
-    if (FIXTURE_MODE == 8) { *lp=NAN; for(i=0;i<ndim;++i) g[i]=NAN;
-        return fail(err,cap,"deliberate fatal error; outputs poisoned"); }
-    if (FIXTURE_MODE == 9) { fail(err,cap,"unknown status"); return 99; }
-    if (FIXTURE_MODE == 10) { memset(err,'X',cap); return 2; }
-    *lp=0;
-    for(i=0;i<ndim;++i) {
-        double x=(FIXTURE_MODE >= 15) ? exp(q[i]) : q[i];
-        double z=(x-b->mu)/b->sigma;
+    *lp = 0;
+    for (size_t i=0; i<ndim; ++i) {
+        double z = (q[i]-b->mu)/b->sigma;
         *lp -= 0.5*z*z;
-        if (!(FIXTURE_MODE == 5 && i == ndim-1))
-            g[i]=-z/b->sigma * ((FIXTURE_MODE >= 15) ? x : 1);
-        if (FIXTURE_MODE == 15) { *lp += q[i]; g[i] += 1; }
+        gradient[i] = -z/b->sigma;
     }
-    if (FIXTURE_MODE == 3) *lp += 10;
-    if (FIXTURE_MODE == 4 && ndim >= 2) { double tmp=g[0]; g[0]=g[1]; g[1]=tmp; }
-    if (FIXTURE_MODE == 6) *lp=NAN;
-    if (FIXTURE_MODE == 14 && w) *lp += (double)w->calls;
+    /* propto=true drops normal constants because mu/sigma are data.
+     * Unconstrained real parameters have an identity transform/Jacobian. */
+    if (!isfinite(*lp)) { fail(err,cap,"Gaussian overflow"); return 1; }
+    for (size_t i=0; i<ndim; ++i) {
+        if (!isfinite(gradient[i])) { fail(err,cap,"Gaussian gradient overflow"); return 1; }
+    }
     return 0;
 }

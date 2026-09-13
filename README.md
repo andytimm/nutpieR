@@ -124,15 +124,15 @@ draws <- nutpie_sample(
 When `num_warmup` is omitted, nutpieR matches nuts-rs's adaptation-specific
 defaults: 400 warmup draws for diagonal adaptation and 800 for low-rank.
 
-### Bring Your Own Log Density (BYOLD)
+### Bring Your Own Density Kernel
 
-Bring Your Own Log Density (BYOLD) lets you attach a custom density evaluator:
-a trusted shared library that returns the unconstrained log density and
-full gradient. It replaces BridgeStan's evaluator; nutpieR still runs the same
-nuts-rs NUTS sampler. BridgeStan continues to handle transforms,
-initialization, names, and output. Start with the evaluator-writing guide at
-[`inst/examples/byold/README.md`](inst/examples/byold/README.md), or open it from
-an installed package with `system.file("examples/byold/README.md", package =
+Bring Your Own Density Kernel lets you attach a custom density kernel.
+A density kernel is a shared library that computes a Stan model’s unconstrained
+log density and full gradient. It replaces BridgeStan density evaluation.
+The nuts-rs NUTS sampler is unchanged. BridgeStan continues to handle transforms,
+initialization, names, and output. Start with the kernel-writing guide at
+[`inst/examples/density-kernel/README.md`](inst/examples/density-kernel/README.md), or open it from
+an installed package with `system.file("examples/density-kernel/README.md", package =
 "nutpieR")`. It links to the runnable `run.R` and the ABI header.
 
 ## How it works

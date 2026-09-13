@@ -2,7 +2,7 @@
 library(nutpieR)
 args <- commandArgs(trailingOnly = TRUE)
 fixtures <- normalizePath(args[[1]], mustWork = TRUE)
-work <- tempfile("byold-sampling-")
+work <- tempfile("density-kernel-sampling-")
 dir.create(work)
 source <- readLines(file.path(fixtures, "gaussian.c"))
 needle <- "    if (w) ++w->calls;"
@@ -18,7 +18,7 @@ status <- system2(file.path(R.home("bin"),"R"),c("CMD","SHLIB","fault.c"),
   stdout="build.log",stderr="build.log",timeout=90)
 if(status != 0L) stop(paste(readLines("build.log"),collapse="\n"))
 ref <- nutpie_compile_model(file.path(fixtures,"gaussian.stan"))
-bound <- nutpie_attach_density_evaluator(ref,normalizePath(paste0("fault",.Platform$dynlib.ext)),
+bound <- nutpie_attach_density_kernel(ref,normalizePath(paste0("fault",.Platform$dynlib.ext)),
                              list(n=2L,mu=1,sigma=2))
 error <- function(expr, pattern) {
   e <- tryCatch({force(expr);NULL},error=identity)
@@ -45,10 +45,10 @@ fit <- nutpie_sample(bound,num_draws=20L,num_warmup=200L,num_chains=2L,
   cores=1L,seed=42L,progress="none",adaptation="low_rank")
 stopifnot(inherits(fit,"draws_array"))
 dead <- unserialize(serialize(bound,NULL))
-error(nutpie_validate_density_evaluator(dead),"rebind")
+error(nutpie_validate_density_kernel(dead),"rebind")
 error(nutpie_sample(dead,num_draws=10L,num_warmup=20L,progress="none"),"rebind")
 rm(dead); gc()
-stopifnot(nutpie_validate_density_evaluator(bound)$status=="pass")
-cat("BYOLD SAMPLING REGRESSIONS PASSED\n")
+stopifnot(nutpie_validate_density_kernel(bound)$status=="pass")
+cat("density kernel sampling regressions passed\n")
 setwd(old)
 unlink(work,recursive=TRUE)

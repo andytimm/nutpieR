@@ -1,4 +1,4 @@
-#' Compare a density evaluator with its BridgeStan reference
+#' Compare a density kernel with its BridgeStan reference
 #'
 #' Compare log density and the full gradient at broad random unconstrained
 #' points by default. Use `method = "reference"` to add positions from a short
@@ -10,7 +10,7 @@
 #' memory safety or agreement outside the tested points. Sampling does not run
 #' this check automatically.
 #'
-#' @param model A bound model from [nutpie_attach_density_evaluator()].
+#' @param model A bound model from [nutpie_attach_density_kernel()].
 #' @param points Advanced: numeric matrix with one unconstrained point per row, or a
 #'   numeric vector for one point. These are not constrained parameter values.
 #' @param num_points Number of random points (default method) or retained
@@ -24,7 +24,7 @@
 #' The pilot reuses the bound reference and its data realization. It uses one
 #' chain/core, 200 warmup iterations, `num_points` retained draws, diagonal
 #' adaptation, target acceptance 0.8, maximum tree depth 10, and uniform
-#' `[-2, 2]` initialization. It never evaluates the evaluator and does not expand
+#' `[-2, 2]` initialization. It never evaluates the kernel and does not expand
 #' constrained outputs or generated quantities.
 #'
 #' This adds sampling cost; elapsed time and retained-draw diagnostics are in
@@ -32,21 +32,21 @@
 #' does not guarantee convergence or typical-set coverage.
 #'
 #' @section Guide:
-#' See `system.file("examples/byold/README.md", package = "nutpieR")` for the
-#' evaluator-writing workflow, layout rules, and interpretation of this check.
+#' See `system.file("examples/density-kernel/README.md", package = "nutpieR")` for the
+#' kernel-writing workflow, layout rules, and interpretation of this check.
 #' @param logp_atol,logp_rtol Absolute and relative log-density tolerances.
 #' @param gradient_atol,gradient_rtol Absolute and relative gradient tolerances.
-#' @return A `nutpie_density_evaluator_check` list containing an overall `status` (`pass`,
+#' @return A `nutpie_density_kernel_check` list containing an overall `status` (`pass`,
 #'   `fail`, or `inconclusive`), point and coordinate comparisons, repeatability,
 #'   tolerances, and untested checks. `method`, `point_source`, and `groups`
 #'   distinguish explicit, reference-pilot, and random points. Group statuses
 #'   are pointwise; repeatability is reported separately. `pilot` records
 #'   settings, elapsed seconds, and retained-draw diagnostics (or is `NULL`).
 #'   Invalid reference points cannot establish
-#'   agreement. Repeatability requires at least two distinct points: the evaluator
+#'   agreement. Repeatability requires at least two distinct points: the kernel
 #'   evaluates q1, q2, then q1 again using one workspace on the same thread.
 #' @export
-nutpie_validate_density_evaluator <- function(model, points = NULL, num_points = 10L,
+nutpie_validate_density_kernel <- function(model, points = NULL, num_points = 10L,
                                    seed = 1L, radius = 2,
                                    logp_atol = 1e-8, logp_rtol = 1e-6,
                                    gradient_atol = 1e-8, gradient_rtol = 1e-6,
@@ -62,7 +62,7 @@ nutpie_validate_density_evaluator <- function(model, points = NULL, num_points =
     if (!is.numeric(value) || length(value) != 1L || !is.finite(value) || value < 0)
       stop(name, " must be one finite nonnegative number.", call. = FALSE)
   }
-  dim <- evaluator_check_dimension(model)
+  dim <- kernel_check_dimension(model)
   generated <- is.null(points)
   if (generated) {
     if (!is.numeric(num_points) || length(num_points) != 1L ||
@@ -83,7 +83,7 @@ nutpie_validate_density_evaluator <- function(model, points = NULL, num_points =
     }, add = TRUE)
     set.seed(as.integer(seed))
     if (method == "reference") {
-      result <- evaluator_check_pilot(model, as.integer(num_points), as.integer(seed))
+      result <- kernel_check_pilot(model, as.integer(num_points), as.integer(seed))
       points <- result$points
       if (!is.matrix(points) || !is.numeric(points) ||
           !identical(base::dim(points), c(as.integer(num_points), dim)) ||
@@ -111,8 +111,8 @@ nutpie_validate_density_evaluator <- function(model, points = NULL, num_points =
     any(points[i, ] != points[1L, ]), logical(1)))
   repeat_rows <- if (length(other)) c(1L, other[1L], 1L) else integer()
   evaluation_points <- rbind(points, points[repeat_rows, , drop = FALSE])
-  values <- evaluator_check_evaluate(model, evaluation_points)
-  report <- evaluator_check_report(points, values, tolerances, repeat_rows,
+  values <- kernel_check_evaluate(model, evaluation_points)
+  report <- kernel_check_report(points, values, tolerances, repeat_rows,
                                 if (generated) seed else NULL)
   report$method <- method
   report$point_source <- point_source
@@ -131,8 +131,8 @@ nutpie_validate_density_evaluator <- function(model, points = NULL, num_points =
   report
 }
 
-evaluator_check_pilot <- function(model, num_points, seed) {
-  # Check the reference owner before paying for the pilot; never evaluate the evaluator.
+kernel_check_pilot <- function(model, num_points, seed) {
+  # Check the reference owner before paying for the pilot; never evaluate the kernel.
   bs_ndim_unc(model$bs_ptr)
   start <- proc.time()[["elapsed"]]
   result <- tryCatch(bs_reference_pilot(model$bs_ptr, num_points, seed),
@@ -147,15 +147,15 @@ evaluator_check_pilot <- function(model, num_points, seed) {
 }
 
 # Keep native calls separate so report logic can be tested without a library.
-evaluator_check_dimension <- function(model) {
-  if (!inherits(model, "nutpie_density_evaluator_model"))
-    stop("model must be a bound model from nutpie_attach_density_evaluator().", call. = FALSE)
+kernel_check_dimension <- function(model) {
+  if (!inherits(model, "nutpie_density_kernel_model"))
+    stop("model must be a bound model from nutpie_attach_density_kernel().", call. = FALSE)
   dim <- model$ndim
   if (!is.numeric(dim) || length(dim) != 1L || !is.finite(dim) || dim < 1 || dim != floor(dim))
-    stop("Bound model has an invalid dimension; reattach the evaluator.", call. = FALSE)
+    stop("Bound model has an invalid dimension; reattach the kernel.", call. = FALSE)
   as.integer(dim)
 }
-evaluator_check_evaluate <- function(model, points) {
+kernel_check_evaluate <- function(model, points) {
   point_list <- lapply(seq_len(nrow(points)), function(i) as.numeric(points[i, ]))
   normalize <- function(values) lapply(values, function(value) {
     value$status <- switch(as.character(value$status),
@@ -163,33 +163,33 @@ evaluator_check_evaluate <- function(model, points) {
     value
   })
   list(reference = normalize(bs_evaluate(model$bs_ptr, point_list)),
-       evaluator = normalize(density_evaluator_evaluate(model$evaluator_ptr, point_list)))
+       kernel = normalize(density_kernel_evaluate(model$kernel_ptr, point_list)))
 }
 
-evaluator_check_value <- function(value, dim) {
+kernel_check_value <- function(value, dim) {
   if (!is.list(value) || !identical(value$status, "ok")) return(FALSE)
   is.numeric(value$logp) && length(value$logp) == 1L && is.finite(value$logp) &&
     is.numeric(value$gradient) && length(value$gradient) == dim &&
     all(is.finite(value$gradient))
 }
 
-evaluator_check_close <- function(actual, reference, atol, rtol) {
+kernel_check_close <- function(actual, reference, atol, rtol) {
   # Scale before subtraction to avoid overflow for opposite large finite values.
   scale <- pmax(1, abs(actual), abs(reference))
   abs(actual / scale - reference / scale) <= atol / scale + rtol * abs(reference / scale)
 }
 
-evaluator_check_report <- function(points, values, tolerances, repeat_rows, seed) {
+kernel_check_report <- function(points, values, tolerances, repeat_rows, seed) {
   n <- nrow(points)
   dim <- ncol(points)
   expected <- n + length(repeat_rows)
   if (!is.list(values) || length(values$reference) != expected ||
-      length(values$evaluator) != expected)
+      length(values$kernel) != expected)
     stop("Native checker returned an invalid batch length.", call. = FALSE)
   t <- tolerances
   compare <- function(a, b) {
-    c(evaluator_check_close(a$logp, b$logp, t$logp_atol, t$logp_rtol),
-      evaluator_check_close(a$gradient, b$gradient, t$gradient_atol, t$gradient_rtol))
+    c(kernel_check_close(a$logp, b$logp, t$logp_atol, t$logp_rtol),
+      kernel_check_close(a$gradient, b$gradient, t$gradient_atol, t$gradient_rtol))
   }
   rows <- vector("list", n)
   coordinates <- vector("list", n)
@@ -197,9 +197,9 @@ evaluator_check_report <- function(points, values, tolerances, repeat_rows, seed
   gradients_agree <- TRUE
   for (i in seq_len(n)) {
     r <- values$reference[[i]]
-    k <- values$evaluator[[i]]
-    rv <- evaluator_check_value(r, dim)
-    kv <- evaluator_check_value(k, dim)
+    k <- values$kernel[[i]]
+    rv <- kernel_check_value(r, dim)
+    kv <- kernel_check_value(k, dim)
     status <- "inconclusive"
     reason <- "reference_invalid"
     lp_error <- NA_real_
@@ -208,7 +208,7 @@ evaluator_check_report <- function(points, values, tolerances, repeat_rows, seed
     if (rv) {
       if (!kv) {
         status <- "fail"
-        reason <- "evaluator_invalid"
+        reason <- "kernel_invalid"
       } else {
         agreement <- compare(k, r)
         lp_ok <- agreement[1L]
@@ -219,31 +219,31 @@ evaluator_check_report <- function(points, values, tolerances, repeat_rows, seed
         offsets <- c(offsets, lp_error)
         gradients_agree <- gradients_agree && grad_ok
         coordinates[[i]] <- data.frame(point = i, coordinate = seq_len(dim),
-          reference = r$gradient, evaluator = k$gradient,
+          reference = r$gradient, kernel = k$gradient,
           error = k$gradient - r$gradient, pass = agreement[-1L])
       }
     } else if (is.list(k) && (identical(k$status, "fatal") ||
                (identical(k$status, "ok") && !kv))) {
       status <- "fail"
-      reason <- "evaluator_invalid"
+      reason <- "kernel_invalid"
     }
     outcome <- function(v) if (is.list(v) && length(v$status) == 1L) as.character(v$status) else "malformed"
     message <- function(v) if (is.list(v) && length(v$message) == 1L) as.character(v$message) else ""
     rows[[i]] <- data.frame(point = i, status = status, reason = reason,
-      reference_status = outcome(r), evaluator_status = outcome(k),
-      reference_message = message(r), evaluator_message = message(k),
+      reference_status = outcome(r), kernel_status = outcome(k),
+      reference_message = message(r), kernel_message = message(k),
       logp_error = lp_error, logp_pass = lp_ok, gradient_pass = grad_ok)
   }
   comparisons <- do.call(rbind, rows)
   repeatability <- list(status = "inconclusive", reason = "need_two_distinct_points")
   if (length(repeat_rows)) {
-    a <- values$evaluator[[n + 1L]]
-    b <- values$evaluator[[n + 3L]]
-    valid <- evaluator_check_value(a, dim) && evaluator_check_value(b, dim)
-    repeat_values <- values$evaluator[n + seq_len(3L)]
+    a <- values$kernel[[n + 1L]]
+    b <- values$kernel[[n + 3L]]
+    valid <- kernel_check_value(a, dim) && kernel_check_value(b, dim)
+    repeat_values <- values$kernel[n + seq_len(3L)]
     broken <- any(vapply(repeat_values, function(v)
       !is.list(v) || identical(v$status, "fatal") ||
-        (identical(v$status, "ok") && !evaluator_check_value(v, dim)), logical(1)))
+        (identical(v$status, "ok") && !kernel_check_value(v, dim)), logical(1)))
     repeatability <- list(status = if (broken) "fail" else if (!valid) "inconclusive" else
       if (all(compare(a, b))) "pass" else "fail",
       reason = if (!valid) "invalid_repeated_point" else "interleaved_q1_q2_q1",
@@ -252,8 +252,8 @@ evaluator_check_report <- function(points, values, tolerances, repeat_rows, seed
   }
   constant_offset <- list(status = "untested", offset = NA_real_)
   if (length(offsets) >= 2L && all(is.finite(offsets)) && gradients_agree) {
-    stable <- all(evaluator_check_close(offsets, offsets[1L], t$logp_atol, t$logp_rtol))
-    nonzero <- any(!evaluator_check_close(offsets, 0, t$logp_atol, 0))
+    stable <- all(kernel_check_close(offsets, offsets[1L], t$logp_atol, t$logp_rtol))
+    nonzero <- any(!kernel_check_close(offsets, 0, t$logp_atol, 0))
     constant_offset <- list(status = if (stable && nonzero) "possible_constant_offset" else "not_detected",
                             offset = if (stable) offsets[1L] else NA_real_)
   }
@@ -266,5 +266,5 @@ evaluator_check_report <- function(points, values, tolerances, repeat_rows, seed
     constant_offset = constant_offset,
     counts = table(factor(comparisons$status, levels = c("pass", "fail", "inconclusive"))),
     untested = c("concurrent_workspaces", "memory_safety", "all_parameter_space")),
-    class = "nutpie_density_evaluator_check")
+    class = "nutpie_density_kernel_check")
 }

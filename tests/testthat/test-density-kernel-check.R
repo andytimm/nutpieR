@@ -6,22 +6,22 @@ checker_case <- function(change = identity, reference_change = identity,
                          points = rbind(c(1, 2), c(2, 3))) {
   order <- c(seq_len(nrow(points)), 1L, 2L, 1L)
   r <- lapply(order, function(i) checker_ok(points[i, ]))
-  evaluator_check_report(points, list(reference = reference_change(r), evaluator = change(r)),
+  kernel_check_report(points, list(reference = reference_change(r), kernel = change(r)),
                       checker_tolerances, c(1L, 2L, 1L), NULL)
 }
 
 test_that("strict agreement reports all coordinates and mandatory repeatability", {
   report <- checker_case()
-  expect_s3_class(report, "nutpie_density_evaluator_check")
+  expect_s3_class(report, "nutpie_density_kernel_check")
   expect_named(report, c("status", "advisory", "convention", "points", "seed",
                          "tolerances", "comparisons", "gradients", "repeatability",
                          "constant_offset", "counts", "untested"))
   expect_named(report$comparisons, c("point", "status", "reason", "reference_status",
-                                      "evaluator_status", "reference_message",
-                                      "evaluator_message", "logp_error", "logp_pass",
+                                      "kernel_status", "reference_message",
+                                      "kernel_message", "logp_error", "logp_pass",
                                       "gradient_pass"))
   expect_named(report$gradients,
-               c("point", "coordinate", "reference", "evaluator", "error", "pass"))
+               c("point", "coordinate", "reference", "kernel", "error", "pass"))
   expect_identical(report$status, "pass")
   expect_true(report$advisory)
   expect_equal(nrow(report$gradients), 4L)
@@ -52,7 +52,7 @@ test_that("length, finite and failed-status output checks do not consume poison"
   for (mutation in mutations) {
     report <- checker_case(function(x) { x[[1]] <- mutation(x[[1]]); x })
     expect_identical(report$status, "fail")
-    expect_identical(report$comparisons$reason[1], "evaluator_invalid")
+    expect_identical(report$comparisons$reason[1], "kernel_invalid")
   }
 })
 
@@ -74,22 +74,22 @@ test_that("q1 q2 q1 detects stale mutable workspace results", {
 })
 
 test_that("relative and absolute tolerance scale safely", {
-  expect_true(evaluator_check_close(1e10 + 1, 1e10, 0, 1e-6))
-  expect_true(evaluator_check_close(1e-9, 0, 1e-8, 0))
-  expect_false(evaluator_check_close(1e308, -1e308, 0, 1e-6))
+  expect_true(kernel_check_close(1e10 + 1, 1e10, 0, 1e-6))
+  expect_true(kernel_check_close(1e-9, 0, 1e-8, 0))
+  expect_false(kernel_check_close(1e308, -1e308, 0, 1e-6))
 })
 
 test_that("point generation preserves RNG and is seeded; explicit points use one batch", {
   # Isolated function environment allows mocking without loading the native DLL.
-  env <- new.env(parent = environment(nutpie_validate_density_evaluator))
-  validate <- nutpie_validate_density_evaluator
+  env <- new.env(parent = environment(nutpie_validate_density_kernel))
+  validate <- nutpie_validate_density_kernel
   environment(validate) <- env
-  env$evaluator_check_dimension <- function(model) 2L
+  env$kernel_check_dimension <- function(model) 2L
   captured <- NULL
-  env$evaluator_check_evaluate <- function(model, points) {
+  env$kernel_check_evaluate <- function(model, points) {
     captured <<- points
     x <- lapply(seq_len(nrow(points)), function(i) checker_ok(points[i, ]))
-    list(reference = x, evaluator = x)
+    list(reference = x, kernel = x)
   }
   set.seed(717)
   state <- .Random.seed
@@ -117,17 +117,17 @@ test_that("fatal errors in the repeatability batch cannot become inconclusive", 
   expect_identical(report$repeatability$status, "fail")
 })
 
-test_that("native BYOLD fixture matrix passes in bounded child processes", {
-  skip_if(Sys.getenv("NUTPIER_RUN_BYOLD_TESTS") != "1",
-          "set NUTPIER_RUN_BYOLD_TESTS=1 after a release install")
-  fixture_dir <- normalizePath(test_path("byold-v1"), mustWork = TRUE)
+test_that("native density kernel fixture matrix passes in bounded child processes", {
+  skip_if(Sys.getenv("NUTPIER_RUN_DENSITY_KERNEL_TESTS") != "1",
+          "set NUTPIER_RUN_DENSITY_KERNEL_TESTS=1 after a release install")
+  fixture_dir <- normalizePath(test_path("density-kernel-v1"), mustWork = TRUE)
   for (mode in 0:16) {
-    log <- tempfile(paste0("byold-mode-", mode, "-"), fileext = ".log")
+    log <- tempfile(paste0("density-kernel-mode-", mode, "-"), fileext = ".log")
     status <- system2(file.path(R.home("bin"), "Rscript"),
       c(shQuote(file.path(fixture_dir, "native-case.R")), shQuote(fixture_dir), mode),
       stdout = log, stderr = log, timeout = 240)
     output <- paste(readLines(log, warn = FALSE), collapse = "\n")
     expect_equal(status, 0L, info = paste("mode", mode, "log", log, output))
-    expect_match(output, paste("BYOLD fixture mode", mode, "passed"))
+    expect_match(output, paste("density kernel fixture mode", mode, "passed"))
   }
 })

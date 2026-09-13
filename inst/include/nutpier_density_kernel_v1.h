@@ -1,16 +1,16 @@
-#ifndef NUTPIER_DENSITY_EVALUATOR_V1_H
-#define NUTPIER_DENSITY_EVALUATOR_V1_H
+#ifndef NUTPIER_DENSITY_KERNEL_V1_H
+#define NUTPIER_DENSITY_KERNEL_V1_H
 #include <stddef.h>
 #include <stdint.h>
 #ifdef _WIN32
-#define NUTPIER_DENSITY_EVALUATOR_EXPORT __declspec(dllexport)
+#define NUTPIER_DENSITY_KERNEL_EXPORT __declspec(dllexport)
 #else
-#define NUTPIER_DENSITY_EVALUATOR_EXPORT __attribute__((visibility("default")))
+#define NUTPIER_DENSITY_KERNEL_EXPORT __attribute__((visibility("default")))
 #endif
 #ifdef __cplusplus
 extern "C" {
 #endif
-/* Experimental ABI for trusted density evaluators running inside R.
+/* Experimental ABI for trusted density kernels running inside R.
  *
  * Calls and buffers
  * All functions use the C calling convention; doubles are IEEE-754 binary64.
@@ -39,20 +39,20 @@ extern "C" {
  * Match BridgeStan propto=true, jacobian=true and its exact ordered
  * unconstrained coordinates. Layout is newline-separated BridgeStan unc names
  * without a trailing newline. Bind must reject dimension/layout mismatches.
- * JSON follows nutpie_attach_density_evaluator documentation: jsonlite auto_unbox=TRUE,
+ * JSON follows nutpie_attach_density_kernel documentation: jsonlite auto_unbox=TRUE,
  * digits=NA for lists; JSON strings/files unchanged; absent data becomes {}.
- * Parse values, not byte formatting. Fixed-data density evaluators must verify meaningful
+ * Parse values, not byte formatting. Fixed-data density kernels must verify meaningful
  * supplied values against embedded data.
  */
-NUTPIER_DENSITY_EVALUATOR_EXPORT uint32_t nutpier_density_evaluator_abi_version(void);
-NUTPIER_DENSITY_EVALUATOR_EXPORT int32_t nutpier_density_evaluator_bind(const char *json, size_t json_len,
+NUTPIER_DENSITY_KERNEL_EXPORT uint32_t nutpier_density_kernel_abi_version(void);
+NUTPIER_DENSITY_KERNEL_EXPORT int32_t nutpier_density_kernel_bind(const char *json, size_t json_len,
     size_t ndim, const char *layout, size_t layout_len, void **bound,
     char *error, size_t error_capacity);
-NUTPIER_DENSITY_EVALUATOR_EXPORT void nutpier_density_evaluator_destroy(void *bound);
-NUTPIER_DENSITY_EVALUATOR_EXPORT int32_t nutpier_density_evaluator_workspace(void *bound, void **workspace,
+NUTPIER_DENSITY_KERNEL_EXPORT void nutpier_density_kernel_destroy(void *bound);
+NUTPIER_DENSITY_KERNEL_EXPORT int32_t nutpier_density_kernel_workspace(void *bound, void **workspace,
     char *error, size_t error_capacity);
-NUTPIER_DENSITY_EVALUATOR_EXPORT void nutpier_density_evaluator_workspace_destroy(void *bound, void *workspace);
-NUTPIER_DENSITY_EVALUATOR_EXPORT int32_t nutpier_density_evaluator_evaluate(void *bound, void *workspace,
+NUTPIER_DENSITY_KERNEL_EXPORT void nutpier_density_kernel_workspace_destroy(void *bound, void *workspace);
+NUTPIER_DENSITY_KERNEL_EXPORT int32_t nutpier_density_kernel_evaluate(void *bound, void *workspace,
     const double *position, size_t ndim, double *logp, double *gradient,
     char *error, size_t error_capacity);
 #ifdef __cplusplus

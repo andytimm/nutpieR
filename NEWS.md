@@ -1,10 +1,11 @@
 # nutpieR (development)
 
-* Experimental Bring Your Own Log Density (BYOLD) support attaches custom
-  density evaluators that return the unconstrained log density and full
-  gradient. BridgeStan remains the reference, and the NUTS sampler is unchanged.
+* Experimental Bring Your Own Density Kernel support attaches custom
+  density kernels. A density kernel is a shared library that computes a Stan
+  model’s unconstrained log density and full gradient. It replaces BridgeStan
+  density evaluation, and the NUTS sampler is unchanged.
   Includes numerical checks, a versioned C ABI, a layout helper, and a runnable
-  evaluator example.
+  kernel example.
 
 # nutpieR 1.8.7
 

@@ -205,13 +205,13 @@ pub enum StanLogpError {
     #[error("Non-finite logp: {0}")]
     BadLogp(f64),
     #[error(transparent)]
-    DensityEvaluator(#[from] crate::density_evaluator::DensityEvaluatorError),
+    DensityKernel(#[from] crate::density_kernel::DensityKernelError),
 }
 
 impl nuts_rs::LogpError for StanLogpError {
     fn is_recoverable(&self) -> bool {
         match self {
-            Self::DensityEvaluator(error) => error.status == 1,
+            Self::DensityKernel(error) => error.status == 1,
             _ => true,
         }
     }
@@ -240,8 +240,8 @@ thread_local! {
 }
 
 pub struct StanModel {
-    evaluator: Option<Arc<crate::density_evaluator::BoundDensityEvaluator>>,
-    pub run_state: Option<Arc<crate::density_evaluator::RunState>>,
+    kernel: Option<Arc<crate::density_kernel::BoundDensityKernel>>,
+    pub run_state: Option<Arc<crate::density_kernel::RunState>>,
     inner: Arc<bridgestan::Model<Arc<bridgestan::StanLibrary>>>,
     ndim: usize,
     include_tp: bool,
@@ -266,7 +266,7 @@ pub struct StanModel {
 impl StanModel {
     pub fn new(handle: &BSHandle) -> Self {
         StanModel {
-            evaluator: None,
+            kernel: None,
             run_state: None,
             inner: Arc::clone(&handle.model),
             ndim: handle.ndim_unc,
@@ -288,23 +288,23 @@ impl StanModel {
     /// directly, without constrained output expansion or generated quantities.
     pub fn reference_pilot(handle: &BSHandle) -> Self {
         let mut model = Self::new(handle);
-        model.run_state = Some(Arc::new(crate::density_evaluator::RunState::default()));
+        model.run_state = Some(Arc::new(crate::density_kernel::RunState::default()));
         model.unconstrained_output = true;
         model.num_constrained = handle.ndim_unc;
         model.constrained_param_names = handle.unc_names.clone();
         model
     }
 
-    pub fn with_evaluator(
+    pub fn with_kernel(
         mut self,
-        evaluator: Arc<crate::density_evaluator::BoundDensityEvaluator>,
+        kernel: Arc<crate::density_kernel::BoundDensityKernel>,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
-            evaluator.ndim == self.ndim,
-            "Density evaluator/reference dimension mismatch"
+            kernel.ndim == self.ndim,
+            "Density kernel/reference dimension mismatch"
         );
-        self.evaluator = Some(evaluator);
-        self.run_state = Some(Arc::new(crate::density_evaluator::RunState::default()));
+        self.kernel = Some(kernel);
+        self.run_state = Some(Arc::new(crate::density_kernel::RunState::default()));
         Ok(self)
     }
 
@@ -399,12 +399,12 @@ impl Model for StanModel {
         } else {
             self.run_state
                 .as_ref()
-                .map(|state| crate::density_evaluator::WorkerGuard(state.clone()))
+                .map(|state| crate::density_kernel::WorkerGuard(state.clone()))
         };
         MY_CHAIN_ID.with(|c| c.set(Some(chain_id)));
 
-        let evaluator_workspace = match &self.evaluator {
-            Some(evaluator) => match evaluator.workspace() {
+        let kernel_workspace = match &self.kernel {
+            Some(kernel) => match kernel.workspace() {
                 Ok(workspace) => Some(workspace),
                 Err(error) => {
                     if let Some(state) = &self.run_state {
@@ -422,7 +422,7 @@ impl Model for StanModel {
             error
         })?;
         Ok(CpuMath::new(StanDensity {
-            evaluator_workspace,
+            kernel_workspace,
             _worker_guard: worker_guard,
             model: self,
             rng: bs_rng,
@@ -458,7 +458,7 @@ impl Model for StanModel {
     }
 }
 
-// --- StanDensity: per-chain logp evaluator ---
+// --- StanDensity: per-chain logp kernel ---
 
 // On an expansion failure, retry the largest potentially valid output prefix
 // first. GQ can fail while parameters/TP are valid; TP can fail while the
@@ -479,8 +479,8 @@ fn expansion_fallbacks(
 }
 
 pub struct StanDensity<'model> {
-    evaluator_workspace: Option<crate::density_evaluator::Workspace>,
-    _worker_guard: Option<crate::density_evaluator::WorkerGuard>,
+    kernel_workspace: Option<crate::density_kernel::Workspace>,
+    _worker_guard: Option<crate::density_kernel::WorkerGuard>,
     model: &'model StanModel,
     rng: bridgestan::Rng<&'model bridgestan::StanLibrary>,
     expand_errors: Arc<AtomicUsize>,
@@ -508,7 +508,7 @@ impl<'model> CpuLogpFunc for StanDensity<'model> {
         position: &[f64],
         gradient: &mut [f64],
     ) -> std::result::Result<f64, Self::LogpError> {
-        if let Some(workspace) = &mut self.evaluator_workspace {
+        if let Some(workspace) = &mut self.kernel_workspace {
             if let Some(message) = self
                 .model
                 .run_state
@@ -516,7 +516,7 @@ impl<'model> CpuLogpFunc for StanDensity<'model> {
                 .and_then(|state| state.error())
             {
                 return Err(
-                    crate::density_evaluator::DensityEvaluatorError { status: 2, message }.into(),
+                    crate::density_kernel::DensityKernelError { status: 2, message }.into(),
                 );
             }
             return workspace.evaluate(position, gradient).map_err(|error| {

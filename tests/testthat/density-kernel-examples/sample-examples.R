@@ -2,8 +2,8 @@ library(nutpieR)
 library(testthat)
 args <- commandArgs(trailingOnly = TRUE)
 fixtures <- normalizePath(args[[1]], mustWork = TRUE)
-root <- tempfile("byold-examples-"); dir.create(root)
-make_evaluator <- function(mode) {
+root <- tempfile("density-kernel-examples-"); dir.create(root)
+make_kernel <- function(mode) {
   work <- file.path(root, paste0("mode", mode)); dir.create(work, showWarnings=FALSE)
   file.copy(file.path(fixtures,"gaussian.c"),work,overwrite=TRUE)
   old <- setwd(work); on.exit(setwd(old))
@@ -14,8 +14,8 @@ make_evaluator <- function(mode) {
 }
 normal_ref <- nutpie_compile_model(file.path(fixtures,"gaussian.stan"))
 positive_ref <- nutpie_compile_model(file.path(fixtures,"positive.stan"))
-normal <- nutpie_attach_density_evaluator(normal_ref,make_evaluator(0),list(n=2L,mu=1,sigma=2))
-positive <- nutpie_attach_density_evaluator(positive_ref,make_evaluator(15),list(n=2L,mu=1,sigma=2))
+normal <- nutpie_attach_density_kernel(normal_ref,make_kernel(0),list(n=2L,mu=1,sigma=2))
+positive <- nutpie_attach_density_kernel(positive_ref,make_kernel(15),list(n=2L,mu=1,sigma=2))
 # First run intentionally unchecked: advisory validation cannot be a sampling gate.
 fit <- nutpie_sample(normal,num_draws=500,num_warmup=300,num_chains=4,cores=2,seed=421,progress="none",save_warmup=TRUE,store_gradient=TRUE,store_unconstrained=TRUE,store_mass_matrix=TRUE,store_divergences=TRUE)
 expect_s3_class(fit,"draws_array")
@@ -29,8 +29,8 @@ for (n in c("x[1]","x[2]")) {
 expect_equal(dim(nutpie_warmup_draws(fit))[1:2],c(300L,4L))
 expect_equal(length(nutpie_diagnostics(fit)$chain),2000L)
 expect_equal(length(nutpie_warmup_diagnostics(fit)$chain),1200L)
-expect_identical(nutpie_validate_density_evaluator(normal)$status,"pass")
-expect_identical(nutpie_validate_density_evaluator(positive)$status,"pass")
+expect_identical(nutpie_validate_density_kernel(normal)$status,"pass")
+expect_identical(nutpie_validate_density_kernel(positive)$status,"pass")
 for (adapt in c("diag","low_rank")) {
   cat("POSITIVE",adapt,"\n")
   p <- nutpie_sample(positive,num_draws=300,num_warmup=300,num_chains=4,cores=2,seed=432,progress="none",adaptation=adapt,init=list(x=c(1,2)),save_warmup=TRUE)
