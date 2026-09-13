@@ -1,0 +1,44 @@
+name: Windows density kernel test
+
+on:
+  push:
+    branches: [feat/density-kernel]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  density-kernel:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      NOT_CRAN: "TRUE"
+      NUTPIER_RUN_DENSITY_KERNEL_TESTS: "1"
+    defaults:
+      run:
+        working-directory: nutpieR density windows
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: nutpieR density windows
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          working-directory: nutpieR density windows
+          dependencies: '"hard"'
+          extra-packages: any::devtools, any::testthat
+          install-pandoc: false
+          install-quarto: false
+      - name: Show Rust toolchain
+        shell: bash
+        run: rustc --version && cargo --version
+      - name: Install nutpieR
+        shell: Rscript {0}
+        run: devtools::install(quick = TRUE, upgrade = "never")
+      - name: Run density kernel tests
+        shell: Rscript {0}
+        run: devtools::test(filter = "density-kernel")
