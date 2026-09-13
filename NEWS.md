@@ -1,5 +1,7 @@
 # nutpieR (development)
 
+* Returned native sampling elapsed time as the `"sampling_time"` draws attribute.
+
 * Experimental Bring Your Own Density Kernel support attaches custom
   density kernels. A density kernel is a shared library that computes a Stan
   model’s unconstrained log density and full gradient. It replaces BridgeStan

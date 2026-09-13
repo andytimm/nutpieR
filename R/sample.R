@@ -2,8 +2,10 @@
 #'
 #' Runs the nuts-rs NUTS sampler on a compiled Stan model.
 #'
-#' @param model A `"nutpie_model"` object from [nutpie_compile_model()],
-#'   or a path to a compiled shared library.
+#' @param model A `"nutpie_model"` object from [nutpie_compile_model()], a
+#'   path to a compiled shared library, or a bound
+#'   `"nutpie_density_kernel_model"`. A bound kernel model uses the data
+#'   attached with [nutpie_attach_density_kernel()], so `data` must be omitted.
 #' @param data Model data. Can be:
 #'   - A named list (will be converted to JSON via [jsonlite::toJSON()])
 #'   - A JSON string
@@ -160,9 +162,12 @@
 #'   `(num_draws, num_chains, n_params)`. Sampler diagnostics are attached
 #'   as an attribute and can be retrieved with [nutpie_diagnostics()]; see
 #'   `?nutpie_diagnostics` for the chain / draw indexing convention (1-indexed,
-#'   phase-relative). The attributes `"num_warmup"` and `"num_draws"` record
-#'   the sampling configuration (accessible via `attr(draws, "num_warmup")`
-#'   etc.). The `"sampler_config"` attribute is a JSON string capturing the
+#'   phase-relative). The `"sampling_time"` attribute is elapsed seconds for
+#'   the native sampling call, including sampler work, progress callbacks, and
+#'   native result extraction, but excluding R setup and result assembly. The
+#'   attributes `"num_warmup"` and `"num_draws"` record the sampling
+#'   configuration (accessible via `attr(draws, "num_warmup")` etc.). The
+#'   `"sampler_config"` attribute is a JSON string capturing the
 #'   *effective* `nuts-rs` settings used (including any defaults that were
 #'   left unspecified by the caller, and exposing `num_warmup` to match the
 #'   function argument name); parse with [jsonlite::fromJSON()].
@@ -284,7 +289,8 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
 
   call_sample_stan <- function(progress_callback) {
     progress_callback <- protect_progress_callback(progress_callback)
-    sample_stan(
+    started <- proc.time()[["elapsed"]]
+    raw <- sample_stan(
       handle,
       num_draws,
       num_warmup,
@@ -312,21 +318,20 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
       progress_callback,
       kernel = if (kernel_bound) model$kernel_ptr else NULL
     )
+    list(raw = raw, sampling_time = proc.time()[["elapsed"]] - started)
   }
 
-  raw <- switch(
+  sample_result <- switch(
     resolved_progress,
     "cli" = {
       progress_callback <- make_cli_progress_callback(
         num_chains, num_warmup, num_draws,
         chain_format = chain_format
       )
-      progress_started <- Sys.time()
       on.exit(finish_progress_callback(progress_callback), add = TRUE)
-      raw <- call_sample_stan(progress_callback)
+      sample_result <- call_sample_stan(progress_callback)
       finish_progress_callback(progress_callback)
-      attr(raw, "progress_elapsed") <- as.numeric(difftime(Sys.time(), progress_started, units = "secs"))
-      raw
+      sample_result
     },
     "text" = {
       progress_callback <- make_text_progress_callback(
@@ -341,15 +346,15 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
         num_chains, if (num_chains == 1L) "" else "s",
         format_draw_count(num_draws), format_draw_count(num_warmup)
       ))
-      progress_started <- Sys.time()
       on.exit(finish_progress_callback(progress_callback), add = TRUE)
-      raw <- call_sample_stan(progress_callback)
+      sample_result <- call_sample_stan(progress_callback)
       finish_progress_callback(progress_callback)
-      attr(raw, "progress_elapsed") <- as.numeric(difftime(Sys.time(), progress_started, units = "secs"))
-      raw
+      sample_result
     },
     call_sample_stan(NULL)
   )
+  raw <- sample_result$raw
+  sampling_time <- as.double(sample_result$sampling_time)
   draws <- assemble_sample_result(
     raw,
     num_draws = num_draws,
@@ -358,10 +363,11 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     save_warmup = save_warmup
   )
   attr(draws, "variables_filtered") <- !is.null(pars)
+  attr(draws, "sampling_time") <- as.double(sampling_time)
   maybe_print_sampling_summary(
     draws,
-    raw,
     resolved_progress = resolved_progress,
+    sampling_time = sampling_time,
     num_chains = num_chains
   )
   warn_on_expand_errors(raw$expand_errors %||% 0L)
@@ -389,12 +395,13 @@ assemble_sample_result <- function(raw, num_draws, num_warmup, num_chains,
   draws
 }
 
-maybe_print_sampling_summary <- function(draws, raw, resolved_progress, num_chains) {
+maybe_print_sampling_summary <- function(draws, resolved_progress, num_chains,
+                                         sampling_time) {
   if (!resolved_progress %in% c("cli", "text")) return(invisible(NULL))
   print_sampling_diagnostic_summary(
     attr(draws, "diagnostics"),
     num_chains = num_chains,
-    elapsed = attr(raw, "progress_elapsed") %||% 0,
+    elapsed = sampling_time,
     max_treedepth = progress_max_treedepth(attr(draws, "sampler_config"))
   )
 }

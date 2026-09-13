@@ -36,8 +36,10 @@ nutpie_sample(
 )
 }
 \arguments{
-\item{model}{A \code{"nutpie_model"} object from \code{\link[=nutpie_compile_model]{nutpie_compile_model()}},
-or a path to a compiled shared library.}
+\item{model}{A \code{"nutpie_model"} object from \code{\link[=nutpie_compile_model]{nutpie_compile_model()}}, a
+path to a compiled shared library, or a bound
+\code{"nutpie_density_kernel_model"}. A bound kernel model uses the data
+attached with \code{\link[=nutpie_attach_density_kernel]{nutpie_attach_density_kernel()}}, so \code{data} must be omitted.}
 
 \item{data}{Model data. Can be:
 \itemize{
@@ -225,9 +227,12 @@ A \code{posterior::draws_array} with dimensions
 \verb{(num_draws, num_chains, n_params)}. Sampler diagnostics are attached
 as an attribute and can be retrieved with \code{\link[=nutpie_diagnostics]{nutpie_diagnostics()}}; see
 \code{?nutpie_diagnostics} for the chain / draw indexing convention (1-indexed,
-phase-relative). The attributes \code{"num_warmup"} and \code{"num_draws"} record
-the sampling configuration (accessible via \code{attr(draws, "num_warmup")}
-etc.). The \code{"sampler_config"} attribute is a JSON string capturing the
+phase-relative). The \code{"sampling_time"} attribute is elapsed seconds for
+the native sampling call, including sampler work, progress callbacks, and
+native result extraction, but excluding R setup and result assembly. The
+attributes \code{"num_warmup"} and \code{"num_draws"} record the sampling
+configuration (accessible via \code{attr(draws, "num_warmup")} etc.). The
+\code{"sampler_config"} attribute is a JSON string capturing the
 \emph{effective} \code{nuts-rs} settings used (including any defaults that were
 left unspecified by the caller, and exposing \code{num_warmup} to match the
 function argument name); parse with \code{\link[jsonlite:fromJSON]{jsonlite::fromJSON()}}.

@@ -442,6 +442,14 @@ test_that("bernoulli end-to-end run surfaces draws + diagnostics + attributes", 
   # Attributes record sampling configuration
   expect_equal(attr(draws, "num_warmup"), 200L)
   expect_equal(attr(draws, "num_draws"), 200L)
+  sampling_time <- attr(draws, "sampling_time")
+  expect_type(sampling_time, "double")
+  expect_length(sampling_time, 1L)
+  expect_true(is.finite(sampling_time))
+  expect_gte(sampling_time, 0)
+  expect_false("sampling_time" %in% names(jsonlite::fromJSON(
+    attr(draws, "sampler_config")
+  )))
 
   # Posterior mean: 2/10 successes + Beta(1,1) prior -> Beta(3,9), mean = 0.25
   summ <- posterior::summarize_draws(draws)
