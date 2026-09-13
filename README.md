@@ -126,15 +126,12 @@ defaults: 400 warmup draws for diagonal adaptation and 800 for low-rank.
 
 ### Bring Your Own Density Kernel
 
-Bring Your Own Density Kernel lets you attach a custom density kernel.
-A density kernel is a shared library that computes a Stan model’s unconstrained
-log density and full gradient. It replaces BridgeStan density evaluation. Only
-attach libraries you trust. Native code runs in R and can crash or corrupt it.
-The nuts-rs NUTS sampler is unchanged. BridgeStan continues to handle transforms,
-initialization, names, and output. Start with the kernel-writing guide at
-[`inst/examples/density-kernel/README.md`](inst/examples/density-kernel/README.md), or open it from
-an installed package with `system.file("examples/density-kernel/README.md", package =
-"nutpieR")`. It links to the runnable `run.R` and the ABI header.
+Bring Your Own Density Kernel is an experimental feature which allows you to attach a custom density kernel, which often provides significant (several times) speedups. A density kernel is a small shared library that computes a model’s unconstrained log density and full gradient. It replaces BridgeStan density evaluation, but continues to use the underlying nuts-rs NUTS sampler.
+
+To learn more, check out this blog post.
+
+To write your own kernel, I'd suggest starting with the kernel-writing guide at
+[`inst/examples/density-kernel/README.md`](inst/examples/density-kernel/README.md). As simple kernel writing and validation is quite well-handled by modern LLMs, this documentation more than others in the package is optimized for LLM consumption.
 
 ## How it works
 
