@@ -1,3 +1,8 @@
+# nutpieR 1.9.1
+
+* Fixed macOS TBB conflicts with RcppParallel 6.2.1 when `brms` and nutpieR
+  are loaded in the same R session (#49).
+
 # nutpieR 1.9.0
 
 * Added experimental Bring Your Own Density Kernel support. A custom density

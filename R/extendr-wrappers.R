@@ -23,6 +23,11 @@ bridgestan_stanc_path <- function() .Call(wrap__bridgestan_stanc_path)
 #' @noRd
 compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__compile_stan_model, stan_file, stanc_args, compile_args)
 
+#' Resolve a macOS Stan model to a copy linked against nutpieR's private TBB.
+#' No-op on other platforms or for an already-private model.
+#' @noRd
+private_tbb_model <- function(lib_path) .Call(wrap__private_tbb_model, lib_path)
+
 #' Whether nutpieR's live progress renderer is safe to run given the currently
 #' loaded allocator (GitHub #36). Always TRUE off macOS.
 #' @noRd

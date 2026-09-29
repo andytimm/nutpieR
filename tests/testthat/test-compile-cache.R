@@ -96,6 +96,7 @@ test_that("stan_file cache: hit, edit invalidates, flag change invalidates", {
   counter <- new.env(parent = emptyenv())
   testthat::local_mocked_bindings(
     compile_stan_model = make_compile_stub(counter),
+    private_tbb_model = identity,
     bs_version = function() "TEST.0",
     bridgestan_version = function() "TEST.0",
     .package = "nutpieR"
@@ -135,6 +136,7 @@ test_that("cache = FALSE compiles to a fresh tempdir, leaves cache untouched", {
   counter <- new.env(parent = emptyenv())
   testthat::local_mocked_bindings(
     compile_stan_model = make_compile_stub(counter),
+    private_tbb_model = identity,
     bs_version = function() "TEST.0",
     bridgestan_version = function() "TEST.0",
     .package = "nutpieR"
@@ -159,6 +161,7 @@ test_that("compile validates cache and verbose arguments", {
   counter <- new.env(parent = emptyenv())
   testthat::local_mocked_bindings(
     compile_stan_model = make_compile_stub(counter),
+    private_tbb_model = identity,
     bs_version = function() "TEST.0",
     bridgestan_version = function() "TEST.0",
     .package = "nutpieR"
@@ -183,6 +186,7 @@ test_that("inline cache: hit, miss on content/flags, clear wipes", {
   counter <- new.env(parent = emptyenv())
   testthat::local_mocked_bindings(
     compile_stan_model = make_compile_stub(counter),
+    private_tbb_model = identity,
     bs_version = function() "TEST.0",
     bridgestan_version = function() "TEST.0",
     .package = "nutpieR"
@@ -222,6 +226,7 @@ test_that("stan_file and code with byte-identical content share a cache slot", {
   counter <- new.env(parent = emptyenv())
   testthat::local_mocked_bindings(
     compile_stan_model = make_compile_stub(counter),
+    private_tbb_model = identity,
     bs_version = function() "TEST.0",
     bridgestan_version = function() "TEST.0",
     .package = "nutpieR"
@@ -246,6 +251,7 @@ test_that("crash-safe: .so without `ok` marker is not treated as a hit", {
   counter <- new.env(parent = emptyenv())
   testthat::local_mocked_bindings(
     compile_stan_model = make_compile_stub(counter),
+    private_tbb_model = identity,
     bs_version = function() "TEST.0",
     bridgestan_version = function() "TEST.0",
     .package = "nutpieR"
@@ -274,6 +280,7 @@ test_that("editing an #include'd file invalidates the cache", {
   counter <- new.env(parent = emptyenv())
   testthat::local_mocked_bindings(
     compile_stan_model = make_compile_stub(counter),
+    private_tbb_model = identity,
     bs_version = function() "TEST.0",
     bridgestan_version = function() "TEST.0",
     .package = "nutpieR"
@@ -303,6 +310,7 @@ test_that("multi-space, missing, and nested #include all invalidate properly", {
   counter <- new.env(parent = emptyenv())
   testthat::local_mocked_bindings(
     compile_stan_model = make_compile_stub(counter),
+    private_tbb_model = identity,
     bs_version = function() "TEST.0",
     bridgestan_version = function() "TEST.0",
     .package = "nutpieR"
@@ -343,6 +351,7 @@ test_that("commented-out #include directives are ignored", {
   counter <- new.env(parent = emptyenv())
   testthat::local_mocked_bindings(
     compile_stan_model = make_compile_stub(counter),
+    private_tbb_model = identity,
     bs_version = function() "TEST.0",
     bridgestan_version = function() "TEST.0",
     .package = "nutpieR"
@@ -428,6 +437,7 @@ test_that("cache hit refreshes ok marker mtime (so prune treats it as LRU)", {
   counter <- new.env(parent = emptyenv())
   testthat::local_mocked_bindings(
     compile_stan_model = make_compile_stub(counter),
+    private_tbb_model = identity,
     bs_version = function() "TEST.0",
     bridgestan_version = function() "TEST.0",
     .package = "nutpieR"
@@ -546,6 +556,7 @@ test_that("print.nutpie_model shows user source path, not staged copy", {
   counter <- new.env(parent = emptyenv())
   testthat::local_mocked_bindings(
     compile_stan_model = make_compile_stub(counter),
+    private_tbb_model = identity,
     bs_version = function() "TEST.0",
     bridgestan_version = function() "TEST.0",
     .package = "nutpieR"
@@ -722,6 +733,7 @@ test_that("untrackable stanc output modes bypass the persistent include cache", 
   counter <- new.env(parent = emptyenv())
   testthat::local_mocked_bindings(
     compile_stan_model = make_compile_stub(counter),
+    private_tbb_model = identity,
     bs_version = function() "TEST.0",
     bridgestan_version = function() "TEST.0",
     .package = "nutpieR"

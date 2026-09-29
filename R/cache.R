@@ -410,7 +410,7 @@ cached_model <- function(entry, main_rel, display_source, verbose) {
   # Marker mtime is the LRU timestamp for pruning.
   Sys.setFileTime(ok, Sys.time())
   nutpie_model(
-    lib_path = normalizePath(lib, mustWork = TRUE),
+    lib_path = private_tbb_model(normalizePath(lib, mustWork = TRUE)),
     stan_file = display_source,
     staged_source = normalizePath(main, mustWork = TRUE)
   )
