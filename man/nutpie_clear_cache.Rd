@@ -11,8 +11,8 @@ Invisibly \code{NULL}.
 }
 \description{
 Removes the current resolved compile cache tree under
-\code{\link[=nutpie_cache_dir]{nutpie_cache_dir()}}. Cached compiled models will
-be recompiled on next use.
+\code{\link[=nutpie_cache_dir]{nutpie_cache_dir()}}. A subsequent
+\code{\link[=nutpie_compile_model]{nutpie_compile_model()}} call recompiles the model.
 }
 \section{Warning}{
 

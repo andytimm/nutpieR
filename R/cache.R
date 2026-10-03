@@ -686,8 +686,8 @@ nutpie_prune_cache <- function(max_entries = 16L, min_age_days = 14L) {
 #' Clear the nutpieR compile cache
 #'
 #' Removes the current resolved compile cache tree under
-#' [`nutpie_cache_dir()`][nutpie_cache_dir]. Cached compiled models will
-#' be recompiled on next use.
+#' [`nutpie_cache_dir()`][nutpie_cache_dir]. A subsequent
+#' [`nutpie_compile_model()`][nutpie_compile_model] call recompiles the model.
 #'
 #' @section Warning:
 #'
