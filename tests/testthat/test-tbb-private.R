@@ -106,4 +106,19 @@ test_that("macOS private TBB rpath fits with a long home directory", {
   expect_false(file.exists(links))
   expect_identical(nutpieR:::private_tbb_model(private), private)
   expect_true(file.exists(links))
+
+  # A partly deleted bundle must fail with guidance rather than silently use
+  # the remaining files. Removing the whole bundle allows safe reconstruction.
+  target <- Sys.readlink(links[[1L]])
+  unlink(target)
+  expect_error(nutpieR:::private_tbb_model(private), "incomplete private TBB bundle")
+  unlink(dirname(target), recursive = TRUE)
+  expect_identical(nutpieR:::private_tbb_model(private), private)
+
+  # A broken link from another process must not be replaced by this build.
+  unlink(links[[1L]])
+  wrong <- file.path(dir, "other-tbb.dylib")
+  expect_true(file.symlink(wrong, links[[1L]]))
+  expect_error(nutpieR:::private_tbb_model(copy), "already exists")
+  expect_identical(Sys.readlink(links[[1L]]), wrong)
 })

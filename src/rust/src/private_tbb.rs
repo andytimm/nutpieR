@@ -118,28 +118,28 @@ fn ensure_adjacent_link(link: &Path, target: &Path) -> std::result::Result<(), S
     use std::os::unix::fs::symlink;
     let canonical_target =
         fs::canonicalize(target).map_err(|e| format!("{}: {e}", target.display()))?;
-    if let Ok(existing) = fs::canonicalize(link) {
-        if existing == canonical_target {
-            return Ok(());
-        }
-        return Err(format!(
-            "private TBB link {} points to a different library; remove it and recompile",
-            link.display()
-        ));
+    let validate_existing = || {
+        match fs::canonicalize(link) {
+        Ok(existing) if existing == canonical_target => Ok(()),
+        _ => Err(format!(
+            "private TBB link {} already exists but does not point to {}; remove it after other jobs finish",
+            link.display(),
+            canonical_target.display()
+        )),
     }
-    let staging = temp_near(link);
-    symlink(&canonical_target, &staging).map_err(|e| format!("{}: {e}", staging.display()))?;
-    if let Err(e) = fs::rename(&staging, link) {
-        let _ = fs::remove_file(&staging);
-        return Err(format!("publish private TBB link {}: {e}", link.display()));
+    };
+    match fs::symlink_metadata(link) {
+        Ok(_) => return validate_existing(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+        Err(e) => return Err(format!("{}: {e}", link.display())),
     }
-    if fs::canonicalize(link).ok().as_ref() != Some(&canonical_target) {
-        return Err(format!(
-            "private TBB link {} changed concurrently",
-            link.display()
-        ));
+    // symlink() creates the complete link atomically and refuses to overwrite
+    // even a broken link published by another process. No rename-overwrite race.
+    match symlink(&canonical_target, link) {
+        Ok(()) => validate_existing(),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => validate_existing(),
+        Err(e) => Err(format!("{}: {e}", link.display())),
     }
-    Ok(())
 }
 
 fn tbb_name(dep: &str) -> Option<&'static str> {
@@ -376,7 +376,7 @@ pub(crate) fn package(model: &Path) -> std::result::Result<PathBuf, String> {
         let target = bundle.join(&private_file);
         if !target.is_file() {
             return Err(format!(
-                "incomplete private TBB bundle: {}",
+                "incomplete private TBB bundle: {}; remove this bundle directory after other jobs finish, then retry",
                 bundle.display()
             ));
         }
