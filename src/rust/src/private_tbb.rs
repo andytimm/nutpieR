@@ -17,7 +17,7 @@ const LIBRARIES: [&str; 3] = [
     "libtbbmalloc.dylib",
     "libtbbmalloc_proxy.dylib",
 ];
-const FORMAT: &[u8] = b"nutpieR-private-tbb-v2\0";
+const FORMAT: &[u8] = b"nutpieR-private-tbb-v3\0";
 fn private_name(name: &str, version: &str) -> String {
     let kind = match name {
         "libtbb.dylib" => "t",
@@ -114,6 +114,34 @@ fn temp_near(path: &Path) -> PathBuf {
         path.file_name().unwrap_or_default().to_string_lossy()
     ))
 }
+fn ensure_adjacent_link(link: &Path, target: &Path) -> std::result::Result<(), String> {
+    use std::os::unix::fs::symlink;
+    let canonical_target =
+        fs::canonicalize(target).map_err(|e| format!("{}: {e}", target.display()))?;
+    if let Ok(existing) = fs::canonicalize(link) {
+        if existing == canonical_target {
+            return Ok(());
+        }
+        return Err(format!(
+            "private TBB link {} points to a different library; remove it and recompile",
+            link.display()
+        ));
+    }
+    let staging = temp_near(link);
+    symlink(&canonical_target, &staging).map_err(|e| format!("{}: {e}", staging.display()))?;
+    if let Err(e) = fs::rename(&staging, link) {
+        let _ = fs::remove_file(&staging);
+        return Err(format!("publish private TBB link {}: {e}", link.display()));
+    }
+    if fs::canonicalize(link).ok().as_ref() != Some(&canonical_target) {
+        return Err(format!(
+            "private TBB link {} changed concurrently",
+            link.display()
+        ));
+    }
+    Ok(())
+}
+
 fn tbb_name(dep: &str) -> Option<&'static str> {
     LIBRARIES
         .iter()
@@ -132,7 +160,9 @@ fn loaded_proxy_conflict(target: &Path) -> std::result::Result<(), String> {
             }
             let name = CStr::from_ptr(p).to_string_lossy();
             if (name.contains("libtbbmalloc_proxy.dylib") || name.contains("/n_p"))
-                && Path::new(name.as_ref()) != target
+                && fs::canonicalize(Path::new(name.as_ref()))
+                    .unwrap_or_else(|_| PathBuf::from(name.as_ref()))
+                    != fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf())
             {
                 return Err(format!("another TBB malloc proxy is already loaded ({}); restart R before loading this model", name));
             }
@@ -171,13 +201,36 @@ pub(crate) fn package(model: &Path) -> std::result::Result<PathBuf, String> {
             })
             .collect();
         if !private_deps.is_empty() {
+            // v2 artifacts carry the absolute shared-bundle rpath; v3 keeps
+            // short @loader_path and symlinks to the shared bundle beside the model.
             let base = rpaths(model)?
                 .into_iter()
-                .find(|p| p.contains("/nutpieR/tbb/"))
+                .find(|p| p == "@loader_path" || p.contains("/nutpieR/tbb/"))
                 .ok_or("private TBB model missing private rpath; recompile the model")?;
+            let directory = if base == "@loader_path" {
+                model
+                    .parent()
+                    .ok_or("private TBB model has no parent directory")?
+            } else {
+                Path::new(&base)
+            };
             for suffix in private_deps {
-                let file = Path::new(&base).join(format!("n_{suffix}"));
+                let file = directory.join(format!("n_{suffix}"));
                 if !file.is_file() {
+                    // A cache cleaner may remove the shared bundle while a
+                    // serialized model path survives. Recreate it from the raw
+                    // sibling rather than leaving a permanent broken cache hit.
+                    if let Some((stem, _)) = model
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .and_then(|s| s.rsplit_once("_nutpieR_private_"))
+                    {
+                        let raw = model.with_file_name(format!("{stem}.so"));
+                        if raw.is_file() {
+                            drop(_guard);
+                            return package(&raw);
+                        }
+                    }
                     return Err(format!(
                         "private TBB bundle was removed ({}); recompile with cache = FALSE or run nutpie_clear_cache() first",
                         file.display()
@@ -191,6 +244,19 @@ pub(crate) fn package(model: &Path) -> std::result::Result<PathBuf, String> {
         return Ok(model.to_path_buf());
     }
     let deps = dependencies(model)?;
+    // Do not silently skip isolation if a future Stan build changes TBB's
+    // dylib name. An unknown TBB dependency could recreate the dyld collision.
+    if let Some(dep) = deps.iter().find(|dep| {
+        dep.rsplit('/')
+            .next()
+            .is_some_and(|name| name.starts_with("libtbb") && name.ends_with(".dylib"))
+            && tbb_name(dep).is_none()
+    }) {
+        return Err(format!(
+            "unsupported Stan TBB dependency {dep} in {}; update nutpieR's private TBB linker",
+            model.display()
+        ));
+    }
     let tbb_deps: Vec<_> = deps
         .iter()
         .filter_map(|d| tbb_name(d).map(|name| (d, name)))
@@ -302,13 +368,21 @@ pub(crate) fn package(model: &Path) -> std::result::Result<PathBuf, String> {
             }
         }
     }
+    let model_dir = model
+        .parent()
+        .ok_or("model library has no parent directory")?;
     for name in &selected {
-        if !bundle.join(private_name(name, &version)).is_file() {
+        let private_file = private_name(name, &version);
+        let target = bundle.join(&private_file);
+        if !target.is_file() {
             return Err(format!(
                 "incomplete private TBB bundle: {}",
                 bundle.display()
             ));
         }
+        // Keep the model's rpath short regardless of the user's HOME length.
+        // The versioned install IDs and shared target still deduplicate TBB.
+        ensure_adjacent_link(&model_dir.join(private_file), &target)?;
     }
     let model_bytes = fs::read(model).map_err(|e| e.to_string())?;
     let mut model_hash = Sha256::new();
@@ -335,9 +409,13 @@ pub(crate) fn package(model: &Path) -> std::result::Result<PathBuf, String> {
             let old_rpath = bases
                 .iter()
                 .find(|base| {
+                    let expanded = base.replace(
+                        "@loader_path",
+                        &model.parent().unwrap_or(Path::new("")).to_string_lossy(),
+                    );
                     selected
                         .iter()
-                        .all(|name| Path::new(base.as_str()).join(name).is_file())
+                        .all(|name| Path::new(&expanded).join(name).is_file())
                 })
                 .ok_or("cannot locate original Stan TBB rpath")?;
             run(
@@ -345,7 +423,7 @@ pub(crate) fn package(model: &Path) -> std::result::Result<PathBuf, String> {
                 &[
                     strarg("-rpath"),
                     strarg(old_rpath),
-                    bundle.as_os_str(),
+                    strarg("@loader_path"),
                     staging.as_os_str(),
                 ],
             )?;

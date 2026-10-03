@@ -17,7 +17,12 @@ test_that("macOS model links to private TBB and legacy paths resolve", {
   expect_false(any(grepl("@rpath/libtbb", deps, fixed = TRUE)))
   expect_true(any(grepl("@rpath/n_t[0-9a-f]+\\.dylib", deps)))
   load_commands <- suppressWarnings(system2("otool", c("-l", shQuote(model$lib_path)), stdout = TRUE))
-  expect_true(any(grepl("/nutpieR/tbb/", load_commands, fixed = TRUE)))
+  expect_true(any(grepl("path @loader_path (offset", load_commands, fixed = TRUE)))
+  links <- list.files(dirname(model$lib_path),
+                      pattern = "^n_[tmp][0-9a-f]+\\.dylib$", full.names = TRUE)
+  expect_gte(length(links), 3L)
+  expect_true(all(nzchar(Sys.readlink(links))))
+  expect_true(all(file.exists(links)))
 })
 
 test_that("macOS proxy-free models keep private TBB without loading a proxy", {
@@ -34,4 +39,71 @@ test_that("macOS proxy-free models keep private TBB without loading a proxy", {
   draws <- nutpie_sample(model, num_draws = 5L, num_warmup = 5L,
                          num_chains = 1L, refresh = 0L)
   expect_equal(dim(draws)[[1L]], 5L)
+})
+
+test_that("macOS model TBB rpath may be relative to its library", {
+  skip_on_os(c("windows", "linux", "solaris"))
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  raw <- sub("_nutpieR_private_[0-9a-f]+\\.so$", ".so",
+             test_models$bernoulli$lib_path)
+  paths <- suppressWarnings(system2("otool", c("-l", shQuote(raw)), stdout = TRUE))
+  paths <- sub("^.*path (.+) \\(offset [0-9]+\\)$", "\\1",
+               grep("path .+ \\(offset [0-9]+\\)$", paths, value = TRUE))
+  tbb <- paths[file.exists(file.path(paths, "libtbb.dylib"))][[1L]]
+
+  dir <- tempfile("nutpieR-relative-tbb-")
+  dir.create(dir)
+  on.exit(unlink(dir, recursive = TRUE), add = TRUE)
+  copy <- file.path(dir, "relative_model.so")
+  expect_true(file.copy(raw, copy))
+  expect_true(file.symlink(tbb, file.path(dir, "tbb")))
+  expect_equal(system2("install_name_tool",
+                       c("-rpath", shQuote(tbb), "@loader_path/tbb", shQuote(copy))), 0L)
+  expect_equal(system2("codesign", c("--force", "--sign", "-", shQuote(copy)),
+                       stdout = FALSE, stderr = FALSE), 0L)
+  private <- nutpieR:::private_tbb_model(copy)
+  expect_true(file.exists(private))
+  expect_false(any(grepl("@rpath/libtbb", suppressWarnings(
+    system2("otool", c("-L", shQuote(private)), stdout = TRUE)), fixed = TRUE)))
+})
+
+test_that("macOS rejects unrecognized Stan TBB dylib names", {
+  skip_on_os(c("windows", "linux", "solaris"))
+  skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
+  raw <- sub("_nutpieR_private_[0-9a-f]+\\.so$", ".so",
+             test_models$bernoulli$lib_path)
+  copy <- tempfile("nutpieR-unknown-tbb-", fileext = ".so")
+  on.exit(unlink(copy), add = TRUE)
+  expect_true(file.copy(raw, copy))
+  expect_equal(system2("install_name_tool", c("-change", "@rpath/libtbb.dylib",
+                                               "@rpath/libtbb.12.dylib", shQuote(copy))), 0L)
+  expect_error(nutpieR:::private_tbb_model(copy), "unsupported Stan TBB dependency")
+})
+
+test_that("macOS private TBB rpath fits with a long home directory", {
+  skip_on_os(c("windows", "linux", "solaris"))
+  model <- nutpie_compile_model(
+    code = "parameters { real x; } model { x ~ normal(0, 1); }",
+    cache = FALSE, compile_args = "TBB_LIBRARIES=tbb", verbose = 0L
+  )
+  raw <- sub("_nutpieR_private_[0-9a-f]+\\.so$", ".so", model$lib_path)
+  dir <- tempfile("nutpieR-long-home-")
+  long_home <- file.path(dir, paste(rep("long-home-component", 9L), collapse = "-"))
+  dir.create(long_home, recursive = TRUE)
+  on.exit(unlink(dir, recursive = TRUE), add = TRUE)
+  copy <- file.path(dir, "model.so")
+  expect_true(file.copy(raw, copy))
+
+  withr::local_envvar(HOME = long_home)
+  private <- nutpieR:::private_tbb_model(copy)
+  expect_true(file.exists(private))
+  expect_true(any(grepl("path @loader_path (offset", suppressWarnings(
+    system2("otool", c("-l", shQuote(private)), stdout = TRUE)), fixed = TRUE)))
+  links <- list.files(dir, pattern = "^n_t[0-9a-f]+\\.dylib$", full.names = TRUE)
+  expect_length(links, 1L)
+  expect_true(file.exists(links))
+  unlink(dirname(Sys.readlink(links[[1L]])), recursive = TRUE)
+  expect_false(file.exists(links))
+  expect_identical(nutpieR:::private_tbb_model(private), private)
+  expect_true(file.exists(links))
 })

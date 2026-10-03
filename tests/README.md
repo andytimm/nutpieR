@@ -28,6 +28,19 @@ errors propagate so a green run actually proves the models built. No env var
 to remember; this is the right default for both local dev (without a Rust
 toolchain) and CI.
 
+## macOS TBB compatibility (#49)
+
+After a release install, check both load orders in fresh R processes with
+RcppParallel 6.2.1 (pass an isolated R library path as the second argument):
+
+```sh
+Rscript tests/manual/tbb-compat.R brms-first /path/to/R-library
+Rscript tests/manual/tbb-compat.R nutpie-first /path/to/R-library
+```
+
+The script samples directly and through `furrr` when installed. These tests are
+manual because they need a particular RcppParallel version and fresh processes.
+
 ## Cross-implementation comparison
 
 `inst/scripts/compare-with-python.R` runs nutpieR and Python `nutpie` on the
