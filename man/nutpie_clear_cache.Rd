@@ -17,13 +17,11 @@ be recompiled on next use.
 \section{Warning}{
 
 
-This deletes the underlying \verb{_model.so} files. If you hold a
-\code{nutpie_model} object whose library hasn't been opened yet (no prior
-\code{\link[=nutpie_sample]{nutpie_sample()}} call on it), its \code{lib_path} will
-point at a deleted file and subsequent use will fail. Models that
-were already opened in the current session keep working — once
-loaded, the OS retains the mapped library independently of the file
-on disk.
+This deletes the underlying model libraries. Existing sampling can finish,
+but a \code{nutpie_model} object pointing into the cleared cache cannot be used
+for a new \code{\link[=nutpie_sample]{nutpie_sample()}} call, even if it was sampled
+earlier in this R session. Recompile the model to obtain a new path. Do not
+clear the cache while another R process is compiling or opening a model.
 
 Only the \emph{active} cache root is cleared. If \code{R_USER_CACHE_DIR} was
 previously unset (or pointed somewhere else) and a different root
