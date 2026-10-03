@@ -410,7 +410,7 @@ cached_model <- function(entry, main_rel, display_source, verbose) {
   # Marker mtime is the LRU timestamp for pruning.
   Sys.setFileTime(ok, Sys.time())
   nutpie_model(
-    lib_path = normalizePath(lib, mustWork = TRUE),
+    lib_path = private_tbb_model(normalizePath(lib, mustWork = TRUE)),
     stan_file = display_source,
     staged_source = normalizePath(main, mustWork = TRUE)
   )
@@ -686,18 +686,16 @@ nutpie_prune_cache <- function(max_entries = 16L, min_age_days = 14L) {
 #' Clear the nutpieR compile cache
 #'
 #' Removes the current resolved compile cache tree under
-#' [`nutpie_cache_dir()`][nutpie_cache_dir]. Cached compiled models will
-#' be recompiled on next use.
+#' [`nutpie_cache_dir()`][nutpie_cache_dir]. A subsequent
+#' [`nutpie_compile_model()`][nutpie_compile_model] call recompiles the model.
 #'
 #' @section Warning:
 #'
-#' This deletes the underlying `_model.so` files. If you hold a
-#' `nutpie_model` object whose library hasn't been opened yet (no prior
-#' [`nutpie_sample()`][nutpie_sample] call on it), its `lib_path` will
-#' point at a deleted file and subsequent use will fail. Models that
-#' were already opened in the current session keep working — once
-#' loaded, the OS retains the mapped library independently of the file
-#' on disk.
+#' This deletes the underlying model libraries. Existing sampling can finish,
+#' but a `nutpie_model` object pointing into the cleared cache cannot be used
+#' for a new [`nutpie_sample()`][nutpie_sample] call, even if it was sampled
+#' earlier in this R session. Recompile the model to obtain a new path. Do not
+#' clear the cache while another R process is compiling or opening a model.
 #'
 #' Only the *active* cache root is cleared. If `R_USER_CACHE_DIR` was
 #' previously unset (or pointed somewhere else) and a different root

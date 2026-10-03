@@ -59,6 +59,8 @@ fn interrupt_pending() -> bool {
 
 mod density_kernel;
 mod model;
+#[cfg(target_os = "macos")]
+mod private_tbb;
 
 /// Convert any Display error to an extendr Error. Uses anyhow's alternate
 /// Display format (`{:#}`) to preserve cause chains; a no-op for plain
@@ -180,7 +182,30 @@ fn compile_stan_model_impl(
 
     let lib_path = bridgestan::compile_model(&bs_path, &stan_path, &stanc_refs, &compile_refs)
         .map_err(r_err)?;
-    Ok(lib_path.to_string_lossy().into_owned())
+    Ok(private_tbb_model_impl(&lib_path)?
+        .to_string_lossy()
+        .into_owned())
+}
+
+/// Isolate Stan model TBB dependencies in a shared, content-addressed macOS bundle.
+/// Also migrates models from the existing compile cache without modifying them.
+/// @noRd
+#[extendr]
+fn private_tbb_model(lib_path: &str) -> String {
+    or_throw(
+        private_tbb_model_impl(&PathBuf::from(lib_path)).map(|p| p.to_string_lossy().into_owned()),
+    )
+}
+
+fn private_tbb_model_impl(lib_path: &std::path::Path) -> Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        private_tbb::package(lib_path).map_err(r_err)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(lib_path.to_path_buf())
+    }
 }
 
 // --- Issue #36: keep Stan's fast tbbmalloc_proxy allocator, made safe --------
@@ -466,26 +491,29 @@ mod tbb_gate {
     #[allow(deprecated)]
     pub fn live_progress_safe() -> bool {
         unsafe {
-            let mut proxy_loaded = false;
+            let sym = b"nutpie_tbb_proxy_safe_probe\0";
             for i in 0..libc::_dyld_image_count() {
                 let name = libc::_dyld_get_image_name(i);
                 if name.is_null() {
                     continue;
                 }
-                if std::ffi::CStr::from_ptr(name)
-                    .to_string_lossy()
-                    .contains("libtbbmalloc_proxy")
-                {
-                    proxy_loaded = true;
-                    break;
+                let image = std::ffi::CStr::from_ptr(name).to_string_lossy();
+                if !image.contains("libtbbmalloc_proxy") && !image.contains("/n_p") {
+                    continue;
+                }
+                // Check EACH loaded proxy, not RTLD_DEFAULT: a safe private
+                // proxy must not mask another legacy unsafe proxy in this process.
+                let handle = libc::dlopen(name, libc::RTLD_NOLOAD | libc::RTLD_LAZY);
+                if handle.is_null() {
+                    return false;
+                }
+                let safe = !libc::dlsym(handle, sym.as_ptr() as *const c_char).is_null();
+                libc::dlclose(handle);
+                if !safe {
+                    return false;
                 }
             }
-            if !proxy_loaded {
-                return true;
-            }
-            // libc::RTLD_DEFAULT resolves the symbol in any loaded image.
-            let sym = b"nutpie_tbb_proxy_safe_probe\0";
-            !libc::dlsym(libc::RTLD_DEFAULT, sym.as_ptr() as *const c_char).is_null()
+            true
         }
     }
 }
@@ -1974,6 +2002,7 @@ extendr_module! {
     fn bridgestan_version;
     fn bridgestan_stanc_path;
     fn compile_stan_model;
+    fn private_tbb_model;
     fn tbb_proxy_live_progress_safe;
     fn ensure_tbb_proxy_patched;
     fn tbb_patch_strings;

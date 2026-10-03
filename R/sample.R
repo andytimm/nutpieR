@@ -615,13 +615,13 @@ check_optional_probability <- function(x, name) {
 
 resolve_model <- function(model) {
   if (inherits(model, "nutpie_model")) {
-    return(model$lib_path)
+    return(private_tbb_model(model$lib_path))
   }
   if (is.character(model) && length(model) == 1L) {
     if (!file.exists(model)) {
       stop("Model library not found: ", model, call. = FALSE)
     }
-    return(normalizePath(model))
+    return(private_tbb_model(normalizePath(model)))
   }
   stop(
     "`model` must be a nutpie_model object or path to a compiled library.",
