@@ -903,7 +903,7 @@ fn build_progress_snapshot(state: &[ChainState]) -> List {
 /// @param store_mass_matrix Whether to store the mass matrix at each draw.
 /// @param store_unconstrained Whether to store the unconstrained position at each draw.
 /// @param store_gradient Whether to store the gradient at each draw.
-/// @param adaptation One of "diag" or "low_rank". The R wrapper accepts
+/// @param adaptation One of "diag", "draw_diag", or "low_rank". The R wrapper accepts
 ///   "low-rank" as a Python-style alias and normalises it before calling.
 /// @param max_treedepth Optional maximum tree depth for NUTS. NULL keeps the
 ///   nuts-rs default.
@@ -1122,9 +1122,12 @@ fn sample_stan(
                     progress_callback.clone(),
                 )?
             }
-            "diag" => {
+            "diag" | "draw_diag" => {
                 let mut settings = DiagNutsSettings::default();
                 configure_settings!(settings);
+                if adaptation == "draw_diag" {
+                    settings.adapt_options.mass_matrix_options.use_grad_based_estimate = false;
+                }
                 run_with_settings(
                     stan_model,
                     settings,
@@ -1135,7 +1138,7 @@ fn sample_stan(
             }
             other => {
                 return Err(Error::Other(format!(
-                    "adaptation must be one of \"diag\" or \"low_rank\", got \"{}\"",
+                    "adaptation must be one of \"diag\", \"draw_diag\", or \"low_rank\", got \"{}\"",
                     other
                 )));
             }

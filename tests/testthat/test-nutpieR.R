@@ -92,9 +92,9 @@ test_that("check_count enforces optional max", {
   expect_equal(nutpieR:::check_count(5L, "seed", min = 0L, max = 5L), 5L)
 })
 
-test_that("num_warmup rejects zero for both adaptation strategies", {
+test_that("num_warmup rejects zero for all adaptation strategies", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-  for (adaptation in c("diag", "low_rank")) {
+  for (adaptation in c("diag", "low_rank", "draw_diag")) {
     expect_error(
       nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
                     num_draws = 2, num_warmup = 0, num_chains = 1,
@@ -104,9 +104,9 @@ test_that("num_warmup rejects zero for both adaptation strategies", {
   }
 })
 
-test_that("positive warmup remains usable for both adaptation strategies", {
+test_that("positive warmup remains usable for all adaptation strategies", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
-  for (adaptation in c("diag", "low_rank")) {
+  for (adaptation in c("diag", "low_rank", "draw_diag")) {
     expect_s3_class(
       nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
                     num_draws = 2, num_warmup = 1, num_chains = 1,
@@ -153,7 +153,7 @@ test_that("native sample_stan rejects zero warmup before constructing sampler", 
     eigval_cutoff = NULL, keep_indices = NULL, include_tp = TRUE,
     include_gq = TRUE, progress_callback = NULL
   )
-  for (adaptation in c("diag", "low_rank")) {
+  for (adaptation in c("diag", "low_rank", "draw_diag")) {
     expect_error(
       do.call(nutpieR:::sample_stan,
               modifyList(common, list(adaptation = adaptation))),

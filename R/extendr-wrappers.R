@@ -64,7 +64,7 @@ tbb_patch_strings <- function() .Call(wrap__tbb_patch_strings)
 #' @param store_mass_matrix Whether to store the mass matrix at each draw.
 #' @param store_unconstrained Whether to store the unconstrained position at each draw.
 #' @param store_gradient Whether to store the gradient at each draw.
-#' @param adaptation One of "diag" or "low_rank". The R wrapper accepts
+#' @param adaptation One of "diag", "draw_diag", or "low_rank". The R wrapper accepts
 #'   "low-rank" as a Python-style alias and normalises it before calling.
 #' @param max_treedepth Optional maximum tree depth for NUTS. NULL keeps the
 #'   nuts-rs default.

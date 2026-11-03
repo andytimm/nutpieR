@@ -1,3 +1,9 @@
+# nutpieR (development version)
+
+* Added `adaptation = "draw_diag"` for diagonal mass matrix adaptation using
+  draw variances instead of the gradient-based estimate (#52). Like `"diag"`,
+  it defaults to 400 warmup draws.
+
 # nutpieR 1.9.1
 
 * Fixed macOS TBB conflicts with RcppParallel 6.2.1 when `brms` and nutpieR
