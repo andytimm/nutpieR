@@ -25,7 +25,7 @@
 #' @param num_warmup Number of warmup (tuning) draws per chain. Must be
 #'   positive (at least `1`); zero warmup is not supported by nuts-rs
 #'   adaptation. `NULL` (the default) uses the nuts-rs adaptation-specific
-#'   default: `400` for `adaptation = "diag"` and `800` for
+#'   default: `400` for `adaptation = "diag"` or `"draw_diag"` and `800` for
 #'   `adaptation = "low_rank"`. An explicit value always takes precedence.
 #' @param num_chains Number of parallel chains.
 #' @param seed Random seed for reproducibility.
@@ -141,14 +141,16 @@
 #'   to *exclude* (blacklist). Ignored when `pars` is `NULL`.
 #' @param adaptation Mass matrix adaptation strategy. One of:
 #'   \describe{
-#'     \item{`"diag"` (default)}{Diagonal mass matrix (the standard NUTS
-#'       choice).}
+#'     \item{`"diag"` (default)}{Diagonal mass matrix adaptation using
+#'       both draws and gradients.}
+#'     \item{`"draw_diag"`}{Diagonal mass matrix adaptation using draw
+#'       variances instead of the gradient-based estimate. Gradients are still
+#'       required for NUTS and the initial mass matrix.}
 #'     \item{`"low_rank"` / `"low-rank"`}{Low-rank modified mass matrix
 #'       adaptation. Captures posterior correlations and can improve
 #'       efficiency on models with strongly correlated parameters.}
 #'   }
-#'   Matches the Python nutpie `adaptation=` API. Additional strategies
-#'   (`"draw_diag"`, `"flow"`) may be added in future releases.
+#'   Matches the Python nutpie `adaptation=` API.
 #' @param low_rank_modified_mass_matrix Deprecated. If `TRUE`, equivalent to
 #'   `adaptation = "low_rank"`. Will be removed in a future release.
 #' @param mass_matrix_gamma Regularisation parameter for low-rank mass matrix
@@ -207,7 +209,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           store_mass_matrix = FALSE,
                           store_unconstrained = FALSE,
                           store_gradient = FALSE,
-                          adaptation = c("diag", "low_rank", "low-rank"),
+                          adaptation = c("diag", "low_rank", "low-rank", "draw_diag"),
                           low_rank_modified_mass_matrix = FALSE,
                           mass_matrix_gamma = NULL,
                           mass_matrix_eigval_cutoff = NULL) {
@@ -449,7 +451,7 @@ resolve_sample_config <- function(seed, adaptation, low_rank_modified_mass_matri
     seed <- check_count(seed, "seed", min = 0L, max = .Machine$integer.max)
   }
 
-  adaptation <- match.arg(adaptation, c("diag", "low_rank", "low-rank"))
+  adaptation <- match.arg(adaptation, c("diag", "low_rank", "low-rank", "draw_diag"))
   if (identical(adaptation, "low-rank")) adaptation <- "low_rank"
   progress <- match.arg(progress, c("auto", "cli", "text", "none"))
 

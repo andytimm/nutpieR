@@ -103,6 +103,18 @@ draws <- nutpie_sample(
 )
 ```
 
+### Draw-based diagonal mass matrix adaptation
+
+Use `adaptation = "draw_diag"` to adapt the diagonal mass matrix from draw
+variances instead of the default `"diag"` gradient-based estimate:
+
+```r
+draws <- nutpie_sample(model, data = data, adaptation = "draw_diag")
+```
+
+Both diagonal strategies default to 400 warmup draws; set `num_warmup` to
+override this. Gradients are still required for NUTS and initialization.
+
 ### Low-rank mass matrix adaptation
 
 For models with correlated parameters, nutpieR supports low-rank modified mass

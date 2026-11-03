@@ -29,7 +29,7 @@ nutpie_sample(
   store_mass_matrix = FALSE,
   store_unconstrained = FALSE,
   store_gradient = FALSE,
-  adaptation = c("diag", "low_rank", "low-rank"),
+  adaptation = c("diag", "low_rank", "low-rank", "draw_diag"),
   low_rank_modified_mass_matrix = FALSE,
   mass_matrix_gamma = NULL,
   mass_matrix_eigval_cutoff = NULL
@@ -64,7 +64,7 @@ for an ordinary length-one vector.}
 \item{num_warmup}{Number of warmup (tuning) draws per chain. Must be
 positive (at least \code{1}); zero warmup is not supported by nuts-rs
 adaptation. \code{NULL} (the default) uses the nuts-rs adaptation-specific
-default: \code{400} for \code{adaptation = "diag"} and \code{800} for
+default: \code{400} for \code{adaptation = "diag"} or \code{"draw_diag"} and \code{800} for
 \code{adaptation = "low_rank"}. An explicit value always takes precedence.}
 
 \item{num_chains}{Number of parallel chains.}
@@ -201,14 +201,16 @@ draw on diagnostics (\code{gradient}). Same shape profile as
 
 \item{adaptation}{Mass matrix adaptation strategy. One of:
 \describe{
-\item{\code{"diag"} (default)}{Diagonal mass matrix (the standard NUTS
-choice).}
+\item{\code{"diag"} (default)}{Diagonal mass matrix adaptation using
+both draws and gradients.}
+\item{\code{"draw_diag"}}{Diagonal mass matrix adaptation using draw
+variances instead of the gradient-based estimate. Gradients are still
+required for NUTS and the initial mass matrix.}
 \item{\code{"low_rank"} / \code{"low-rank"}}{Low-rank modified mass matrix
 adaptation. Captures posterior correlations and can improve
 efficiency on models with strongly correlated parameters.}
 }
-Matches the Python nutpie \verb{adaptation=} API. Additional strategies
-(\code{"draw_diag"}, \code{"flow"}) may be added in future releases.}
+Matches the Python nutpie \verb{adaptation=} API.}
 
 \item{low_rank_modified_mass_matrix}{Deprecated. If \code{TRUE}, equivalent to
 \code{adaptation = "low_rank"}. Will be removed in a future release.}
