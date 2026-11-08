@@ -2,8 +2,10 @@
 # Collected here so they are easy to find and adjust during dogfooding.
 LATE_WARMUP_FRACTION  <- 0.75  # baseline grad/draw stats from this point on
 GRAD_HINT_THRESHOLD   <- 128   # avg grad/draw at/above this triggers the hint + accent
+GRAD_HINT_MIN_DRAWS   <- 20    # pooled post-baseline evidence; UI heuristic, not a diagnostic
 SPREAD_TRIGGER_POINTS <- 15    # percentage-point chain spread to trigger the hint
-SPREAD_MEDIAN_FLOOR   <- 0.10  # median chain must be past this fraction first
+SPREAD_MIN_FRACTION   <- 0.10  # every chain must be past this fraction first
+SPREAD_PERSIST_SECONDS <- 3    # spread must persist before the hint + latch
 CAP_SUMMARY_THRESHOLD <- 0.05  # %-at-cap gate for the end-of-run advice line
 DIV_SEVERE_THRESHOLD  <- 0.10  # divergence share that means the fit is unreliable
 EBFMI_THRESHOLD       <- 0.3   # per-chain E-BFMI floor (CmdStanR check_ebfmi default)
@@ -90,6 +92,7 @@ protect_progress_callback <- function(callback) {
     if (failed) return(invisible(NULL))
     tryCatch(
       callback(snapshot),
+      interrupt = function(e) structure(list(), class = "nutpie_sampling_interrupt"),
       error = function(e) {
         failed <<- TRUE
         invisible(NULL)
@@ -104,6 +107,13 @@ as_progress_num <- function(x, default = 0) {
   # make `if (is.na(x))` error ("condition has length > 1").
   if (is.null(x) || length(x) == 0L || is.na(x[[1]])) return(default)
   as.numeric(x[[1]])
+}
+
+#' Prefer actual gradient evaluations; older snapshots only counted NUTS steps.
+#' @noRd
+progress_total_gradients <- function(snapshot) {
+  as_progress_num(snapshot$total_num_gradients,
+                  as_progress_num(snapshot$total_num_steps))
 }
 
 #' @noRd
@@ -156,7 +166,7 @@ style_progress_status <- function(status, color = FALSE) {
 }
 
 #' Accent the grad/draw token once the average crosses GRAD_HINT_THRESHOLD (an
-#' absolute leapfrog-steps-per-draw count, not a fraction of the treedepth cap —
+#' absolute gradient-evaluations-per-draw count, not a fraction of the treedepth cap —
 #' %-at-cap advice lives in the end summary). The `▲` glyph falls back to `^`
 #' when the console can't render UTF-8; style_progress_status()'s regex matches
 #' both.
@@ -172,12 +182,14 @@ format_gradient_status <- function(avg_lf) {
   }
 }
 
-#' Live estimate of the latest tree depth from its leapfrog count.
+#' Live estimate of the latest NUTS tree depth from its leapfrog count.
 #'
+#' WALNUTS counts accepted microsteps, so its step count cannot estimate depth.
 #' The progress snapshot does not include nuts-rs's exact final tree depth.
 #' Diagnostics `$depth` remains authoritative after sampling.
 #' @noRd
-format_treedepth_status <- function(n_steps) {
+format_treedepth_status <- function(n_steps, walnuts = FALSE) {
+  if (isTRUE(walnuts)) return("tdepth: ~-")
   depth <- infer_tree_depth(as_progress_num(n_steps, NA_real_))
   if (!is.finite(depth)) return("tdepth: ~-")
   paste0("tdepth: ~", depth)
@@ -248,16 +260,39 @@ started_chain_fractions <- function(snapshot) {
   fracs[!is.na(fracs)]
 }
 
-#' Has the chain spread crossed the trigger? Over started chains:
-#' `max - min >= SPREAD_TRIGGER_POINTS` (percentage points) and the median chain
-#' is past `SPREAD_MEDIAN_FLOOR`. The median floor avoids firing in the noisy
-#' opening laps before chains have settled.
+#' Has the chain spread crossed the trigger? Every chain must have started
+#' and passed SPREAD_MIN_FRACTION before comparing currently running chains.
 #' @noRd
 spread_triggered <- function(snapshot) {
+  if (length(snapshot) < 2L ||
+      !all(vapply(snapshot, function(s) isTRUE(s$started), logical(1)))) {
+    return(FALSE)
+  }
+  fractions <- vapply(snapshot, function(s) {
+    total <- as_progress_num(s$total_draws)
+    if (!is.finite(total) || total <= 0) return(0)
+    as_progress_num(s$finished_draws) / total
+  }, numeric(1))
+  if (min(fractions) < SPREAD_MIN_FRACTION) return(FALSE)
   fracs <- started_chain_fractions(snapshot)
-  if (length(fracs) < 2L) return(FALSE)
-  (max(fracs) - min(fracs)) >= (SPREAD_TRIGGER_POINTS / 100) &&
-    stats::median(fracs) >= SPREAD_MEDIAN_FLOOR
+  length(fracs) >= 2L &&
+    (max(fracs) - min(fracs)) >= (SPREAD_TRIGGER_POINTS / 100)
+}
+
+#' Reset the candidate when spread subsides; latch only after sustained spread.
+#' @noRd
+update_spread_state <- function(hints, snapshot, eligible, now) {
+  if (hints$spread_active) return(invisible(NULL))
+  if (!eligible || !spread_triggered(snapshot)) {
+    hints$spread_since <- NULL
+    return(invisible(NULL))
+  }
+  if (is.null(hints$spread_since)) hints$spread_since <- now
+  if (now - hints$spread_since >= SPREAD_PERSIST_SECONDS) {
+    hints$spread_active <- TRUE
+    maybe_spread_hint(hints, snapshot)
+  }
+  invisible(NULL)
 }
 
 #' Percent-range spread token, e.g. "spread 23-78%" (ASCII hyphen, text-safe;
@@ -303,13 +338,14 @@ STATUS_TOKEN_NAMES <- c("div", "grad", "draws", "spread", "spark", "lag", "step"
 format_status_token <- function(name, snapshot, summary, spread_active) {
   switch(name,
     div    = format_divergence_status(summary$total_divergences),
-    grad   = format_gradient_status(summary$avg_num_steps),
+    grad   = format_gradient_status(summary$avg_num_gradients),
     draws  = format_chain_draw_range(snapshot),
     spread = format_chain_spread(snapshot, active = spread_active),
     spark  = format_chain_spark(snapshot),
     lag    = format_chain_lag(snapshot),
     step   = format_min_step(snapshot),
-    tdepth = format_treedepth_status(summary$max_latest_num_steps)
+    tdepth = format_treedepth_status(summary$max_latest_num_steps,
+                                    walnuts = summary$walnuts)
   )
 }
 
@@ -340,10 +376,10 @@ summarize_progress_snapshot <- function(snapshot, num_warmup = 0L) {
   if (length(snapshot) == 0L) {
     return(list(
       total_finished = 0, total_draws = 0, phase = "warmup",
-      phase_label = "warmup",
+      phase_label = "warmup", walnuts = FALSE,
       total_divergences = 0L, slowest_chain = NA_integer_,
       min_step_size = NA_real_, max_latest_num_steps = NA_integer_,
-      avg_num_steps = NA_real_, first_divergence = NA_character_,
+      avg_num_gradients = NA_real_, first_divergence = NA_character_,
       max_runtime = 0, status = "waiting for chains"
     ))
   }
@@ -353,7 +389,7 @@ summarize_progress_snapshot <- function(snapshot, num_warmup = 0L) {
   divergences <- vapply(snapshot, function(s) as.integer(as_progress_num(s$divergences)), integer(1))
   tuning <- vapply(snapshot, function(s) isTRUE(s$tuning), logical(1))
   steps <- vapply(snapshot, function(s) as.integer(as_progress_num(s$latest_num_steps)), integer(1))
-  total_steps <- vapply(snapshot, function(s) as_progress_num(s$total_num_steps), numeric(1))
+  total_gradients <- vapply(snapshot, progress_total_gradients, numeric(1))
   step_sizes <- vapply(snapshot, function(s) as_progress_num(s$step_size, NA_real_), numeric(1))
   runtimes <- vapply(snapshot, function(s) as_progress_num(s$runtime), numeric(1))
   chains <- seq_along(snapshot)
@@ -362,7 +398,7 @@ summarize_progress_snapshot <- function(snapshot, num_warmup = 0L) {
 
   finite_steps <- step_sizes[is.finite(step_sizes) & step_sizes > 0]
   min_step <- if (length(finite_steps) > 0L) min(finite_steps) else NA_real_
-  avg_steps <- if (sum(finished) > 0) sum(total_steps) / sum(finished) else NA_real_
+  avg_gradients <- if (sum(finished) > 0) sum(total_gradients) / sum(finished) else NA_real_
 
   # `divergent_draws` indices from nuts-rs are warmup-inclusive and 0-based
   # (the `finished_draws` counter at divergence time, which already excludes
@@ -407,7 +443,7 @@ summarize_progress_snapshot <- function(snapshot, num_warmup = 0L) {
   max_runtime <- if (length(runtimes) > 0L) max(runtimes) else 0
   status <- paste(
     format_divergence_status(sum(divergences, na.rm = TRUE)),
-    format_gradient_status(avg_steps),
+    format_gradient_status(avg_gradients),
     sep = " | "
   )
 
@@ -416,11 +452,12 @@ summarize_progress_snapshot <- function(snapshot, num_warmup = 0L) {
     total_draws = total_draws,
     phase = phase,
     phase_label = phase_label,
+    walnuts = any(vapply(snapshot, function(s) isTRUE(s$walnuts), logical(1))),
     total_divergences = total_divergences,
     slowest_chain = NA_integer_,
     min_step_size = min_step,
     max_latest_num_steps = max_latest_steps,
-    avg_num_steps = avg_steps,
+    avg_num_gradients = avg_gradients,
     first_divergence = first_div,
     max_runtime = max_runtime,
     status = status
@@ -515,8 +552,10 @@ sampling_summary_table <- function(diagnostics) {
       numeric()
     }
     step <- if (length(step) == 0L) NA_real_ else step[1]
-    avg_grad <- if (!is.null(diagnostics$n_steps)) {
-      mean(as.numeric(diagnostics$n_steps[idx]), na.rm = TRUE)
+    gradient_counts <- diagnostics$n_gradients
+    if (is.null(gradient_counts)) gradient_counts <- diagnostics$n_steps
+    avg_grad <- if (!is.null(gradient_counts)) {
+      mean(as.numeric(gradient_counts[idx]), na.rm = TRUE)
     } else {
       NA_real_
     }
@@ -681,15 +720,15 @@ new_progress_hints <- function(cli_bar_id = NULL) {
   env$warned_grad <- FALSE
   env$warned_spread <- FALSE
   env$spread_active <- FALSE
+  env$spread_since <- NULL
   # Per-chain late-warmup baselines for the grad/draw average, keyed by chain id.
   env$grad_baseline <- list()
   env
 }
 
-#' Record each started chain's `(total_num_steps, finished_draws)` the first
+#' Record each started chain's `(total_num_gradients, finished_draws)` the first
 #' time it passes LATE_WARMUP_FRACTION of warmup. Anchoring here discards the
-#' high-leapfrog early-warmup transient so the reported average reflects the
-#' tuned sampler.
+#' high-gradient early-warmup transient from the reported late-window average.
 #' @noRd
 update_grad_baselines <- function(hints, snapshot, num_warmup) {
   threshold <- LATE_WARMUP_FRACTION * as.numeric(num_warmup)
@@ -701,7 +740,7 @@ update_grad_baselines <- function(hints, snapshot, num_warmup) {
     key <- as.character(chain)
     if (!is.null(hints$grad_baseline[[key]])) next
     hints$grad_baseline[[key]] <- list(
-      total = as_progress_num(s$total_num_steps),
+      total = progress_total_gradients(s),
       finished = finished
     )
   }
@@ -711,9 +750,9 @@ update_grad_baselines <- function(hints, snapshot, num_warmup) {
 #' Pooled grad/draw average over baselined chains:
 #' `sum(total - base_total) / sum(finished - base_finished)`. Exact and
 #' unbiased — no cap detection, no length-biased polling. Returns `NA` until at
-#' least one baselined chain has produced a post-baseline draw.
+#' least `min_draws` pooled post-baseline draws are available.
 #' @noRd
-pooled_grad_per_draw <- function(hints, snapshot) {
+pooled_grad_per_draw <- function(hints, snapshot, min_draws = 1L) {
   steps_delta <- 0
   draws_delta <- 0
   for (s in snapshot) {
@@ -721,10 +760,10 @@ pooled_grad_per_draw <- function(hints, snapshot) {
     if (is.na(chain)) next
     base <- hints$grad_baseline[[as.character(chain)]]
     if (is.null(base)) next
-    steps_delta <- steps_delta + (as_progress_num(s$total_num_steps) - base$total)
+    steps_delta <- steps_delta + (progress_total_gradients(s) - base$total)
     draws_delta <- draws_delta + (as_progress_num(s$finished_draws) - base$finished)
   }
-  if (draws_delta <= 0) return(NA_real_)
+  if (draws_delta < min_draws) return(NA_real_)
   steps_delta / draws_delta
 }
 
@@ -737,30 +776,41 @@ chain_grad_per_draw <- function(hints, snapshot) {
     if (!is.null(base)) {
       draws_delta <- finished - base$finished
       if (draws_delta > 0) {
-        return((as_progress_num(snapshot$total_num_steps) - base$total) / draws_delta)
+        return((progress_total_gradients(snapshot) - base$total) / draws_delta)
       }
     }
   }
-  if (finished > 0) as_progress_num(snapshot$total_num_steps) / finished else NA_real_
+  NA_real_
 }
 
-#' One-shot grad/draw hint (informational). Fires when the late-warmup-baseline
-#' pooled average reaches GRAD_HINT_THRESHOLD. Tree depth is `round(log2(avg+1))`.
-#' max_treedepth advice deliberately lives only in the end summary, where the
-#' exact %-at-cap is known.
+#' One-shot grad/draw hint after all started chains leave warmup and enough
+#' pooled post-baseline draws are available. The evidence floor is a UI
+#' heuristic, not a convergence or geometry diagnostic. WALNUTS can evaluate multiple
+#' gradients per macro step, so its gradient cost does not imply tree depth.
+#' max_treedepth advice lives in the end summary, where %-at-cap is known.
 #' @noRd
-maybe_grad_hint <- function(hints, avg) {
+maybe_grad_hint <- function(hints, snapshot, walnuts = FALSE) {
+  started <- Filter(function(s) isTRUE(s$started), snapshot)
+  if (length(started) == 0L ||
+      any(vapply(started, function(s) isTRUE(s$tuning), logical(1)))) {
+    return(invisible(NULL))
+  }
+  avg <- pooled_grad_per_draw(hints, started, min_draws = GRAD_HINT_MIN_DRAWS)
   if (hints$warned_grad || !is.finite(avg) || avg < GRAD_HINT_THRESHOLD) {
     return(invisible(NULL))
   }
   hints$warned_grad <- TRUE
-  depth <- as.integer(round(log2(avg + 1)))
+  detail <- if (isTRUE(walnuts)) {
+    "WALNUTS may evaluate multiple gradients per macro step; check adaptation and model geometry if this cost is unexpected."
+  } else {
+    sprintf(paste0("(tree depth ~%d) \u2014 sampling is taking long trajectories; ",
+                   "often a sign of difficult geometry or incomplete adaptation, ",
+                   "worth checking if unexpected."),
+            as.integer(round(log2(avg + 1))))
+  }
   emit_progress_hint(hints, "info", sprintf(
-    paste0("grad/draw: ~%d gradient evaluations per draw (tree depth ~%d) \u2014 ",
-           "sampling is taking long trajectories; often a sign of difficult ",
-           "geometry or incomplete adaptation, ",
-           "worth checking if unexpected."),
-    as.integer(round(avg)), depth
+    "grad/draw: ~%d gradient evaluations per draw %s",
+    as.integer(round(avg)), detail
   ))
 }
 
@@ -774,9 +824,9 @@ maybe_spread_hint <- function(hints, snapshot) {
   if (length(fracs) < 2L) return(invisible(NULL))
   hints$warned_spread <- TRUE
   emit_progress_hint(hints, "info", sprintf(
-    paste0("spread: chain progress is uneven (slowest %d%%, fastest %d%%) \u2014 often ",
-           "one chain adapted a smaller step size or is in a harder region of ",
-           "the posterior. Adding to status line."),
+    paste0("spread: chain progress is uneven (slowest %d%%, fastest %d%%). ",
+           "Rates can differ during adaptation and with model evaluation cost; ",
+           "this alone is not a diagnostic."),
     as.integer(round(100 * min(fracs))), as.integer(round(100 * max(fracs)))
   ))
 }
@@ -821,13 +871,52 @@ maybe_div_hint <- function(hints, total_post_warmup_divs) {
   )
 }
 
+#' Choose a layout after cli has installed the current progress state. Measuring
+#' rendered candidates accounts for ANSI styles, UTF-8 glyphs, and live resizing.
+#' Custom status text is never shortened by nutpieR.
+#' @noRd
+format_cli_progress_line <- function(done = FALSE, custom = FALSE) {
+  # cli clears from the cursor to the line end after writing. Leave the final
+  # terminal cell free so that clear cannot erase an exact-width line's last glyph.
+  width <- cli::console_width() - 1L
+  phase <- if (done) "{cli::pb_percent}" else "{cli::pb_spin} {cli::pb_extra$phase} {cli::pb_percent}"
+  counts <- "{cli::pb_current}/{cli::pb_total}"
+  status <- trimws(cli::pb_status)
+  compact <- if (custom) status else cli::pb_extra$status_compact
+  minimal <- if (custom) status else cli::pb_extra$status_minimal
+  eta <- if (done) "" else "{cli::pb_eta_str}"
+  # Keep cli's native bar and styling; drop detail before dropping the bar.
+  candidates <- c(
+    paste(phase, "|{cli::pb_bar}|", counts, eta, "| {status}"),
+    paste(phase, "|{cli::pb_bar}|", "{compact}"),
+    paste(phase, "|{cli::pb_bar}|", "{minimal}"),
+    "{cli::pb_percent} |{cli::pb_bar}| {minimal}",
+    paste(phase, counts, eta, "| {status}"),
+    paste(phase, "| {compact}"),
+    "{cli::pb_percent} | {compact}",
+    "{cli::pb_percent} | {minimal}",
+    "{minimal}"
+  )
+  for (candidate in candidates) {
+    line <- cli::format_inline(candidate)
+    if (cli::ansi_nchar(line) <= width) return(line)
+  }
+  line
+}
+
 #' @noRd
 make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
                                        chain_format = NULL,
                                        id = NULL,
                                        update = NULL,
-                                       done = NULL) {
-  if (is.null(chain_format)) chain_format <- "{div} | {grad} | {spread}"
+                                       done = NULL,
+                                       num_cores = num_chains,
+                                       clock = function() proc.time()[["elapsed"]]) {
+  default_format <- is.null(chain_format)
+  if (default_format) chain_format <- "{div} | {grad} | {spread}"
+  progress_line <- function(done = FALSE) {
+    format_cli_progress_line(done = done, custom = !default_format)
+  }
   if (is.null(update)) update <- cli::cli_progress_update
   if (is.null(done)) done <- cli::cli_progress_done
   total_steps <- as.numeric(num_chains) * (as.numeric(num_warmup) + as.numeric(num_draws))
@@ -837,23 +926,16 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
       total = total_steps,
       type = "custom",
       clear = FALSE,
-      extra = list(phase = "warmup"),
-      format = paste(
-        "{cli::pb_spin} {cli::pb_extra$phase} {cli::pb_percent} |{cli::pb_bar}|",
-        "{cli::pb_current}/{cli::pb_total} {cli::pb_eta_str}",
-        "| {cli::pb_status}"
-      ),
-      format_done = paste(
-        "{cli::pb_percent} |{cli::pb_bar}|",
-        "{cli::pb_current}/{cli::pb_total}",
-        "| {cli::pb_status}"
-      ),
+      extra = list(phase = "warmup", status_compact = "div: 0", status_minimal = "div: 0"),
+      format = "{progress_line()}",
+      format_done = "{progress_line(done = TRUE)}",
       .auto_close = FALSE
     )
   }
 
   last_total <- 0
   last_status <- ""
+  last_width <- NULL
   last_summary <- NULL
   last_snapshot <- NULL
   hints <- new_progress_hints(cli_bar_id = id)
@@ -869,32 +951,40 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
 
     maybe_div_hint(hints, summary$total_divergences)
 
-    # Once chains pass late warmup, switch the {grad} token and the hint to the
-    # baseline-adjusted average so the bar and the hint never disagree.
+    # Show only the late-window cost, never the discarded early-warmup average.
     update_grad_baselines(hints, snapshot, num_warmup)
-    baseline_avg <- pooled_grad_per_draw(hints, snapshot)
-    if (is.finite(baseline_avg)) summary$avg_num_steps <- baseline_avg
-    maybe_grad_hint(hints, baseline_avg)
+    summary$avg_num_gradients <- pooled_grad_per_draw(hints, snapshot)
+    maybe_grad_hint(hints, snapshot,
+                    walnuts = any(vapply(snapshot, function(s) isTRUE(s$walnuts), logical(1))))
 
-    # Spread: latch on once the started chains diverge enough, then keep the
-    # {spread} token for the rest of the run (it collapses honestly as chains
-    # converge). The hint fires once, at the latch.
-    if (!hints$spread_active && spread_triggered(snapshot)) {
-      hints$spread_active <- TRUE
-      maybe_spread_hint(hints, snapshot)
-    }
+    # Queued chains are not comparable for automatic hints. Explicit custom
+    # {spread} remains available as a display without drawing conclusions.
+    concurrent <- num_cores >= num_chains
+    update_spread_state(hints, snapshot,
+                        eligible = concurrent && length(snapshot) == num_chains,
+                        now = clock())
 
     raw_status <- format_status_tokens(snapshot, summary, chain_format,
-                                       spread_active = hints$spread_active)
+                                       spread_active = hints$spread_active ||
+                                         (!concurrent && !default_format))
 
     status <- style_progress_status(raw_status, color = progress_supports_color())
-    if (total_now == last_total && identical(status, last_status)) return(invisible(NULL))
+    width <- cli::console_width()
+    if (total_now == last_total && identical(status, last_status) &&
+        identical(width, last_width)) return(invisible(NULL))
     last_total <<- total_now
     last_status <<- status
+    last_width <<- width
+    compact <- format_status_tokens(snapshot, summary, "{div} | {grad}")
+    minimal <- format_divergence_status(summary$total_divergences)
     ok <- try(update(
       set = total_now,
       status = status,
-      extra = list(phase = summary$phase_label),
+      extra = list(
+        phase = summary$phase_label,
+        status_compact = style_progress_status(compact, color = progress_supports_color()),
+        status_minimal = style_progress_status(minimal, color = progress_supports_color())
+      ),
       id = id,
       force = TRUE
     ), silent = TRUE)
@@ -936,7 +1026,8 @@ make_text_progress_callback <- function(num_chains, num_warmup, num_draws,
 
     # grad/draw hint (once), from the same late-warmup baseline the cli bar uses.
     update_grad_baselines(hints, snapshot, num_warmup)
-    maybe_grad_hint(hints, pooled_grad_per_draw(hints, snapshot))
+    maybe_grad_hint(hints, snapshot,
+                    walnuts = any(vapply(snapshot, function(s) isTRUE(s$walnuts), logical(1))))
 
     for (s in snapshot) {
       chain_idx <- as.integer(as_progress_num(s$chain, NA_real_))
@@ -977,7 +1068,8 @@ make_text_progress_callback <- function(num_chains, num_warmup, num_draws,
       line <- gsub("{elapsed}", elapsed_str, line, fixed = TRUE)
       line <- gsub("{div}", format_divergence_status(div_count), line, fixed = TRUE)
       line <- gsub("{grad}", format_gradient_status(avg_lf), line, fixed = TRUE)
-      line <- gsub("{tdepth}", format_treedepth_status(s$latest_num_steps), line, fixed = TRUE)
+      line <- gsub("{tdepth}", format_treedepth_status(s$latest_num_steps, walnuts = s$walnuts),
+                   line, fixed = TRUE)
 
       # stderr via message() so text lines interleave correctly with hints and
       # the end summary, and suppressMessages() silences the whole stream.

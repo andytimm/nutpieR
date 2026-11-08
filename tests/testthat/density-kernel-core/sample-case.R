@@ -37,10 +37,10 @@ for (at in c(1L,2L,19L,100L,500L)) {
   stopifnot(inherits(fit,"draws_array"),all(is.finite(fit)),
             identical(dim(fit)[1:2],c(20L,2L)),dim(nutpie_warmup_draws(fit))[1]==200L)
 }
-# Zero-gradient initialization exhausts retries in the current sampler. It must
-# discard the run, including partial/empty traces returned by abort().
+# Zero-gradient initialization exhausts retries. The joined sampler must
+# report that failure rather than return a partial fit.
 error(nutpie_sample(bound,num_draws=20L,num_warmup=200L,num_chains=2L,
-  seed=42L,progress="none",init=list(x=c(1,1))),"run discarded")
+  seed=42L,progress="none",init=list(x=c(1,1))),"All initialization points failed")
 fit <- nutpie_sample(bound,num_draws=20L,num_warmup=200L,num_chains=2L,
   cores=1L,seed=42L,progress="none",adaptation="low_rank")
 stopifnot(inherits(fit,"draws_array"))

@@ -1,0 +1,386 @@
+//! Coordinate step-size search at initialisation and dispatch to the chosen adaptation algorithm during tuning.
+
+use itertools::Either;
+use nuts_derive::Storable;
+use rand::distr::Uniform;
+use rand::{Rng, RngExt};
+use serde::{Deserialize, Serialize};
+
+use super::adam::{Adam, AdamOptions};
+use super::dual_avg::{AcceptanceRateCollector, DualAverage, DualAverageOptions};
+use super::min_micro_steps::{MinMicroStepsAdaptation, MinMicroStepsStats};
+use crate::{
+    Math, NutsError,
+    dynamics::{Direction, Hamiltonian, LeapfrogResult, Point},
+    nuts::{Collector, NutsOptions},
+    sampler_stats::SamplerStats,
+};
+use std::f64;
+use std::fmt::Debug;
+
+/// Method used for step size adaptation
+#[derive(Debug, Clone, Copy, Serialize, Default, Deserialize)]
+pub enum StepSizeAdaptMethod {
+    /// Use dual averaging for step size adaptation (default)
+    #[default]
+    DualAverage,
+    /// Use Adam optimizer for step size adaptation
+    Adam,
+    Fixed(f64),
+}
+
+/// Options for step size adaptation
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct StepSizeAdaptOptions {
+    pub method: StepSizeAdaptMethod,
+    /// Dual averaging adaptation options
+    pub dual_average: DualAverageOptions,
+    /// Adam optimizer adaptation options
+    pub adam: AdamOptions,
+}
+
+impl Default for StepSizeAdaptOptions {
+    fn default() -> Self {
+        Self {
+            method: StepSizeAdaptMethod::DualAverage,
+            dual_average: DualAverageOptions::default(),
+            adam: AdamOptions::default(),
+        }
+    }
+}
+
+/// Step size adaptation strategy
+pub struct Strategy {
+    /// The step size adaptation method being used
+    adaptation: Option<Either<DualAverage, Adam>>,
+    /// Settings for step size adaptation
+    options: StepSizeSettings,
+    /// Last mean tree accept rate
+    pub last_mean_tree_accept: f64,
+    /// Last symmetric mean tree accept rate
+    pub last_sym_mean_tree_accept: f64,
+    /// Last number of steps
+    pub last_n_steps: u64,
+    /// Number of gradient evaluations in the last trajectory
+    pub last_n_gradients: u64,
+    /// Maximum absolute energy error observed in the last trajectory
+    pub last_max_energy_error: f64,
+    /// Depth of the last trajectory
+    last_depth: u64,
+    /// Adaptation of the WALNUTS `min_micro_steps`, which scales the step size
+    min_micro_steps: MinMicroStepsAdaptation,
+}
+
+impl Strategy {
+    pub fn new(options: StepSizeSettings) -> Self {
+        let adaptation = match options.adapt_options.method {
+            StepSizeAdaptMethod::DualAverage => Some(Either::Left(DualAverage::new(
+                options.adapt_options.dual_average,
+                options.initial_step,
+            ))),
+            StepSizeAdaptMethod::Adam => Some(Either::Right(Adam::new(
+                options.adapt_options.adam,
+                options.initial_step,
+            ))),
+            StepSizeAdaptMethod::Fixed(_) => None,
+        };
+
+        Self {
+            adaptation,
+            options,
+            last_n_steps: 0,
+            last_n_gradients: 0,
+            last_sym_mean_tree_accept: 0.0,
+            last_mean_tree_accept: 0.0,
+            last_max_energy_error: 0.0,
+            last_depth: 0,
+            min_micro_steps: MinMicroStepsAdaptation::default(),
+        }
+    }
+
+    pub fn init<M: Math, R: Rng + ?Sized, P: Point<M>>(
+        &mut self,
+        math: &mut M,
+        options: &mut NutsOptions,
+        hamiltonian: &mut impl Hamiltonian<M, Point = P>,
+        position: &[f64],
+        rng: &mut R,
+    ) -> Result<(), NutsError> {
+        if let StepSizeAdaptMethod::Fixed(step_size) = self.options.adapt_options.method {
+            *hamiltonian.step_size_mut() = step_size;
+            return Ok(());
+        };
+        let mut state = hamiltonian.init_state(math, position)?;
+        hamiltonian.initialize_trajectory(math, &mut state, true, rng)?;
+
+        // The search looks at the acceptance of single leapfrog steps. With
+        // WALNUTS, those are the micro steps of the first attempt of a macro
+        // step, so we scale them accordingly.
+        let step_size_factor = options
+            .walnuts
+            .map(|walnuts| 1.0 / walnuts.min_micro_steps as f64)
+            .unwrap_or(1.0);
+
+        let mut collector = AcceptanceRateCollector::new();
+
+        collector.register_init(math, &state, options);
+
+        *hamiltonian.step_size_mut() = self.options.initial_step;
+
+        let state_next = hamiltonian.leapfrog(
+            math,
+            &state,
+            Direction::Forward,
+            step_size_factor,
+            state.point().initial_energy(),
+            1000.0,
+            &mut collector,
+        );
+
+        let accept_stat = match state_next {
+            LeapfrogResult::Ok(_) => collector.mean.current(),
+            LeapfrogResult::Divergence(_) => 0.0,
+            LeapfrogResult::Err(err) => return Err(NutsError::LogpFailure(err.into())),
+        };
+
+        let dir = if accept_stat > self.options.target_accept {
+            Direction::Forward
+        } else {
+            Direction::Backward
+        };
+
+        for _ in 0..100 {
+            let mut collector = AcceptanceRateCollector::new();
+            collector.register_init(math, &state, options);
+            let state_next = hamiltonian.leapfrog(
+                math,
+                &state,
+                dir,
+                step_size_factor,
+                state.point().initial_energy(),
+                1000.0,
+                &mut collector,
+            );
+            let accept_stat = match state_next {
+                LeapfrogResult::Ok(_) => collector.mean.current(),
+                LeapfrogResult::Divergence(_) => 0.0,
+                LeapfrogResult::Err(err) => return Err(NutsError::LogpFailure(err.into())),
+            };
+            match dir {
+                Direction::Forward => {
+                    if (accept_stat <= self.options.target_accept) | (hamiltonian.step_size() > 1e5)
+                    {
+                        match self.adaptation.as_mut().expect("Adaptation must be set") {
+                            Either::Left(adapt) => {
+                                adapt.set_initial_step_size(hamiltonian.step_size());
+                            }
+                            Either::Right(adapt) => {
+                                adapt.set_initial_step_size(hamiltonian.step_size());
+                            }
+                        }
+                        return Ok(());
+                    }
+                    *hamiltonian.step_size_mut() *= 2.;
+                }
+                Direction::Backward => {
+                    if (accept_stat >= self.options.target_accept)
+                        | (hamiltonian.step_size() < 1e-10)
+                    {
+                        match self.adaptation.as_mut().expect("Adaptation must be set") {
+                            Either::Left(adapt) => {
+                                adapt.set_initial_step_size(hamiltonian.step_size());
+                            }
+                            Either::Right(adapt) => {
+                                adapt.set_initial_step_size(hamiltonian.step_size());
+                            }
+                        }
+                        return Ok(());
+                    }
+                    *hamiltonian.step_size_mut() /= 2.;
+                }
+            }
+        }
+        // If we don't find something better, use the specified initial value
+        *hamiltonian.step_size_mut() = self.options.initial_step;
+        Ok(())
+    }
+
+    /// Multiply the current and future step sizes by `factor`, keeping the
+    /// state of the adaptation otherwise.
+    fn rescale(&mut self, factor: f64) {
+        match self.adaptation.as_mut() {
+            None => {}
+            Some(Either::Left(adapt)) => adapt.rescale(factor),
+            Some(Either::Right(adapt)) => adapt.rescale(factor),
+        }
+    }
+
+    pub fn update(&mut self, collector: &AcceptanceRateCollector) {
+        let mean_sym = collector.mean_sym.current();
+        let mean = collector.mean.current();
+        let n_steps = collector.mean.count();
+        self.last_mean_tree_accept = mean;
+        self.last_sym_mean_tree_accept = mean_sym;
+        self.last_n_steps = n_steps;
+        self.last_n_gradients = collector.num_gradients;
+        self.last_max_energy_error = collector.max_energy_error;
+        self.last_depth = collector.depth;
+    }
+
+    /// Adapt the WALNUTS `min_micro_steps` in `options` to the last
+    /// trajectory, if enabled, and rescale the step size to keep the micro
+    /// step size.
+    pub fn update_min_micro_steps(&mut self, options: &mut NutsOptions) {
+        if let Some(factor) = self.min_micro_steps.update(options, self.last_depth) {
+            self.rescale(factor);
+        }
+    }
+
+    pub fn update_estimator_early(&mut self) {
+        match self.adaptation.as_mut() {
+            None => {}
+            Some(Either::Left(adapt)) => {
+                adapt.advance(self.last_mean_tree_accept, self.options.target_accept);
+            }
+            Some(Either::Right(adapt)) => {
+                adapt.advance(self.last_mean_tree_accept, self.options.target_accept);
+            }
+        }
+    }
+
+    pub fn update_estimator_late(&mut self) {
+        match self.adaptation.as_mut() {
+            None => {}
+            Some(Either::Left(adapt)) => {
+                adapt.advance(self.last_sym_mean_tree_accept, self.options.target_accept);
+            }
+            Some(Either::Right(adapt)) => {
+                adapt.advance(self.last_sym_mean_tree_accept, self.options.target_accept);
+            }
+        }
+    }
+
+    pub fn update_stepsize<M: Math, R: Rng + ?Sized>(
+        &mut self,
+        rng: &mut R,
+        hamiltonian: &mut impl Hamiltonian<M>,
+        use_best_guess: bool,
+    ) {
+        let step_size = match self.adaptation {
+            None => {
+                if let StepSizeAdaptMethod::Fixed(val) = self.options.adapt_options.method {
+                    val
+                } else {
+                    panic!("Adaptation method must be Fixed if adaptation is None")
+                }
+            }
+            Some(Either::Left(ref adapt)) => {
+                if use_best_guess {
+                    adapt.current_step_size_adapted()
+                } else {
+                    adapt.current_step_size()
+                }
+            }
+            Some(Either::Right(ref adapt)) => adapt.current_step_size(),
+        };
+
+        if let Some(jitter) = self.options.jitter {
+            let jitter =
+                rng.sample(Uniform::new(1.0 - jitter, 1.0 + jitter).expect("Invalid jitter"));
+            let jittered_step_size = step_size * jitter;
+            *hamiltonian.step_size_mut() = jittered_step_size;
+        } else {
+            *hamiltonian.step_size_mut() = step_size;
+        }
+    }
+
+    pub fn new_collector(&self) -> AcceptanceRateCollector {
+        AcceptanceRateCollector::new()
+    }
+}
+
+#[derive(Debug, Storable)]
+pub struct Stats {
+    pub step_size_bar: f64,
+    pub mean_tree_accept: f64,
+    pub mean_tree_accept_sym: f64,
+    pub n_steps: u64,
+    /// Number of gradient evaluations. With WALNUTS this includes rejected
+    /// attempts and reversibility checks, otherwise it equals `n_steps`.
+    pub n_gradients: u64,
+    pub max_energy_error: f64,
+    #[storable(flatten)]
+    pub min_micro_steps: MinMicroStepsStats,
+}
+
+impl<M: Math> SamplerStats<M> for Strategy {
+    type Stats = Stats;
+    type StatsOptions = ();
+
+    fn extract_stats(&self, _math: &mut M, _opt: Self::StatsOptions) -> Self::Stats {
+        Stats {
+            step_size_bar: match self.adaptation {
+                None => {
+                    if let StepSizeAdaptMethod::Fixed(val) = self.options.adapt_options.method {
+                        val
+                    } else {
+                        panic!("Adaptation method must be Fixed if adaptation is None")
+                    }
+                }
+                Some(Either::Left(ref adapt)) => adapt.current_step_size_adapted(),
+                Some(Either::Right(ref adapt)) => adapt.current_step_size(),
+            },
+            mean_tree_accept: self.last_mean_tree_accept,
+            mean_tree_accept_sym: self.last_sym_mean_tree_accept,
+            n_steps: self.last_n_steps,
+            n_gradients: self.last_n_gradients,
+            max_energy_error: self.last_max_energy_error,
+            min_micro_steps: self.min_micro_steps.stats(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct StepSizeSettings {
+    /// Target acceptance rate
+    pub target_accept: f64,
+    /// Initial step size
+    pub initial_step: f64,
+    /// Optional jitter to add to step size (randomization)
+    pub jitter: Option<f64>,
+    /// Adaptation options specific to the chosen method
+    pub adapt_options: StepSizeAdaptOptions,
+}
+
+impl StepSizeSettings {
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        if !(self.initial_step.is_finite() && self.initial_step > 0.0) {
+            anyhow::bail!(
+                "initial_step must be positive and finite, got {}",
+                self.initial_step
+            );
+        }
+        if let Some(jitter) = self.jitter
+            && !(jitter > 0.0 && jitter < 1.0)
+        {
+            anyhow::bail!("jitter must be between 0 and 1, got {jitter}");
+        }
+        if let StepSizeAdaptMethod::Fixed(step_size) = self.adapt_options.method
+            && !(step_size.is_finite() && step_size > 0.0)
+        {
+            anyhow::bail!("Fixed step size must be positive and finite, got {step_size}");
+        }
+        Ok(())
+    }
+}
+
+impl Default for StepSizeSettings {
+    fn default() -> Self {
+        Self {
+            target_accept: 0.8,
+            initial_step: 0.1,
+            jitter: Some(0.1),
+            adapt_options: StepSizeAdaptOptions::default(),
+        }
+    }
+}

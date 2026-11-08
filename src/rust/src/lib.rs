@@ -7,58 +7,16 @@ use arrow::array::{
 use arrow::datatypes::DataType;
 use extendr_api::error::Result;
 use extendr_api::prelude::*;
-use nuts_rs::{
-    ArrowConfig, ArrowTrace, ChainProgress, DiagNutsSettings, LowRankNutsSettings,
-    ProgressCallback, Sampler, SamplerWaitResult, Settings,
-};
+use nuts_rs::{ArrowTrace, DiagNutsSettings, LowRankNutsSettings, Settings};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-extern "C" {
-    static mut R_interrupts_pending: std::os::raw::c_int;
-    static mut R_interrupts_suspended: std::os::raw::c_int;
-    // Pump R's event loop. Front-ends (RStudio, Positron) buffer console output
-    // produced during a blocking native call and only repaint when R processes
-    // events, so without this the progress callback's output is invisible until
-    // sample_stan() returns. See `pump_r_events`.
-    fn R_ProcessEvents();
-}
-
-/// Flush front-end consoles mid-sampling by pumping R's event loop.
-///
-/// Interrupts are suspended across the call: on Unix `R_ProcessEvents` longjmps
-/// (via `onintr`) when an interrupt is pending, which would skip the Rust
-/// `Sampler` teardown and corrupt the in-flight result. Suspending lets it
-/// flush output without jumping; the pending flag is left set and handled at the
-/// top of the poll loop, which returns a clean error there instead.
-fn pump_r_events() {
-    unsafe {
-        let prev = R_interrupts_suspended;
-        R_interrupts_suspended = 1;
-        R_ProcessEvents();
-        R_interrupts_suspended = prev;
-    }
-}
-
-/// Read and clear a pending R interrupt. Returns `true` if one was pending; the
-/// caller should then return a clean `Err` so extendr raises a normal R error
-/// at the call site ("Sampling interrupted.") rather than longjmp'ing past the
-/// in-flight `Sampler` teardown.
-fn interrupt_pending() -> bool {
-    unsafe {
-        if R_interrupts_pending != 0 {
-            R_interrupts_pending = 0;
-            true
-        } else {
-            false
-        }
-    }
-}
+use std::sync::Arc;
 
 mod density_kernel;
 mod model;
+mod sampling;
+mod walnuts;
+use sampling::run_sampler;
 #[cfg(target_os = "macos")]
 mod private_tbb;
 
@@ -551,345 +509,6 @@ fn tbb_patch_strings() -> Vec<String> {
     }
 }
 
-#[derive(Clone, Default)]
-struct ChainState {
-    chain: usize,
-    finished_draws: usize,
-    total_draws: usize,
-    divergences: usize,
-    tuning: bool,
-    started: bool,
-    latest_num_steps: usize,
-    total_num_steps: usize,
-    step_size: f64,
-    runtime: Duration,
-    divergent_draws: Vec<usize>,
-}
-
-/// Extract a caught Rust panic message for the R-facing error.
-fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
-    if let Some(text) = payload.downcast_ref::<String>() {
-        text.clone()
-    } else if let Some(text) = payload.downcast_ref::<&str>() {
-        (*text).into()
-    } else {
-        "non-string Rust panic".into()
-    }
-}
-
-/// Run sampling with progress reporting and retain the joinable owner.
-/// Never use the consuming wait_timeout error path here: it loses the owner.
-/// Completion notifications only wake the monitor; the host must still join.
-fn run_joinable_sampler<S: Settings>(
-    stan_model: model::StanModel,
-    settings: S,
-    num_cores: i32,
-    save_warmup: bool,
-    mut progress_cb: Option<Function>,
-) -> Result<Vec<ArrowTrace>> {
-    use std::panic::{catch_unwind, AssertUnwindSafe};
-    let state = stan_model.run_state.as_ref().unwrap().clone();
-    let chains = settings.num_chains();
-    let rows = settings.hint_num_draws()
-        + if save_warmup {
-            settings.hint_num_tune()
-        } else {
-            0
-        };
-    let progress_state = Arc::new(Mutex::new(Vec::<ChainState>::new()));
-    let snapshot = progress_state.clone();
-    let callback = progress_cb.as_ref().map(|_| ProgressCallback {
-        callback: Box::new(move |_, progress: Box<[ChainProgress]>| {
-            *snapshot.lock().unwrap_or_else(|e| e.into_inner()) = progress
-                .iter()
-                .enumerate()
-                .map(|(i, c)| ChainState {
-                    chain: i + 1,
-                    finished_draws: c.finished_draws,
-                    total_draws: c.total_draws,
-                    divergences: c.divergences,
-                    tuning: c.tuning,
-                    started: c.started,
-                    latest_num_steps: c.latest_num_steps,
-                    total_num_steps: c.total_num_steps,
-                    step_size: c.step_size,
-                    runtime: c.runtime,
-                    divergent_draws: c.divergent_draws.clone(),
-                })
-                .collect();
-        }),
-        rate: Duration::from_millis(100),
-    });
-    let mut config = ArrowConfig::default();
-    config.store_warmup = save_warmup;
-    let created = catch_unwind(AssertUnwindSafe(|| {
-        Sampler::new(stan_model, settings, config, num_cores as usize, callback)
-    }));
-    let sampler = match created {
-        Ok(Ok(sampler)) => sampler,
-        Ok(Err(error)) => return Err(r_err(error)),
-        Err(panic) => {
-            return Err(r_err(format!(
-                "Sampler startup panicked: {}",
-                panic_text(panic)
-            )))
-        }
-    };
-    // The sampler remains outside the caught monitor closure. Even a monitor
-    // panic reaches abort below before an R-facing error is constructed.
-    let monitored = catch_unwind(AssertUnwindSafe(|| -> std::result::Result<(), String> {
-        loop {
-            if state.wait(Duration::from_millis(200), chains) {
-                return Ok(());
-            }
-            if interrupt_pending() {
-                return Err("Sampling interrupted.".into());
-            }
-            pump_r_events();
-            if interrupt_pending() {
-                return Err("Sampling interrupted.".into());
-            }
-            if let Some(cb) = &progress_cb {
-                let current = progress_state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
-                if !current.is_empty() {
-                    let arguments =
-                        Pairlist::from_pairs([("", Robj::from(build_progress_snapshot(&current)))]);
-                    if cb.call(arguments).is_err() {
-                        progress_cb = None;
-                    }
-                }
-            }
-        }
-    }));
-    // abort disconnects commands, joins the controller, then resumes any
-    // controller panic. The Rayon scope has joined all model-using tasks;
-    // this does not mean every Rayon OS thread has exited.
-    let joined = catch_unwind(AssertUnwindSafe(|| sampler.abort()));
-    if let Some(error) = state.error() {
-        return Err(r_err(error));
-    }
-    match monitored {
-        Err(panic) => {
-            return Err(r_err(format!(
-                "Sampler monitor panicked: {}",
-                panic_text(panic)
-            )))
-        }
-        Ok(Err(error)) => return Err(r_err(error)),
-        Ok(Ok(())) => (),
-    }
-    let traces = match joined {
-        Err(panic) => return Err(r_err(format!("Sampler panicked: {}", panic_text(panic)))),
-        Ok(Err(error)) => return Err(r_err(error)),
-        Ok(Ok((Some(error), _))) => return Err(r_err(error)),
-        Ok(Ok((None, traces))) => traces,
-    };
-    // abort does not drain worker results. Ordinary worker errors can therefore
-    // return partial traces without Some(error); reject them before R allocation.
-    if traces.len() != chains
-        || traces.iter().any(|trace| {
-            trace.posterior.num_rows() != rows || trace.sample_stats.num_rows() != rows
-        })
-    {
-        let actual: Vec<_> = traces
-            .iter()
-            .map(|trace| (trace.posterior.num_rows(), trace.sample_stats.num_rows()))
-            .collect();
-        return Err(r_err(format!("Sampling stopped before all draws completed; run discarded (initialization or worker failure). Expected {chains} chains with {rows} rows; got {actual:?}.")));
-    }
-    Ok(traces)
-}
-
-fn run_sampler<S: Settings>(
-    stan_model: model::StanModel,
-    settings: S,
-    num_cores: i32,
-    save_warmup: bool,
-    progress_cb: Option<Function>,
-) -> Result<Vec<ArrowTrace>> {
-    if stan_model.run_state.is_some() {
-        return run_joinable_sampler(stan_model, settings, num_cores, save_warmup, progress_cb);
-    }
-    let mut progress_cb = progress_cb;
-    let use_callback = progress_cb.is_some();
-
-    let progress_state: Arc<Mutex<Vec<ChainState>>> = Arc::new(Mutex::new(Vec::new()));
-    let state_clone = progress_state.clone();
-
-    // Only install the nuts-rs progress callback when R wants per-poll
-    // snapshots. With `progress = "none"` there is no R callback, so we skip
-    // the snapshot bookkeeping — but the wait loop below still runs to service
-    // interrupts.
-    let callback = if use_callback {
-        Some(ProgressCallback {
-            callback: Box::new(move |_elapsed: Duration, progress: Box<[ChainProgress]>| {
-                let snapshot: Vec<ChainState> = progress
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| ChainState {
-                        chain: i + 1,
-                        finished_draws: c.finished_draws,
-                        total_draws: c.total_draws,
-                        divergences: c.divergences,
-                        tuning: c.tuning,
-                        started: c.started,
-                        latest_num_steps: c.latest_num_steps,
-                        total_num_steps: c.total_num_steps,
-                        step_size: c.step_size,
-                        runtime: c.runtime,
-                        divergent_draws: c.divergent_draws.clone(),
-                    })
-                    .collect();
-                *state_clone.lock().unwrap() = snapshot;
-            }),
-            rate: Duration::from_millis(100),
-        })
-    } else {
-        None
-    };
-
-    let mut arrow_config = ArrowConfig::default();
-    arrow_config.store_warmup = save_warmup;
-    let mut sampler_opt = Some(
-        Sampler::new(
-            stan_model,
-            settings,
-            arrow_config,
-            num_cores as usize,
-            callback,
-        )
-        .map_err(r_err)?,
-    );
-
-    // Interrupt teardown, written once for the two poll sites below (a macro
-    // rather than a closure/fn only because `Sampler`'s concrete generic type is
-    // not nameable here). nuts-rs `Sampler` has no Drop impl, so simply dropping
-    // it only detaches the rayon pool — the worker threads keep finalizing in the
-    // background into R's post-interrupt GC, and the two then push concurrent
-    // allocator traffic that can segfault during GC (#36). abort() signals the
-    // controller (drop of the command channel) and joins the threads before we
-    // unwind, then extendr raises a clean R error at the call site.
-    macro_rules! abort_on_interrupt {
-        ($opt:expr) => {{
-            if let Some(sampler) = $opt.take() {
-                let _ = sampler.abort();
-            }
-            return Err(Error::Other("Sampling interrupted.".into()));
-        }};
-    }
-
-    let results = loop {
-        let sampler = sampler_opt.take().unwrap();
-        let wait_dur = Duration::from_millis(200);
-        match sampler.wait_timeout(wait_dur) {
-            SamplerWaitResult::Trace(traces) => break traces,
-            SamplerWaitResult::Timeout(s) => {
-                sampler_opt = Some(s);
-                // Check interrupt BEFORE calling back into R, so extendr raises a
-                // clean R error at the call site ("Sampling interrupted.") rather
-                // than longjmp'ing past the assignment and leaving the user with a
-                // confusing "object not found" on the next line.
-                if interrupt_pending() {
-                    abort_on_interrupt!(sampler_opt);
-                }
-                // Repaint the front-end console each poll so progress streams
-                // live instead of appearing all at once when sampling ends
-                // (GitHub #34: RStudio buffers native-call output).
-                pump_r_events();
-                // pump_r_events() suspends interrupts, so R_ProcessEvents() can
-                // latch a pending interrupt without longjmp'ing. Re-check before
-                // the R progress callback runs, or it could service the flag by
-                // longjmp'ing across these Rust frames.
-                if interrupt_pending() {
-                    abort_on_interrupt!(sampler_opt);
-                }
-                let state_snapshot: Vec<ChainState> = {
-                    let state = progress_state.lock().unwrap();
-                    state.clone()
-                };
-                if state_snapshot.is_empty() {
-                    continue;
-                }
-
-                let cb_failed = if let Some(ref cb) = progress_cb {
-                    let snapshot_list = build_progress_snapshot(&state_snapshot);
-                    let pairlist = Pairlist::from_pairs([("", Robj::from(snapshot_list))]);
-                    match cb.call(pairlist) {
-                        Ok(_) => false,
-                        Err(e) => {
-                            rprintln!(
-                                "nutpieR: progress callback failed ({}); disabling further callbacks for this run.",
-                                e
-                            );
-                            true
-                        }
-                    }
-                } else {
-                    false
-                };
-                if cb_failed {
-                    progress_cb = None;
-                }
-            }
-            // Residual unjoined-threads race (#36): nuts-rs 0.18.2's wait_timeout
-            // Ok(Err(e)) path drops the `Sampler` here — dropping the command
-            // channel and the JoinHandle *unjoined* — so worker threads can still
-            // be finalizing while R unwinds and runs GC, the same hazard the
-            // interrupt path guards against. We cannot guard it here: this arm
-            // hands back only the error, not the sampler, so there is no handle to
-            // abort()/join. Fixing it needs upstream nuts-rs support (a Drop impl
-            // on Sampler, or an Err variant that carries the sampler back).
-            SamplerWaitResult::Err(e, _) => return Err(r_err(e)),
-        }
-    };
-
-    if let Some(ref cb) = progress_cb {
-        let state_snapshot: Vec<ChainState> = {
-            let state = progress_state.lock().unwrap();
-            state.clone()
-        };
-        if !state_snapshot.is_empty() {
-            let snapshot_list = build_progress_snapshot(&state_snapshot);
-            let pairlist = Pairlist::from_pairs([("", Robj::from(snapshot_list))]);
-            let _ = cb.call(pairlist);
-        }
-    }
-
-    Ok(results)
-}
-
-/// Build a `List` of per-chain named lists for the R progress callback.
-/// Field set must match the R-side progress helpers in `R/progress.R`.
-fn build_progress_snapshot(state: &[ChainState]) -> List {
-    let entries: Vec<Robj> = state
-        .iter()
-        .map(|c| {
-            list!(
-                chain = c.chain as i32,
-                finished_draws = c.finished_draws as i32,
-                total_draws = c.total_draws as i32,
-                divergences = c.divergences as i32,
-                tuning = c.tuning,
-                started = c.started,
-                latest_num_steps = c.latest_num_steps as i32,
-                total_num_steps = c.total_num_steps as f64,
-                step_size = c.step_size,
-                runtime = c.runtime.as_secs_f64(),
-                divergent_draws = c
-                    .divergent_draws
-                    .iter()
-                    .map(|x| *x as i32)
-                    .collect::<Vec<i32>>()
-            )
-            .into_robj()
-        })
-        .collect();
-    List::from_values(entries)
-}
-
 /// @param handle An `ExternalPtr<BSHandle>` from `bs_open()`.
 /// @param num_draws Number of draws per chain after warmup.
 /// @param num_warmup Number of warmup (tuning) draws per chain.
@@ -934,6 +553,8 @@ fn build_progress_snapshot(state: &[ChainState]) -> List {
 ///   `divergent_draws`). When supplied, the built-in per-chain text log is
 ///   suppressed; errors raised by the closure are warned once and further calls
 ///   suppressed for the run.
+/// @param walnuts NULL for ordinary NUTS, or a JSON string of experimental
+///   WALNUTS options validated again at the Rust boundary.
 /// @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 ///   sampler_config (JSON), and optionally warmup_draws and warmup_diagnostics.
 /// @noRd
@@ -966,8 +587,9 @@ fn sample_stan(
     include_gq: bool,
     progress_callback: Robj,
     #[extendr(default = "NULL")] kernel: Robj,
-) -> List {
-    or_throw((|| -> Result<List> {
+    #[extendr(default = "NULL")] walnuts: Robj,
+) -> Result<List> {
+    (|| -> Result<List> {
         // Defensive guards before unsigned casts. The R wrapper validates these
         // already; we re-check here so direct callers (or malformed inputs that
         // somehow slip past the R layer) can't turn negative ints into huge
@@ -989,6 +611,14 @@ fn sample_stan(
         }
         check_seed(seed)?;
 
+        let walnuts_options = if walnuts.is_null() {
+            None
+        } else {
+            let json = walnuts
+                .as_str()
+                .ok_or_else(|| r_err("walnuts must be NULL or a JSON options string"))?;
+            Some(walnuts::parse(json).map_err(r_err)?)
+        };
         let max_treedepth_opt = opt_count(&max_treedepth, "max_treedepth", 1)?;
         let mindepth_opt = opt_count(&mindepth, "mindepth", 0)?;
         let target_accept_opt = opt_finite_in_open_unit(&target_accept, "target_accept")?;
@@ -1086,6 +716,12 @@ fn sample_stan(
                 if let Some(v) = extra_doublings_opt {
                     $settings.extra_doublings = v as u64;
                 }
+                // Adopt nuts-rs 0.19's soft gradient clipping for extreme gradients.
+                $settings.gradient_clipping = Some(1e10);
+                if let Some((options, limit)) = walnuts_options {
+                    $settings.walnuts = Some(options);
+                    $settings.max_leapfrog_steps = limit;
+                }
                 $settings.store_divergences = store_divergences;
                 $settings.store_unconstrained = store_unconstrained;
                 $settings.store_gradient = store_gradient;
@@ -1120,13 +756,17 @@ fn sample_stan(
                     num_cores,
                     save_warmup,
                     progress_callback.clone(),
+                    walnuts_options.is_some(),
                 )?
             }
             "diag" | "draw_diag" => {
                 let mut settings = DiagNutsSettings::default();
                 configure_settings!(settings);
                 if adaptation == "draw_diag" {
-                    settings.adapt_options.mass_matrix_options.use_grad_based_estimate = false;
+                    settings
+                        .adapt_options
+                        .mass_matrix_options
+                        .use_grad_based_estimate = false;
                 }
                 run_with_settings(
                     stan_model,
@@ -1134,6 +774,7 @@ fn sample_stan(
                     num_cores,
                     save_warmup,
                     progress_callback.clone(),
+                    walnuts_options.is_some(),
                 )?
             }
             other => {
@@ -1191,7 +832,7 @@ fn sample_stan(
             expand_errors = n_expand_errors,
             sampler_config = sampler_config_json
         ))
-    })())
+    })()
 }
 
 /// Optional finite scalar (`NULL` -> None, REAL scalar -> Some). Caller does
@@ -1263,6 +904,7 @@ fn run_with_settings<S: Settings + serde::Serialize>(
     num_cores: i32,
     save_warmup: bool,
     progress_callback: Option<Function>,
+    walnuts: bool,
 ) -> Result<(Vec<ArrowTrace>, String)> {
     let json = serde_json::to_string(&settings)
         .map_err(|e| Error::Other(format!("failed to serialize sampler settings: {}", e)))?;
@@ -1272,6 +914,7 @@ fn run_with_settings<S: Settings + serde::Serialize>(
         num_cores,
         save_warmup,
         progress_callback,
+        walnuts,
     )?;
     Ok((traces, json))
 }
@@ -1908,9 +1551,10 @@ fn density_kernel_evaluate(handle: Robj, points: List) -> List {
 }
 
 /// Internal reference-only pilot. No kernel handle is accepted here.
+/// @noRd
 #[extendr]
-fn bs_reference_pilot(handle: Robj, num_points: i32, seed: i32) -> List {
-    or_throw((|| -> Result<List> {
+fn bs_reference_pilot(handle: Robj, num_points: i32, seed: i32) -> Result<List> {
+    (|| -> Result<List> {
         let seed = check_seed(seed)?;
         if num_points < 2 {
             return Err(r_err("num_points must be at least two"));
@@ -1921,20 +1565,23 @@ fn bs_reference_pilot(handle: Robj, num_points: i32, seed: i32) -> List {
         let reference = handle.try_addr().map_err(|_| {
             r_err("Dead reference handle; rebind with nutpie_attach_density_kernel().")
         })?;
-        let mut settings = DiagNutsSettings::default();
-        settings.num_tune = 200;
-        settings.num_draws = num_points as u64;
-        settings.num_chains = 1;
-        settings.seed = seed as u64;
-        settings.maxdepth = 10;
+        let mut settings = DiagNutsSettings {
+            num_tune: 200,
+            num_draws: num_points as u64,
+            num_chains: 1,
+            seed: seed as u64,
+            maxdepth: 10,
+            ..DiagNutsSettings::default()
+        };
         settings.adapt_options.step_size_settings.target_accept = 0.8;
         let config = serde_json::to_string(&settings).map_err(r_err)?;
-        let traces = run_joinable_sampler(
+        let traces = run_sampler(
             model::StanModel::reference_pilot(reference),
             settings,
             1,
             false,
             None,
+            false,
         )?;
         let columns: Vec<_> = (0..reference.ndim_unc).collect();
         let points = build_draws_matrix(
@@ -1955,7 +1602,7 @@ fn bs_reference_pilot(handle: Robj, num_points: i32, seed: i32) -> List {
             diagnostics = diagnostics,
             sampler_config = config
         ))
-    })())
+    })()
 }
 
 /// Reference evaluation with propto=true and jacobian=true.

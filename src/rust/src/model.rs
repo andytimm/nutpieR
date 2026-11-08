@@ -1,6 +1,5 @@
 use nuts_rs::{CpuLogpFunc, CpuMath, CpuMathError, HasDims, Model};
 use rand::RngExt;
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
@@ -219,26 +218,6 @@ impl nuts_rs::LogpError for StanLogpError {
 
 // --- StanModel: factory for per-chain instances ---
 
-// Per-chain "init slot index" set by Model::math() on the worker thread that
-// owns the chain. nuts-rs spawns one scoped task per chain; that task calls
-// math() once and then init_position() (up to 500 times) on the same thread,
-// so the thread-local is stable across the retry loop. Rayon workers are
-// reused across chains, and each new chain's first math() call overwrites
-// the value before init_position runs.
-//
-// IMPORTANT: this index is *not* the nuts-rs chain_id used to label output
-// chains. nuts-rs also calls Model::math() once on the controller thread
-// (sampler.rs `Sampler::new`) to build the trace template before spawning
-// chains, which consumes one counter value, and rayon's spawn_fifo does not
-// guarantee the order in which spawned tasks reach math(). The R-side public
-// API therefore documents per-chain init assignment as "unspecified order":
-// callers get N distinct starts distributed across chains, but should not
-// rely on slot N landing on output chain N. Threading actual chain_id through
-// would require a change to the upstream nuts-rs Model trait.
-thread_local! {
-    static MY_CHAIN_ID: Cell<Option<usize>> = const { Cell::new(None) };
-}
-
 pub struct StanModel {
     kernel: Option<Arc<crate::density_kernel::BoundDensityKernel>>,
     pub run_state: Option<Arc<crate::density_kernel::RunState>>,
@@ -257,8 +236,6 @@ pub struct StanModel {
     /// If true, apply ±0.5 uniform jitter around the provided position.
     /// If false, chains start exactly at the provided position.
     jitter: bool,
-    /// Assigns a unique chain id (0..num_chains) on each `math()` call.
-    chain_counter: AtomicUsize,
     /// Count of draws where param_constrain failed (GQ filled with NaN).
     expand_errors: Arc<AtomicUsize>,
 }
@@ -279,7 +256,6 @@ impl StanModel {
             constrained_param_names: handle.full_names.clone(),
             init_positions: None,
             jitter: false,
-            chain_counter: AtomicUsize::new(0),
             expand_errors: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -378,31 +354,10 @@ impl StanModel {
     }
 }
 
-impl Drop for StanModel {
-    fn drop(&mut self) {
-        // Scoped Maths borrow this model and end before it is destroyed.
-        // This notification does not join; the host still owns and joins the sampler.
-        if let Some(state) = &self.run_state {
-            state.complete();
-        }
-    }
-}
-
 impl Model for StanModel {
-    type Math<'model> = CpuMath<StanDensity<'model>>;
+    type Math = CpuMath<StanDensity>;
 
-    fn math<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> anyhow::Result<Self::Math<'_>> {
-        // Claim a chain id for this worker thread. See MY_CHAIN_ID doc comment.
-        let chain_id = self.chain_counter.fetch_add(1, Ordering::SeqCst);
-        let worker_guard = if chain_id == 0 {
-            None
-        } else {
-            self.run_state
-                .as_ref()
-                .map(|state| crate::density_kernel::WorkerGuard(state.clone()))
-        };
-        MY_CHAIN_ID.with(|c| c.set(Some(chain_id)));
-
+    fn math<R: rand::Rng + ?Sized>(self: Arc<Self>, rng: &mut R) -> anyhow::Result<Self::Math> {
         let kernel_workspace = match &self.kernel {
             Some(kernel) => match kernel.workspace() {
                 Ok(workspace) => Some(workspace),
@@ -415,30 +370,40 @@ impl Model for StanModel {
             },
             None => None,
         };
-        let bs_rng = self.inner.new_rng(rng.next_u32()).map_err(|error| {
-            if let Some(state) = &self.run_state {
-                state.fail(&error);
-            }
-            error
-        })?;
+        let bs_rng = bridgestan::Rng::new(self.inner.clone_library_ref(), rng.next_u32())
+            .inspect_err(|error| {
+                if let Some(state) = &self.run_state {
+                    state.fail(error);
+                }
+            })?;
         Ok(CpuMath::new(StanDensity {
             kernel_workspace,
-            _worker_guard: worker_guard,
-            model: self,
             rng: bs_rng,
             expand_errors: Arc::clone(&self.expand_errors),
+            model: self,
         }))
     }
 
     fn init_position<R: rand::Rng + ?Sized>(
         &self,
         rng: &mut R,
+        chain_id: u64,
         position: &mut [f64],
-    ) -> anyhow::Result<()> {
+    ) -> std::result::Result<(), nuts_rs::InitPositionError> {
         match &self.init_positions {
             Some(positions) => {
-                let chain_id = MY_CHAIN_ID.with(|c| c.get()).unwrap_or(0);
-                let idx = chain_id % positions.len();
+                let idx = if positions.len() == 1 {
+                    0
+                } else {
+                    usize::try_from(chain_id)
+                        .ok()
+                        .filter(|&id| id < positions.len())
+                        .ok_or_else(|| {
+                            nuts_rs::InitPositionError::Fatal(anyhow::anyhow!(
+                                "No initial position for chain {chain_id}"
+                            ))
+                        })?
+                };
                 let src = &positions[idx];
                 if self.jitter {
                     for (p, &m) in position.iter_mut().zip(src.iter()) {
@@ -478,15 +443,14 @@ fn expansion_fallbacks(
     }
 }
 
-pub struct StanDensity<'model> {
+pub struct StanDensity {
     kernel_workspace: Option<crate::density_kernel::Workspace>,
-    _worker_guard: Option<crate::density_kernel::WorkerGuard>,
-    model: &'model StanModel,
-    rng: bridgestan::Rng<&'model bridgestan::StanLibrary>,
+    rng: bridgestan::Rng<Arc<bridgestan::StanLibrary>>,
+    model: Arc<StanModel>,
     expand_errors: Arc<AtomicUsize>,
 }
 
-impl<'model> HasDims for StanDensity<'model> {
+impl HasDims for StanDensity {
     fn dim_sizes(&self) -> HashMap<String, u64> {
         let mut m = HashMap::new();
         m.insert("dim".to_string(), self.model.num_constrained as u64);
@@ -494,7 +458,7 @@ impl<'model> HasDims for StanDensity<'model> {
     }
 }
 
-impl<'model> CpuLogpFunc for StanDensity<'model> {
+impl CpuLogpFunc for StanDensity {
     type LogpError = StanLogpError;
     type FlowParameters = ();
     type ExpandedVector = Vec<f64>;
