@@ -210,36 +210,20 @@ impl Workspace {
 /// Session-local external pointer payload. No R objects inside native ownership.
 pub struct DensityKernelHandle(pub Arc<BoundDensityKernel>);
 
-/// Per-run native notification, never persisted in a binding. A completion
-/// notification is only a wakeup: the host still joins through Sampler::abort.
+/// First native fatal error retained independently of sampler completion.
 #[derive(Default)]
 pub struct RunState {
-    // Healthy evaluations need only an atomic read, not a shared mutex.
     error_present: std::sync::atomic::AtomicBool,
-    inner: std::sync::Mutex<(bool, Option<String>, usize)>,
-    wake: std::sync::Condvar,
+    first_error: std::sync::Mutex<Option<String>>,
 }
 impl RunState {
     pub fn fail(&self, error: impl std::fmt::Display) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        if inner.1.is_none() {
-            inner.1 = Some(error.to_string());
+        let mut first = self.first_error.lock().unwrap_or_else(|e| e.into_inner());
+        if first.is_none() {
+            *first = Some(error.to_string());
         }
         self.error_present
             .store(true, std::sync::atomic::Ordering::Release);
-        self.wake.notify_all();
-    }
-    pub fn complete(&self) {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).0 = true;
-        self.wake.notify_all();
-    }
-    pub fn wait(&self, duration: std::time::Duration, chains: usize) -> bool {
-        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        let (inner, _) = self
-            .wake
-            .wait_timeout_while(inner, duration, |v| !v.0 && v.1.is_none() && v.2 < chains)
-            .unwrap_or_else(|e| e.into_inner());
-        inner.0 || inner.1.is_some() || inner.2 >= chains
     }
     pub fn error(&self) -> Option<String> {
         if !self
@@ -248,22 +232,10 @@ impl RunState {
         {
             return None;
         }
-        self.inner
+        self.first_error
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .1
             .clone()
-    }
-}
-
-/// Track worker factory/Math completion, not chain IDs. Created at worker
-/// factory entry and moved into Math on success; the schema-only factory has
-/// no guard.
-pub struct WorkerGuard(pub Arc<RunState>);
-impl Drop for WorkerGuard {
-    fn drop(&mut self) {
-        self.0.inner.lock().unwrap_or_else(|e| e.into_inner()).2 += 1;
-        self.0.wake.notify_all();
     }
 }
 
@@ -279,37 +251,18 @@ mod tests {
         assert!(super::error(2, b"\0").message.contains("without a message"));
     }
     #[test]
-    fn concurrent_failure_publishes_one_owned_error_and_wakes_monitor() {
+    fn concurrent_failure_retains_one_owned_error() {
         let state = Arc::new(RunState::default());
-        let barrier = Arc::new(std::sync::Barrier::new(3));
         std::thread::scope(|scope| {
             for message in ["first-a", "first-b"] {
                 let state = state.clone();
-                let barrier = barrier.clone();
-                scope.spawn(move || {
-                    barrier.wait();
-                    state.fail(message);
-                });
+                scope.spawn(move || state.fail(message));
             }
-            barrier.wait();
-            assert!(state.wait(std::time::Duration::from_secs(2), usize::MAX));
-            let winner = state.error().expect("failure published before wakeup");
-            assert!(matches!(winner.as_str(), "first-a" | "first-b"));
-            // The first string cannot be replaced by the second writer.
-            state.fail("later");
-            assert_eq!(state.error().as_deref(), Some(winner.as_str()));
         });
+        let winner = state.error().unwrap();
+        assert!(matches!(winner.as_str(), "first-a" | "first-b"));
+        state.fail("later");
+        assert_eq!(state.error().as_deref(), Some(winner.as_str()));
         assert!(RunState::default().error().is_none());
-    }
-    #[test]
-    fn completion_is_a_wakeup_and_first_error_is_owned() {
-        let state = Arc::new(RunState::default());
-        assert!(state.error().is_none());
-        assert!(!state.wait(std::time::Duration::ZERO, 1));
-        drop(WorkerGuard(state.clone()));
-        assert!(state.wait(std::time::Duration::ZERO, 1));
-        state.fail("first");
-        state.fail("second");
-        assert_eq!(state.error().as_deref(), Some("first"));
     }
 }

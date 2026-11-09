@@ -42,15 +42,15 @@ Rust layer (extendr crate)
     │  - compiles Stan models via bridgestan Rust crate
     │  - implements nuts-rs Model trait + CpuLogpFunc trait
     │  - CpuLogpFunc::logp calls bridgestan::Model::log_density_gradient
-    │  - Sampler::new() runs parallel chains via rayon
+    │  - Sampler::new() schedules chains on native Rust worker threads
     │  - returns draws via Arrow (zero-copy to R via nanoarrow)
     │
-    ├── nuts-rs 0.18.x (NUTS sampler, "arrow" feature)
+    ├── nuts-rs 0.19.1 (NUTS sampler, "arrow" feature)
     ├── bridgestan 2.8.x (patched — pre-generated bindings, no bindgen)
     └── arrow-extendr (Arrow C Data Interface for R ↔ Rust)
 ```
 
-**R is NOT in the hot loop.** Each chain gets its own `bridgestan::Model` instance (Send+Sync via `Arc<StanLibrary>`). Parallel chains run entirely in Rust via rayon.
+**R is NOT in the hot loop.** Each chain gets its own `bridgestan::Model` instance (Send+Sync via `Arc<StanLibrary>`). Parallel chains run entirely in Rust using native worker threads.
 
 ## Project Structure
 
@@ -113,7 +113,7 @@ caveats:
 
 ## System Requirements
 
-- **Rust toolchain**: `rustc >= 1.85`, `cargo` (edition 2021)
+- **Rust toolchain**: `rustc >= 1.88`, `cargo` (edition 2021)
 - **C++ toolchain**: needed by `bridgestan::compile_model()` to compile Stan models
   - Windows: rtools45
   - macOS: Xcode Command Line Tools
@@ -190,10 +190,10 @@ match sampler.wait_timeout(duration) {
 ### Rust
 | Crate | Role |
 |-------|------|
-| `nuts-rs` (~0.18.2, features: arrow) | NUTS sampler + Arrow trace |
+| `nuts-rs` (=0.19.1, features: arrow) | NUTS sampler + Arrow trace |
 | `extendr-api` (0.8.1) | R ↔ Rust FFI |
 | `bridgestan` (~2.8, features: download-bridgestan-src) | Stan model compile + load (patched) |
-| `arrow` (~57) | Arrow arrays (must match nuts-rs) |
+| `arrow` (59) | Arrow arrays (must match nuts-rs) |
 | `dirs` | Home directory resolution |
 | `anyhow`, `thiserror` | Error handling |
 | `rand` (~0.10) | RNG (must match nuts-rs) |

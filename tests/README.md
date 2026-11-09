@@ -8,7 +8,7 @@ seeded by the first run on a given machine.
 | Env var | Default | Effect |
 |---|---|---|
 | `NUTPIER_RUN_SLOW_TESTS` | unset | Set to `1` to run `test-posteriordb.R`, which downloads posteriordb fixtures and runs reference comparisons (~+70s). |
-| `NUTPIER_RUN_DENSITY_KERNEL_TESTS` | unset | Set to `1` after a release install to run the density kernel ABI, failure-mode, and sampling tests in child R processes. |
+| `NUTPIER_RUN_DENSITY_KERNEL_TESTS` | unset | Set to `1` after a release install to run density kernel ABI, sampling, cleanup, callback-failure, and interrupt tests in child R processes. Unix signal tests skip on Windows. |
 | `NUTPIER_DISABLE_COMPILE_CACHE` | unset | Set to `1` to bypass the on-disk compile cache and recompile from scratch on every `nutpie_compile_model()` call. Useful when isolating a cache-related bug. |
 
 ```sh

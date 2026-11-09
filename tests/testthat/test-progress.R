@@ -1,3 +1,68 @@
+test_that("WALNUTS progress counts gradients without inferring depth from microsteps", {
+  initial <- list(list(
+    chain = 1L, finished_draws = 80L, total_draws = 200L,
+    divergences = 0L, tuning = TRUE, started = TRUE, walnuts = TRUE,
+    latest_num_steps = 7L, total_num_steps = 560,
+    latest_num_gradients = 210L, total_num_gradients = 16800
+  ))
+  later <- initial
+  later[[1]]$finished_draws <- 101L
+  later[[1]]$tuning <- FALSE
+  later[[1]]$total_num_steps <- 707
+  later[[1]]$total_num_gradients <- 21210
+  summary <- nutpieR:::summarize_progress_snapshot(later)
+  expect_equal(summary$avg_num_gradients, 210)
+  expect_equal(summary$max_latest_num_steps, 7L)
+  expect_true(summary$walnuts)
+  status <- nutpieR:::format_status_tokens(later, summary, "{grad} | {tdepth}")
+  expect_match(status, "210.0 grad/draw", fixed = TRUE)
+  expect_match(status, "tdepth: ~-", fixed = TRUE)
+
+  hints <- nutpieR:::new_progress_hints()
+  nutpieR:::update_grad_baselines(hints, initial, 100L)
+  expect_equal(nutpieR:::pooled_grad_per_draw(hints, later), 210)
+  expect_equal(nutpieR:::chain_grad_per_draw(hints, later[[1]]), 210)
+  expect_true(is.na(nutpieR:::chain_grad_per_draw(nutpieR:::new_progress_hints(), later[[1]])))
+
+  updates <- list()
+  cli_cb <- nutpieR:::make_cli_progress_callback(
+    1L, 100L, 100L, chain_format = "{grad} | {tdepth}", id = "fake",
+    update = function(...) updates[[length(updates) + 1L]] <<- list(...),
+    done = function(...) NULL
+  )
+  text_cb <- nutpieR:::make_text_progress_callback(
+    1L, 100L, 100L, refresh = 1L, chain_format = "{grad} | {tdepth}"
+  )
+  for (cb in list(cli_cb, text_cb)) {
+    invisible(testthat::capture_messages(cb(initial)))
+    msgs <- testthat::capture_messages(cb(later))
+    joined <- paste(msgs, collapse = "")
+    expect_match(joined, "210 gradient evaluations per draw", fixed = TRUE)
+    expect_match(joined, "WALNUTS", fixed = TRUE)
+    expect_false(grepl("tree depth", joined, fixed = TRUE))
+    if (identical(cb, text_cb)) expect_match(joined, "tdepth: ~-", fixed = TRUE)
+    expect_length(testthat::capture_messages(cb(later)), 0L)
+  }
+  expect_match(tail(updates, 1)[[1]]$status, "210.0 grad/draw", fixed = TRUE)
+  expect_match(tail(updates, 1)[[1]]$status, "tdepth: ~-", fixed = TRUE)
+})
+
+test_that("end summary prefers n_gradients and the recorded depth", {
+  diagnostics <- list(
+    chain = c(1L, 1L, 2L, 2L),
+    n_steps = c(7, 7, 15, 15),
+    n_gradients = c(100, 200, 200, 400),
+    depth = c(2L, 2L, 3L, 3L)
+  )
+  table <- nutpieR:::sampling_summary_table(diagnostics)$table
+  expect_equal(table$`grad/draw`, c("150.0", "300.0"))
+  expect_equal(table$tdepth, c("2", "3"))
+  expect_equal(nutpieR:::fraction_at_treedepth_cap(diagnostics, 8L), 0)
+  diagnostics$n_gradients <- NULL
+  fallback <- nutpieR:::sampling_summary_table(diagnostics)$table
+  expect_equal(fallback$`grad/draw`, c("7.0", "15.0"))
+})
+
 test_that("progress mode resolves to cli when the session supports it", {
   expect_equal(
     nutpieR:::resolve_progress_mode("auto", refresh = 100L, use_cli = TRUE),
@@ -129,7 +194,7 @@ test_that("progress snapshot summary exposes useful sampler diagnostics", {
   expect_equal(summary$first_divergence, "chain 2 draw 8")
   # status is "! div: 2 | <grad>" — divergence indicator present
   expect_match(summary$status, "div: 2", fixed = TRUE)
-  # avg_num_steps = (900+1800)/(120+90) = 2700/210 ~= 12.86
+  # Legacy step-only snapshots still give (900+1800)/(120+90) ~= 12.86.
   expect_match(summary$status, "grad/draw", fixed = TRUE)
 })
 
@@ -210,17 +275,49 @@ test_that("grad/draw baseline anchors at late warmup and pools exactly", {
   expect_equal(nutpieR:::pooled_grad_per_draw(hints, snap2), 200)
 })
 
-test_that("grad hint fires once above the threshold with rounded depth", {
+test_that("grad hint waits for sampling and 20 pooled post-baseline draws", {
   hints <- nutpieR:::new_progress_hints()
-  # Below GRAD_HINT_THRESHOLD (128): nothing.
-  expect_length(testthat::capture_messages(nutpieR:::maybe_grad_hint(hints, 50)), 0L)
-
-  m <- testthat::capture_messages(nutpieR:::maybe_grad_hint(hints, 210))
+  snapshot <- list(list(
+    chain = 1L, finished_draws = 0L, total_num_gradients = 0,
+    started = TRUE, tuning = TRUE
+  ))
+  nutpieR:::update_grad_baselines(hints, snapshot, 0L)
+  snapshot[[1]]$finished_draws <- 20L
+  snapshot[[1]]$total_num_gradients <- 20 * 210
+  # Enough evidence, but still adapting: no explanation.
+  expect_length(capture_messages(nutpieR:::maybe_grad_hint(hints, snapshot)), 0L)
+  snapshot[[1]]$tuning <- FALSE
+  snapshot[[1]]$finished_draws <- 19L
+  snapshot[[1]]$total_num_gradients <- 19 * 210
+  expect_length(capture_messages(nutpieR:::maybe_grad_hint(hints, snapshot)), 0L)
+  snapshot[[1]]$finished_draws <- 20L
+  snapshot[[1]]$total_num_gradients <- 20 * 50
+  expect_length(capture_messages(nutpieR:::maybe_grad_hint(hints, snapshot)), 0L)
+  snapshot[[1]]$total_num_gradients <- 20 * 210
+  m <- capture_messages(nutpieR:::maybe_grad_hint(hints, snapshot))
   expect_match(m, "grad/draw: ~210 gradient evaluations per draw", all = FALSE)
-  expect_match(m, "tree depth ~8", all = FALSE)  # round(log2(211)) = 8
+  expect_match(m, "tree depth ~8", all = FALSE)
+  expect_length(capture_messages(nutpieR:::maybe_grad_hint(hints, snapshot)), 0L)
+})
 
-  # Once only.
-  expect_length(testthat::capture_messages(nutpieR:::maybe_grad_hint(hints, 300)), 0L)
+test_that("grad explanation waits for other started chains but ignores queued chains", {
+  hints <- nutpieR:::new_progress_hints()
+  baseline <- lapply(1:3, function(chain) list(
+    chain = chain, finished_draws = 0L, total_num_gradients = 0,
+    started = chain < 3L, tuning = TRUE
+  ))
+  nutpieR:::update_grad_baselines(hints, baseline, 0L)
+  snapshot <- baseline
+  snapshot[[1]]$finished_draws <- 100L
+  snapshot[[1]]$total_num_gradients <- 21000
+  snapshot[[1]]$tuning <- FALSE
+  snapshot[[2]]$finished_draws <- 10L
+  snapshot[[2]]$total_num_gradients <- 2100
+  expect_length(capture_messages(nutpieR:::maybe_grad_hint(hints, snapshot)), 0L)
+  expect_false(hints$warned_grad)
+  snapshot[[2]]$tuning <- FALSE
+  expect_length(capture_messages(nutpieR:::maybe_grad_hint(hints, snapshot)), 1L)
+  expect_true(hints$warned_grad)
 })
 
 test_that("short elapsed times render as less than one tenth second", {
@@ -238,6 +335,42 @@ test_that("progress_messages_muffled detects active message handlers", {
   )
   expect_true(muffled)
   expect_equal(msgs, "")
+})
+
+test_that("live gradient cost never falls back to discarded early warmup", {
+  updates <- list()
+  cli_cb <- nutpieR:::make_cli_progress_callback(
+    1L, 1000L, 100L, id = "fake", chain_format = "{grad}",
+    update = function(...) updates[[length(updates) + 1L]] <<- list(...),
+    done = function(...) NULL
+  )
+  text_cb <- nutpieR:::make_text_progress_callback(
+    1L, 1000L, 100L, refresh = 1L, chain_format = "{grad}"
+  )
+  snapshot <- function(draws, gradients, tuning = TRUE) list(list(
+    chain = 1L, finished_draws = draws, total_draws = 1100L,
+    total_num_gradients = gradients, total_num_steps = draws * 7,
+    started = TRUE, tuning = tuning, divergences = 0L
+  ))
+  for (cb in list(cli_cb, text_cb)) {
+    for (s in list(snapshot(500L, 500000), snapshot(750L, 750000))) {
+      msgs <- capture_messages(cb(s))
+      status <- if (identical(cb, cli_cb)) tail(updates, 1)[[1]]$status else msgs
+      expect_match(status, "- grad/draw", fixed = TRUE)
+      expect_false(any(grepl("1000.0", status, fixed = TRUE)))
+      expect_false(any(grepl("grad/draw:", msgs, fixed = TRUE)))
+    }
+    # One expensive late-warmup draw must not latch an explanatory hint.
+    msgs <- capture_messages(cb(snapshot(751L, 750256)))
+    expect_false(any(grepl("grad/draw:", msgs, fixed = TRUE)))
+    status <- if (identical(cb, cli_cb)) tail(updates, 1)[[1]]$status else msgs
+    expect_match(status, "256.0 grad/draw", fixed = TRUE)
+    # The full late window has 350 draws and an exact average of ~8.71.
+    msgs <- capture_messages(cb(snapshot(1100L, 750256 + 349 * 8, FALSE)))
+    expect_false(any(grepl("grad/draw:", msgs, fixed = TRUE)))
+    status <- if (identical(cb, cli_cb)) tail(updates, 1)[[1]]$status else msgs
+    expect_match(status, "8.7 grad/draw", fixed = TRUE)
+  }
 })
 
 test_that("cli grad hint waits for the late-warmup baseline", {
@@ -270,8 +403,9 @@ test_that("cli grad hint waits for the late-warmup baseline", {
   )
 
   settled_high <- baseline
-  settled_high[[1]]$finished_draws <- 100L
-  settled_high[[1]]$total_num_steps <- 20000L
+  settled_high[[1]]$finished_draws <- 101L
+  settled_high[[1]]$tuning <- FALSE
+  settled_high[[1]]$total_num_steps <- 20200L
   expect_equal(
     sum(grepl("grad/draw:", testthat::capture_messages(callback(settled_high)))),
     1L
@@ -454,7 +588,7 @@ test_that("format_chain_draw_range produces range for multi-chain snapshots", {
 })
 
 test_that("spread token: sticky, started-chains-only, percent range", {
-  # Two chains 20% apart, median past the floor -> triggers.
+  # Two chains 20% apart, both past the floor -> triggers.
   spread_snap <- list(
     list(chain = 1L, finished_draws = 30L, total_draws = 100L, started = TRUE),
     list(chain = 2L, finished_draws = 50L, total_draws = 100L, started = TRUE)
@@ -471,10 +605,10 @@ test_that("spread token: sticky, started-chains-only, percent range", {
   )
   expect_false(nutpieR:::spread_triggered(close_snap))
 
-  # Below the median floor -> no trigger even with a wide spread.
+  # The slowest chain is below the floor despite a median above 10%.
   early_snap <- list(
     list(chain = 1L, finished_draws = 1L, total_draws = 100L, started = TRUE),
-    list(chain = 2L, finished_draws = 18L, total_draws = 100L, started = TRUE)
+    list(chain = 2L, finished_draws = 50L, total_draws = 100L, started = TRUE)
   )
   expect_false(nutpieR:::spread_triggered(early_snap))
 
@@ -520,17 +654,133 @@ test_that("spread hint fires once via the cli callback", {
          tuning = FALSE, started = TRUE, latest_num_steps = 3L, total_num_steps = 150,
          step_size = 0.5, runtime = 1, divergent_draws = integer())
   )
+  now <- 0
+  updates <- list()
   cb <- nutpieR:::make_cli_progress_callback(
     num_chains = 2L, num_warmup = 0L, num_draws = 100L,
-    id = "fake", update = function(...) TRUE, done = function(...) TRUE
+    id = "fake", update = function(...) updates[[length(updates) + 1L]] <<- list(...),
+    done = function(...) TRUE, clock = function() now
   )
+  expect_length(testthat::capture_messages(cb(trigger_snap)), 0L)
+  expect_false(grepl("spread", tail(updates, 1)[[1]]$status))
+  now <- 2.9
+  expect_length(testthat::capture_messages(cb(trigger_snap)), 0L)
+  now <- 3
   msgs <- testthat::capture_messages(cb(trigger_snap))
   expect_equal(sum(grepl("chain progress is uneven", msgs)), 1L)
+  expect_match(tail(updates, 1)[[1]]$status, "spread 30-50%", fixed = TRUE)
   # advance but stay spread; hint does not repeat
   trigger_snap[[1]]$finished_draws <- 60L
   trigger_snap[[2]]$finished_draws <- 90L
+  now <- 6
   msgs2 <- testthat::capture_messages(cb(trigger_snap))
   expect_equal(sum(grepl("chain progress is uneven", msgs2)), 0L)
+  trigger_snap[[1]]$finished_draws <- 88L
+  expect_length(testthat::capture_messages(cb(trigger_snap)), 0L)
+  expect_match(tail(updates, 1)[[1]]$status, "spread 88-90%", fixed = TRUE)
+})
+
+test_that("spread hint stays neutral when custom status omits spread", {
+  now <- 0
+  updates <- list()
+  cb <- nutpieR:::make_cli_progress_callback(
+    2L, 500L, 500L, chain_format = "{div}", id = "fake",
+    update = function(...) updates[[length(updates) + 1L]] <<- list(...),
+    done = function(...) NULL, clock = function() now
+  )
+  snapshot <- list(
+    list(chain = 1L, finished_draws = 450L, total_draws = 1000L,
+         started = TRUE, tuning = TRUE),
+    list(chain = 2L, finished_draws = 650L, total_draws = 1000L,
+         started = TRUE, tuning = FALSE)
+  )
+  expect_length(capture_messages(cb(snapshot)), 0L)
+  now <- 3
+  msgs <- capture_messages(cb(snapshot))
+  expect_match(msgs, "chain progress is uneven", fixed = TRUE)
+  expect_match(msgs, "Rates can differ during adaptation", fixed = TRUE)
+  expect_match(msgs, "this alone is not a diagnostic", fixed = TRUE)
+  expect_false(any(grepl("Adding to status line|harder region|smaller step size", msgs)))
+  expect_identical(tail(updates, 1)[[1]]$status, "div: 0")
+})
+
+test_that("spread persistence resets when the spread subsides", {
+  hints <- nutpieR:::new_progress_hints()
+  wide <- list(
+    list(finished_draws = 30L, total_draws = 100L, started = TRUE),
+    list(finished_draws = 60L, total_draws = 100L, started = TRUE)
+  )
+  close <- wide
+  close[[1]]$finished_draws <- 58L
+  nutpieR:::update_spread_state(hints, wide, eligible = TRUE, now = 0)
+  nutpieR:::update_spread_state(hints, close, eligible = TRUE, now = 2)
+  expect_null(hints$spread_since)
+  expect_false(hints$spread_active)
+  nutpieR:::update_spread_state(hints, wide, eligible = TRUE, now = 3)
+  nutpieR:::update_spread_state(hints, wide, eligible = TRUE, now = 5)
+  expect_false(hints$spread_active)
+  msgs <- testthat::capture_messages(
+    nutpieR:::update_spread_state(hints, wide, eligible = TRUE, now = 6)
+  )
+  expect_true(hints$spread_active)
+  expect_equal(sum(grepl("chain progress is uneven", msgs)), 1L)
+})
+
+test_that("automatic spread waits for every chain to start and pass the floor", {
+  snapshot <- list(
+    list(finished_draws = 500L, total_draws = 1000L, started = TRUE),
+    list(finished_draws = 900L, total_draws = 1000L, started = TRUE),
+    list(finished_draws = 0L, total_draws = 1000L, started = FALSE)
+  )
+  hints <- nutpieR:::new_progress_hints()
+  nutpieR:::update_spread_state(hints, snapshot, eligible = TRUE, now = 0)
+  nutpieR:::update_spread_state(hints, snapshot, eligible = TRUE, now = 10)
+  expect_null(hints$spread_since)
+  snapshot[[3]]$started <- TRUE
+  snapshot[[3]]$finished_draws <- 99L
+  nutpieR:::update_spread_state(hints, snapshot, eligible = TRUE, now = 20)
+  expect_null(hints$spread_since)
+  snapshot[[3]]$finished_draws <- 100L
+  nutpieR:::update_spread_state(hints, snapshot, eligible = TRUE, now = 21)
+  expect_equal(hints$spread_since, 21)
+  expect_false(hints$spread_active)
+})
+
+test_that("queued handoff never enables automatic spread but custom spread works", {
+  snapshot <- lapply(seq_len(4L), function(i) list(
+    chain = i, finished_draws = c(1000L, 990L, 1L, 0L)[i],
+    total_draws = 1000L, started = i < 4L
+  ))
+  for (custom in c(FALSE, TRUE)) {
+    now <- 0
+    updates <- list()
+    cb <- nutpieR:::make_cli_progress_callback(
+      num_chains = 4L, num_warmup = 0L, num_draws = 1000L,
+      num_cores = 2L, chain_format = if (custom) "{spread}" else NULL,
+      id = "fake", update = function(...) updates[[length(updates) + 1L]] <<- list(...),
+      done = function(...) TRUE, clock = function() now
+    )
+    expect_length(testthat::capture_messages(cb(snapshot)), 0L)
+    now <- 10
+    expect_length(testthat::capture_messages(cb(snapshot)), 0L)
+    status <- tail(updates, 1)[[1]]$status
+    if (custom) expect_equal(status, "spread 0-99%")
+    else expect_false(grepl("spread", status))
+
+    # Even after every chain starts and clears the floor, queueing is not a
+    # reason to show an automatic geometry hint or default spread token.
+    later <- snapshot
+    later[[3]]$finished_draws <- 200L
+    later[[4]]$finished_draws <- 100L
+    later[[4]]$started <- TRUE
+    now <- 20
+    expect_length(testthat::capture_messages(cb(later)), 0L)
+    now <- 30
+    expect_length(testthat::capture_messages(cb(later)), 0L)
+    status <- tail(updates, 1)[[1]]$status
+    if (custom) expect_equal(status, "spread 10-99%")
+    else expect_false(grepl("spread", status))
+  }
 })
 
 test_that("format_chain_spark renders a glyph per chain, flat when together", {
