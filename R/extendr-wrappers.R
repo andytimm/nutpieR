@@ -38,7 +38,7 @@ tbb_proxy_live_progress_safe <- function() .Call(wrap__tbb_proxy_live_progress_s
 #' whose model is already cached would never re-run `ensure_safe_tbb_proxy` and
 #' would keep shipping the stale, unpatched dylib. This re-applies the patch,
 #' but ONLY when the BridgeStan source tree already exists on disk — it must
-#' never trigger the ~235 MB download on a cache hit. macOS-cheap, idempotent,
+#' never trigger the source download on a cache hit. macOS-cheap, idempotent,
 #' and a no-op elsewhere.
 #' @noRd
 ensure_tbb_proxy_patched <- function() .Call(wrap__ensure_tbb_proxy_patched)

@@ -72,8 +72,23 @@ fn bridgestan_stanc_path() -> String {
     or_throw(bridgestan_stanc_path_impl())
 }
 
+fn bridgestan_sources() -> Result<std::path::PathBuf> {
+    let cache = dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".bridgestan")
+        .join(format!("bridgestan-{}", bridgestan::VERSION));
+    if !cache.exists() {
+        rprintln!(
+            "Downloading BridgeStan {} sources (~35 MB compressed) to {}. Future models reuse this copy.",
+            bridgestan::VERSION,
+            cache.display()
+        );
+    }
+    bridgestan::download_bridgestan_src().map_err(r_err)
+}
+
 fn bridgestan_stanc_path_impl() -> Result<String> {
-    let bs_path = bridgestan::download_bridgestan_src().map_err(r_err)?;
+    let bs_path = bridgestan_sources()?;
     let executable = if cfg!(target_os = "windows") {
         "stanc.exe"
     } else {
@@ -106,18 +121,7 @@ fn compile_stan_model_impl(
     stanc_args: Strings,
     compile_args: Strings,
 ) -> Result<String> {
-    // Mirror the bridgestan crate's own cache-presence guard so the message
-    // only fires on the genuine first-compile path. ~150s silent pause for
-    // a 235 MB fetch was the single most reported dogfood surprise.
-    if let Some(home) = dirs::home_dir() {
-        let cache = home
-            .join(".bridgestan")
-            .join(format!("bridgestan-{}", bridgestan::VERSION));
-        if !cache.exists() {
-            rprintln!("Downloading BridgeStan sources (one-time, ~235 MB)...");
-        }
-    }
-    let bs_path = bridgestan::download_bridgestan_src().map_err(r_err)?;
+    let bs_path = bridgestan_sources()?;
     // Make Stan's bundled macOS tbbmalloc_proxy safe to keep (GitHub #36).
     // No-op off macOS, when already patched, or when opted out via
     // NUTPIER_NO_TBB_PROXY_PATCH. `true`: a compile follows immediately, so it is
@@ -409,7 +413,7 @@ fn ensure_safe_tbb_proxy(_bs_path: &std::path::Path, _will_recompile: bool) {}
 /// whose model is already cached would never re-run `ensure_safe_tbb_proxy` and
 /// would keep shipping the stale, unpatched dylib. This re-applies the patch,
 /// but ONLY when the BridgeStan source tree already exists on disk — it must
-/// never trigger the ~235 MB download on a cache hit. macOS-cheap, idempotent,
+/// never trigger the source download on a cache hit. macOS-cheap, idempotent,
 /// and a no-op elsewhere.
 /// @noRd
 #[extendr]
