@@ -73,10 +73,10 @@
 #'   (slow chain indicator), `{step}` (min step size), `{tdepth}` (estimated
 #'   latest treedepth, prefixed with `~`). The aggregate bar's default is
 #'   `"{div} | {grad} | {spread}"`. An explicit format string keeps the
-#'   aggregate layout instead of per-chain rows. For `"text"`
-#'   mode, per-chain tokens are
-#'   also available: `{chain}`, `{phase}`, `{pct}`, `{draws}`, `{total}`,
-#'   `{elapsed}`, `{div}`, `{grad}`, `{tdepth}`. `NULL` uses the
+#'   aggregate layout instead of per-chain rows. For `"text"` mode, the
+#'   supported tokens are `{chain}`, `{phase}`, `{pct}`, `{draws}`, `{total}`,
+#'   `{elapsed}`, `{div}`, `{grad}`, `{tdepth}`; `{draws}` is the current chain's
+#'   phase-relative draw count, not a range across chains. `NULL` uses the
 #'   mode-appropriate default.
 #' @param init Initial values for each chain. Single entry point that
 #'   dispatches on the input shape:
@@ -101,8 +101,9 @@
 #'       treated as constrained named lists.}
 #'   }
 #'   No jitter is applied; starting points are used exactly (after any
-#'   random fill for partial constrained inits). To work on the unconstrained
-#'   scale, see [nutpie_unconstrain()] to convert constrained values first.
+#'   random fill for partial constrained inits). Use [nutpie_unconstrain()] to
+#'   inspect unconstrained coordinates, not to supply `init`: numeric `init`
+#'   specifies a uniform radius, not an unconstrained starting position.
 #'
 #'   Per-chain starts are assigned in output chain order: element `i` of a
 #'   list of starts, or the result of `function(chain_id)` with `chain_id = i`,
@@ -325,7 +326,6 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
 
   resolved_progress <- resolve_progress_mode(progress, refresh)
   chain_format <- validate_chain_format(chain_format, resolved_progress)
-  # Will be replaced with the effective maxdepth from sampler_config after sampling.
 
   call_sample_stan <- function(progress_callback) {
     progress_callback <- protect_progress_callback(progress_callback)

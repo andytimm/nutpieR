@@ -102,7 +102,7 @@ line-oriented updates (one line per chain, every \code{refresh} draws), and
 In non-interactive scripts, use \code{"text"} for live log output; forced
 \code{"cli"} output may only render the final summary.
 With the default \code{chain_format}, \code{"auto"}/\code{"cli"} show per-chain rows
-on ANSI-capable consoles with \code{cli >= 3.6.6.9000}, keeping the same
+on ANSI-capable consoles with \verb{cli >= 3.6.6.9000}, keeping the same
 aggregate rough ETA. Short panes use one bar; per-chain rows return when
 the pane has room again. If height is unknown at startup, at most four
 chains get separate rows. Console support (including Positron and recent
@@ -121,10 +121,10 @@ threshold), \code{{spread}} (percent-range spread across chains, e.g.
 (slow chain indicator), \code{{step}} (min step size), \code{{tdepth}} (estimated
 latest treedepth, prefixed with \code{~}). The aggregate bar's default is
 \code{"{div} | {grad} | {spread}"}. An explicit format string keeps the
-aggregate layout instead of per-chain rows. For \code{"text"}
-mode, per-chain tokens are
-also available: \code{{chain}}, \code{{phase}}, \code{{pct}}, \code{{draws}}, \code{{total}},
-\code{{elapsed}}, \code{{div}}, \code{{grad}}, \code{{tdepth}}. \code{NULL} uses the
+aggregate layout instead of per-chain rows. For \code{"text"} mode, the
+supported tokens are \code{{chain}}, \code{{phase}}, \code{{pct}}, \code{{draws}}, \code{{total}},
+\code{{elapsed}}, \code{{div}}, \code{{grad}}, \code{{tdepth}}; \code{{draws}} is the current chain's
+phase-relative draw count, not a range across chains. \code{NULL} uses the
 mode-appropriate default.}
 
 \item{init}{Initial values for each chain. Single entry point that
@@ -150,8 +150,9 @@ named list of constrained parameter values.}
 treated as constrained named lists.}
 }
 No jitter is applied; starting points are used exactly (after any
-random fill for partial constrained inits). To work on the unconstrained
-scale, see \code{\link[=nutpie_unconstrain]{nutpie_unconstrain()}} to convert constrained values first.
+random fill for partial constrained inits). Use \code{\link[=nutpie_unconstrain]{nutpie_unconstrain()}} to
+inspect unconstrained coordinates, not to supply \code{init}: numeric \code{init}
+specifies a uniform radius, not an unconstrained starting position.
 
 Per-chain starts are assigned in output chain order: element \code{i} of a
 list of starts, or the result of \verb{function(chain_id)} with \code{chain_id = i},

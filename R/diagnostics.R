@@ -137,10 +137,10 @@ ebfmi_warning_msg <- function(ebfmi) {
   n_low <- sum(is.finite(ebfmi) & ebfmi < EBFMI_THRESHOLD)
   if (n_low == 0L) return(NULL)
   sprintf(
-    paste0("%d of %d chains had an E-BFMI below 0.3 \u2014 the posterior may have ",
+    paste0("%d of %d chains had an E-BFMI below %s \u2014 the posterior may have ",
            "heavy tails the sampler explores inefficiently. Consider ",
            "reparameterizing."),
-    n_low, length(ebfmi)
+    n_low, length(ebfmi), format(EBFMI_THRESHOLD, trim = TRUE)
   )
 }
 
@@ -356,8 +356,8 @@ print.nutpie_diagnostics <- function(x, ...) {
 #'
 #' @param draws A `posterior::draws_array` returned by [nutpie_sample()] with
 #'   `save_warmup = TRUE`.
-#' @return A `posterior::draws_array` containing the warmup draws, or `NULL`
-#'   if warmup draws were not saved.
+#' @return A `posterior::draws_array` containing the warmup draws. Raises an
+#'   error if warmup draws were not saved.
 #' @examples
 #' \dontrun{
 #' draws <- nutpie_sample(model, data = dat, save_warmup = TRUE)

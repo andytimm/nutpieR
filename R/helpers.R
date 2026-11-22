@@ -9,8 +9,9 @@
 #'   Required if the model has a `data` block.
 #' @param which One of `"block"`, `"unconstrained"`, `"full"`:
 #'   \describe{
-#'     \item{`"block"` (default)}{Block-level parameter names — the names you
-#'       pass as keys to [nutpie_sample()]'s `init` argument.}
+#'     \item{`"block"` (default)}{Names from the Stan `parameters` block,
+#'       indexed for vectors and matrices (e.g. `beta[1]`). For
+#'       [nutpie_sample()]'s `init` keys, use unindexed names (e.g. `beta`).}
 #'     \item{`"unconstrained"`}{Unconstrained internal parameter names.}
 #'     \item{`"full"`}{Block parameters plus transformed parameters and
 #'       generated quantities (the full output draws space).}

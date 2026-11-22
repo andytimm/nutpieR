@@ -54,7 +54,7 @@ fn or_throw<T>(r: Result<T>) -> T {
 }
 
 /// Return the linked BridgeStan crate version, e.g. "2.8.0". Used by the
-/// inline-code compile cache key so a BridgeStan version bump invalidates
+/// compile cache key so a BridgeStan version bump invalidates
 /// cached entries automatically.
 /// @noRd
 #[extendr]
@@ -179,7 +179,7 @@ fn private_tbb_model_impl(lib_path: &std::path::Path) -> Result<PathBuf> {
 // the other registered zones first whenever the probe would cross below a page
 // boundary, and rebuild just the proxy dylib. The patched proxy also exports a
 // marker symbol so the R layer can confirm at runtime that the *loaded* proxy is
-// the safe one before it renders live progress (see `tbb_proxy_live_progress_safe`).
+// the safe one before sampling (see `tbb_proxy_live_progress_safe`).
 
 /// Sentinel string in the patched header; also the exported marker symbol name.
 #[cfg(target_os = "macos")]
@@ -187,8 +187,8 @@ const TBB_PATCH_MARKER: &str = "nutpie_tbb_proxy_safe_probe";
 
 /// Exact stock `impl_malloc_usable_size` from tbb_2020.3
 /// `src/tbbmalloc/proxy_overload_osx.h`. Byte-stable across the BridgeStan
-/// versions we bundle; if it ever changes, the patch declines cleanly and the
-/// runtime gate takes over.
+/// versions we bundle; if it ever changes, the patch declines cleanly and
+/// private-TBB packaging rejects models requiring the unpatched proxy.
 #[cfg(target_os = "macos")]
 const TBB_STOCK_FN: &str = r#"/* note: impl_malloc_usable_size() is called for each free() call, so it must be fast */
 static size_t impl_malloc_usable_size(struct _malloc_zone_t *, const void *ptr)
@@ -213,7 +213,7 @@ static size_t impl_malloc_usable_size(struct _malloc_zone_t *, const void *ptr)
 #[cfg(target_os = "macos")]
 const TBB_PATCHED_FN: &str = r#"/* nutpieR (GitHub #36): exported marker so the R layer can confirm at runtime,
    via dlsym, that the loaded tbbmalloc_proxy carries the page-boundary-safe zone
-   size() probe below. A proxy loaded WITHOUT this symbol gates off live progress
+   size() probe below. A proxy loaded WITHOUT this symbol stops sampling
    to avoid the GC-time segfault in __TBB_malloc_safer_msize. */
 extern "C" int nutpie_tbb_proxy_safe_probe = 1;
 
@@ -278,8 +278,9 @@ fn patch_proxy_source(content: &str) -> Option<String> {
 }
 
 /// Patch Stan's bundled tbbmalloc_proxy source and (optionally) force a rebuild
-/// of the proxy dylib. Idempotent; best-effort (any IO problem leaves the source
-/// untouched and the runtime gate takes over). macOS-only.
+/// of the proxy dylib. Idempotent and best-effort. Private-TBB packaging rejects
+/// an unpatched proxy; the runtime gate rejects unsafe proxies already loaded
+/// in the process. macOS-only.
 ///
 /// `will_recompile` MUST be true only when a model compile immediately follows
 /// (the compile path), because purging the artifacts deletes
@@ -288,8 +289,8 @@ fn patch_proxy_source(content: &str) -> Option<String> {
 /// From the cache-hit path no compile follows, so we pass `false`: we still
 /// patch the header (so the *next* real compile produces the safe proxy) but
 /// never delete the dylib — deleting it would break the cached model that is
-/// about to be loaded. Until that next compile, the current session is covered
-/// by the runtime gate (`tbb_proxy_live_progress_safe`).
+/// about to be loaded. Private-TBB packaging rejects an unpatched proxy until
+/// a compile rebuilds it; the runtime gate also rejects unsafe loaded proxies.
 #[cfg(target_os = "macos")]
 fn ensure_safe_tbb_proxy(bs_path: &std::path::Path, will_recompile: bool) {
     use std::fs;
@@ -353,7 +354,8 @@ fn ensure_safe_tbb_proxy(bs_path: &std::path::Path, will_recompile: bool) {
         None => {
             rprintln!(
                 "nutpieR: bundled tbbmalloc_proxy source is not in the expected form; \
-                 leaving it unpatched and gating live progress at runtime (GitHub #36)."
+                 leaving it unpatched. Models requiring this proxy will be rejected; \
+                 use compile_args = \"TBB_LIBRARIES=tbb\" to omit it (GitHub #36)."
             );
             return;
         }
@@ -431,14 +433,14 @@ fn ensure_tbb_proxy_patched() {
     }
 }
 
-/// Runtime companion to the compile-time patch: is it safe to render live
-/// progress (which allocates R memory mid-sample and can trigger GC)?
+/// Runtime companion to the compile-time patch: is the loaded allocator safe
+/// for sampling and R result assembly (which can trigger GC)?
 ///
 /// Safe when no `tbbmalloc_proxy` is loaded in the process, or when the loaded
 /// one exports our marker symbol (i.e. it is the patched, page-safe build). The
 /// only unsafe case is a stale, unpatched proxy already loaded in this session —
 /// e.g. a model compiled before the patch and loaded in the same R session. The
-/// R layer downgrades live progress to a static summary in that case (#36).
+/// R layer stops sampling in that case, regardless of progress mode (#36).
 #[cfg(target_os = "macos")]
 mod tbb_gate {
     use std::os::raw::c_char;
@@ -476,8 +478,8 @@ mod tbb_gate {
     }
 }
 
-/// Whether nutpieR's live progress renderer is safe to run given the currently
-/// loaded allocator (GitHub #36). Always TRUE off macOS.
+/// Whether the currently loaded allocator is safe for sampling and R result
+/// assembly (GitHub #36). Always TRUE off macOS.
 /// @noRd
 #[extendr]
 fn tbb_proxy_live_progress_safe() -> bool {
@@ -548,11 +550,13 @@ fn tbb_patch_strings() -> Vec<String> {
 ///   when `TRUE`, since GQ may reference TP.
 /// @param progress_callback NULL or an R closure invoked on each poll wakeup
 ///   with one argument: a list of `num_chains` per-chain snapshots
-///   (`chain`, `finished_draws`, `total_draws`, `divergences`, `tuning`,
-///   `started`, `latest_num_steps`, `total_num_steps`, `step_size`, `runtime`,
-///   `divergent_draws`). When supplied, the built-in per-chain text log is
-///   suppressed; errors raised by the closure are warned once and further calls
-///   suppressed for the run.
+///   (`chain`, `walnuts`, `finished_draws`, `total_draws`, `divergences`,
+///   `tuning`, `started`, `latest_num_steps`, `total_num_steps`,
+///   `latest_num_gradients`, `total_num_gradients`, `step_size`, `runtime`,
+///   `divergent_draws`). The R wrapper silently disables its renderer after a
+///   callback error. An unguarded callback error reaching this native boundary
+///   prints one diagnostic and disables further callbacks for the run.
+///   Interrupts stop sampling.
 /// @param walnuts NULL for ordinary NUTS, or a JSON string of experimental
 ///   WALNUTS options validated again at the Rust boundary.
 /// @return A named list with draws matrix, num_warmup, num_chains, diagnostics,

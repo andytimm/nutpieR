@@ -100,7 +100,6 @@ fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
 /// Wait transfers ownership only into the reviewed 0.19.1 threaded driver.
 /// Its terminal paths call abort(), which joins before returning or rethrowing
 /// a controller panic. This is source-specific, not a generic unwind guarantee.
-/// The vendored ChainJob catch also makes queued worker panics terminal.
 pub(super) fn run_sampler<S: Settings>(
     stan_model: model::StanModel,
     settings: S,

@@ -78,7 +78,7 @@ otherwise nutpieR stops with guidance rather than using different compiler
 semantics.
 
 The cache is bounded by \code{\link[=nutpie_prune_cache]{nutpie_prune_cache()}},
-which runs automatically at the end of every successful compile
+which runs automatically after a new persistent cache entry is built
 (cap: 16 entries, min age before eviction: 14 days).
 
 Cache controls:
@@ -102,8 +102,9 @@ the OS dynamic linker (\code{dlopen}) returns the previously loaded library
 rather than the new one, so edits silently had no effect (see GitHub
 issue #23). Distinct content → distinct path → fresh \code{dlopen}. Any
 stale \verb{<basename>_model.so} and \verb{<basename>_model.cache_meta} files
-left over from earlier versions can be deleted; nutpieR no longer
-reads or writes them.
+left over from earlier versions can be deleted. The normal cached/staged
+route no longer reads or writes them; the conservative untracked file route
+can still leave a source-adjacent model library and \code{.hpp} file.
 }
 
 \examples{

@@ -27,7 +27,7 @@
 #' semantics.
 #'
 #' The cache is bounded by [`nutpie_prune_cache()`][nutpie_prune_cache],
-#' which runs automatically at the end of every successful compile
+#' which runs automatically after a new persistent cache entry is built
 #' (cap: 16 entries, min age before eviction: 14 days).
 #'
 #' Cache controls:
@@ -48,8 +48,9 @@
 #' rather than the new one, so edits silently had no effect (see GitHub
 #' issue #23). Distinct content → distinct path → fresh `dlopen`. Any
 #' stale `<basename>_model.so` and `<basename>_model.cache_meta` files
-#' left over from earlier versions can be deleted; nutpieR no longer
-#' reads or writes them.
+#' left over from earlier versions can be deleted. The normal cached/staged
+#' route no longer reads or writes them; the conservative untracked file route
+#' can still leave a source-adjacent model library and `.hpp` file.
 #'
 #' @param stan_file Path to a `.stan` file. Exactly one of `stan_file` or
 #'   `code` must be provided.
@@ -127,12 +128,12 @@ nutpie_compile_model <- function(stan_file = NULL, code = NULL,
   stanc_args <- normalize_stanc_include_paths(stanc_args)
   bundle <- bundle_for_compile(source_path, code, stanc_args, compile_args)
 
-  # If an unusual stanc output-mode override prevents us from obtaining both
-  # compiler-resolved dependencies and expanded source, never claim a cache
-  # hit.  A fresh build is slower but cannot silently reuse an old model.
+  # Compiler/make overrides or stanc resolution failures can prevent reliable
+  # dependency tracking and source expansion. Never claim a cache hit then:
+  # a fresh build is slower but cannot silently reuse an old model.
   if (isTRUE(attr(bundle, "untracked_includes"))) {
     warning(
-      "Could not safely track #include dependencies with these `stanc_args`; ",
+      "Could not safely track #include dependencies with the current compiler/make settings; ",
       "compiling without the persistent cache.",
       call. = FALSE
     )

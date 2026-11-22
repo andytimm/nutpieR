@@ -22,8 +22,8 @@ Invisibly, the number of entries removed.
 Evicts older entries from the nutpieR compile cache so it stays
 bounded. Mirrors Python nutpie's policy: cap the cache at
 \code{max_entries}, but only evict entries at least \code{min_age_days} old
-(oldest first). Called automatically at the end of every successful
-compile -- you usually don't need to invoke it directly, but it's
+(oldest first). Called automatically after a new persistent cache entry
+is successfully built -- you usually don't need to invoke it directly, but it's
 here for one-off manual cleanup or scripted maintenance.
 }
 \examples{

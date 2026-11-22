@@ -236,7 +236,8 @@ pub struct StanModel {
     /// If true, apply ±0.5 uniform jitter around the provided position.
     /// If false, chains start exactly at the provided position.
     jitter: bool,
-    /// Count of draws where param_constrain failed (GQ filled with NaN).
+    /// Count of failed initial constrained-output expansions. Unavailable output
+    /// suffixes (or the whole output if all retries fail) are filled with NaN.
     expand_errors: Arc<AtomicUsize>,
 }
 

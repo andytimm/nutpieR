@@ -652,13 +652,10 @@ test_that("store_divergences exposes divergence detail when divergences occur", 
 test_that("adaptation = 'low_rank' produces valid draws", {
   skip_if(is.null(test_models$bernoulli), "Bernoulli model not compiled")
 
-  # store_mass_matrix is requested too: low-rank's mass matrix has a
-  # different internal representation than the diagonal one and may not
-  # surface `mass_matrix_inv`, but the run must complete cleanly with
-  # logp populated.
+  # Save warmup so low-rank's mass_matrix_stds can carry forward into sampling.
   draws <- nutpie_sample(test_models$bernoulli, data = bernoulli_data(),
     num_draws = 100, num_chains = 2, seed = 42, refresh = 0,
-    adaptation = "low_rank", store_mass_matrix = TRUE
+    adaptation = "low_rank", store_mass_matrix = TRUE, save_warmup = TRUE
   )
   expect_s3_class(draws, "draws_array")
   expect_equal(posterior::niterations(draws), 100)
@@ -677,6 +674,17 @@ test_that("adaptation = 'low_rank' produces valid draws", {
   diag <- nutpie_diagnostics(draws)
   expect_type(diag$logp, "double")
   expect_true(any(diag$logp != 0))
+
+  warmup_diag <- nutpie_warmup_diagnostics(draws)
+  expect_equal(dim(warmup_diag$mass_matrix_stds), c(1600L, 1L))
+  expect_equal(dim(diag$mass_matrix_stds), c(200L, 1L))
+  expect_true(all(is.finite(diag$mass_matrix_stds)))
+  expect_true(all(diag$mass_matrix_stds > 0))
+  for (chain in 1:2) {
+    last_warmup <- tail(warmup_diag$mass_matrix_stds[warmup_diag$chain == chain, 1], 1)
+    expect_equal(diag$mass_matrix_stds[diag$chain == chain, 1],
+                 rep(last_warmup, 100))
+  }
 })
 
 test_that("generated-quantities failures preserve valid parameter draws", {

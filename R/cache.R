@@ -403,8 +403,7 @@ cached_model <- function(entry, main_rel, display_source, verbose) {
     return(NULL)
   }
   if (verbose >= 1L) message("Using cached compiled model.")
-  # A cache hit never calls into Rust, so ensure_safe_tbb_proxy (which only
-  # runs during a real compile) would never re-patch a stale, unpatched
+  # A cache hit skips the compile-time proxy check, so re-patch any stale
   # tbbmalloc_proxy for an upgrading user whose model is already cached.
   ensure_tbb_proxy_patched()
   # Marker mtime is the LRU timestamp for pruning.
@@ -569,11 +568,10 @@ compile_no_cache <- function(bundle, stanc_args, compile_args, verbose) {
   )
 }
 
-# Compile an include-bearing source only when compiler tracking is unavailable.
-# The fresh directory guarantees a new library path.  For file input, make the
-# original main-source root the next include root after BridgeStan's empty
-# staging root, preserving its normal parent-before-user search precedence as
-# closely as possible without pretending that an unsafe cache key is valid.
+# Compile an include-bearing source when compiler tracking is unavailable.
+# File input is compiled beside the original source under a per-source lock;
+# the resulting library is copied to a fresh directory for a unique load path.
+# Inline input is staged and compiled in a fresh directory.
 compile_no_cache_untracked <- function(bundle, source_path, stanc_args,
                                        compile_args, verbose) {
   if (is.null(source_path)) {
@@ -652,8 +650,8 @@ prune_cache_internal <- function(max_entries, min_age_days) {
 #' Evicts older entries from the nutpieR compile cache so it stays
 #' bounded. Mirrors Python nutpie's policy: cap the cache at
 #' `max_entries`, but only evict entries at least `min_age_days` old
-#' (oldest first). Called automatically at the end of every successful
-#' compile -- you usually don't need to invoke it directly, but it's
+#' (oldest first). Called automatically after a new persistent cache entry
+#' is successfully built -- you usually don't need to invoke it directly, but it's
 #' here for one-off manual cleanup or scripted maintenance.
 #'
 #' @param max_entries Maximum number of valid (fully compiled) cache
