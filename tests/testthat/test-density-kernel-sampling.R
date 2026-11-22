@@ -11,6 +11,25 @@ test_that("kernel sampling discards failed runs and keeps the binding usable", {
   expect_match(output, "density kernel sampling regressions passed")
 })
 
+test_that("an uncaught sampling interrupt halts Rscript like a native interrupt", {
+  skip_if(Sys.getenv("NUTPIER_RUN_DENSITY_KERNEL_TESTS") != "1",
+          "requires an installed release package in the child R process")
+  run <- function(expr) {
+    script <- tempfile(fileext = ".R")
+    log <- tempfile()
+    on.exit(unlink(c(script, log)))
+    writeLines(c('cat("started\\n")', expr, 'cat("continued\\n")'), script)
+    status <- system2(file.path(R.home("bin"), "Rscript"),
+      c("--vanilla", shQuote(script)), stdout = log, stderr = log)
+    list(status = status, output = readLines(log, warn = FALSE))
+  }
+  native <- run("rlang::interrupt()")
+  expect_false(native$status == 0L)
+  expect_false("continued" %in% native$output)
+  expect_identical(run("nutpieR:::check_sampling_interrupt(list(interrupted = TRUE))"),
+                   native)
+})
+
 # Each mode is isolated: a hang, longjmp, or late destructor cannot corrupt the
 # test runner. Interrupt cases use a separate bounded helper, never fork R.
 for (case in c("cleanup", "callback", "callback-interrupt", "interrupt-none", "interrupt-text", "interrupt-callback")) {
