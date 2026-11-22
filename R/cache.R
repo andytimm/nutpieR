@@ -456,7 +456,7 @@ compile_at_path <- function(stan_file, stanc_args, compile_args, verbose) {
   base <- tools::file_path_sans_ext(stan_file)
   unlink(paste0(base, ".hpp"), force = TRUE)
 
-  build_path <- stan_file
+  build_path <- normalizePath(stan_file, winslash = "/", mustWork = TRUE)
   if (.Platform$OS.type == "windows") {
     # On Windows, make + stanc both prefer forward slashes -- backslashes
     # get eaten by the shell when bridgestan invokes make with STANCFLAGS,

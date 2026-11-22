@@ -96,7 +96,7 @@ loop; `devtools::test(filter = "progress")` iterates on progress tests.
 ## System Requirements
 
 - **Rust toolchain**: `rustc >= 1.88`, `cargo` (edition 2021)
-- **C++ toolchain**: needed by `bridgestan::compile_model()` to compile Stan models
+- **C++ toolchain**: needed to compile Stan models with BridgeStan’s Makefile
   - Windows: rtools45
   - macOS: Xcode Command Line Tools
   - Linux: build-essential (gcc, make)
@@ -156,7 +156,7 @@ Cargo dependencies before using them as API references.
 ## Design Decisions
 
 - extendr for the R–Rust boundary; native Rust chain execution.
-- BridgeStan compilation/loading handled in Rust, not by the BridgeStan R package.
+- R runs BridgeStan’s Makefile so Stop can clean up the compiler process tree. Rust prepares BridgeStan and loads the compiled library.
 - Arrow traces copied into R-owned matrices; `posterior::draws_array` output.
 - Functional R API, not R6, matching Stan ecosystem conventions.
 - R-universe binary distribution; not targeting CRAN. Rust MSRV is declared

@@ -14,14 +14,9 @@ bridgestan_version <- function() .Call(wrap__bridgestan_version)
 #' @noRd
 bridgestan_stanc_path <- function() .Call(wrap__bridgestan_stanc_path)
 
-#' Compile a Stan model to a shared library using BridgeStan.
-#' Downloads BridgeStan sources if needed (first call is slow).
-#' @param stan_file Path to the .stan file.
-#' @param stanc_args Character vector of extra arguments for stanc compiler.
-#' @param compile_args Character vector of extra arguments for make.
-#' @return Path to the compiled shared library.
+#' Prepare BridgeStan sources and its macOS allocator before running make.
 #' @noRd
-compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__compile_stan_model, stan_file, stanc_args, compile_args)
+prepare_bridgestan_build <- function() .Call(wrap__prepare_bridgestan_build)
 
 #' Isolate Stan model TBB dependencies in a shared, content-addressed macOS bundle.
 #' Also migrates models from the existing compile cache without modifying them.

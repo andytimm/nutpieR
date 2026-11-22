@@ -71,8 +71,7 @@
 #'   allocations in that process are unsafe.
 #' @param verbose Integer controlling compilation output. `0` = silent,
 #'   `1` (default) = print status messages.
-#'   Note: full make/stanc output (verbose=2) is not yet supported because
-#'   bridgestan captures subprocess output internally rather than streaming it.
+#'   Compiler output is captured and shown if the build fails.
 #' @param cache Logical, default `TRUE`. When `TRUE`, reuse a previously
 #'   compiled artifact when the source, BridgeStan version, and compile
 #'   flags all match. When `FALSE`, compile to a fresh tempdir without
@@ -147,6 +146,39 @@ nutpie_compile_model <- function(stan_file = NULL, code = NULL,
   } else {
     compile_no_cache(bundle, stanc_args, compile_args, verbose)
   }
+}
+
+# Keep make's target, user arguments, and single STANCFLAGS assignment in
+# BridgeStan order. Do not shell-quote argv: processx handles Windows quoting.
+compile_stan_model <- function(stan_file, stanc_args, compile_args) {
+  if (!endsWith(stan_file, ".stan")) stop("File must be a .stan file", call. = FALSE)
+  target <- paste0(sub("[.]stan$", "", stan_file), "_model.so")
+  flags <- c(paste0("--include-paths=", dirname(stan_file)), stanc_args)
+  args <- c(target, compile_args, paste0("STANCFLAGS=", paste(flags, collapse = " ")))
+  wd <- prepare_bridgestan_build()
+  logs <- tempfile(c("nutpieR-make-out-", "nutpieR-make-err-"))
+  on.exit(unlink(logs), add = TRUE)
+  suspendInterrupts({
+    make <- processx::process$new(
+      "make", args, wd = wd, env = c("current", STAN_THREADS = "true"),
+      stdout = logs[1L], stderr = logs[2L], cleanup_tree = TRUE, windows_hide_window = TRUE
+    )
+    on.exit(suspendInterrupts({
+      # kill() stops the Unix process group, including macOS system tools
+      # whose environment marker is hidden from kill_tree().
+      make$kill()
+      make$kill_tree()
+    }), add = TRUE, after = FALSE)
+  })
+  # Service the R console's event loop even when make produces no output.
+  while (make$is_alive()) Sys.sleep(0.05)
+  status <- make$get_exit_status()
+  if (status != 0L) {
+    stop("Model compilation failed (make exit ", status, "):\n",
+         paste(c(readLines(logs[2L], warn = FALSE), readLines(logs[1L], warn = FALSE)),
+               collapse = "\n"), call. = FALSE)
+  }
+  private_tbb_model(target)
 }
 
 #' @export

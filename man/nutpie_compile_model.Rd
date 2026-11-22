@@ -37,8 +37,7 @@ allocations in that process are unsafe.}
 
 \item{verbose}{Integer controlling compilation output. \code{0} = silent,
 \code{1} (default) = print status messages.
-Note: full make/stanc output (verbose=2) is not yet supported because
-bridgestan captures subprocess output internally rather than streaming it.}
+Compiler output is captured and shown if the build fails.}
 
 \item{cache}{Logical, default \code{TRUE}. When \code{TRUE}, reuse a previously
 compiled artifact when the source, BridgeStan version, and compile

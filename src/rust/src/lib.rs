@@ -105,49 +105,13 @@ fn bridgestan_stanc_path_impl() -> Result<String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
-/// Compile a Stan model to a shared library using BridgeStan.
-/// Downloads BridgeStan sources if needed (first call is slow).
-/// @param stan_file Path to the .stan file.
-/// @param stanc_args Character vector of extra arguments for stanc compiler.
-/// @param compile_args Character vector of extra arguments for make.
-/// @return Path to the compiled shared library.
+/// Prepare BridgeStan sources and its macOS allocator before running make.
 /// @noRd
 #[extendr]
-fn compile_stan_model(stan_file: &str, stanc_args: Strings, compile_args: Strings) -> String {
-    or_throw(compile_stan_model_impl(stan_file, stanc_args, compile_args))
-}
-
-fn compile_stan_model_impl(
-    stan_file: &str,
-    stanc_args: Strings,
-    compile_args: Strings,
-) -> Result<String> {
-    let bs_path = bridgestan_sources()?;
-    // Make Stan's bundled macOS tbbmalloc_proxy safe to keep (GitHub #36).
-    // No-op off macOS, when already patched, or when opted out via
-    // NUTPIER_NO_TBB_PROXY_PATCH. `true`: a compile follows immediately, so it is
-    // safe to purge and rebuild the proxy dylib.
+fn prepare_bridgestan_build() -> String {
+    let bs_path = or_throw(bridgestan_sources());
     ensure_safe_tbb_proxy(&bs_path, true);
-    let stan_path = PathBuf::from(stan_file);
-
-    let stanc_vec: Vec<String> = if stanc_args.is_empty() {
-        Vec::new()
-    } else {
-        stanc_args.iter().map(|s| s.to_string()).collect()
-    };
-    let stanc_refs: Vec<&str> = stanc_vec.iter().map(String::as_str).collect();
-    let compile_vec: Vec<String> = if compile_args.is_empty() {
-        Vec::new()
-    } else {
-        compile_args.iter().map(|s| s.to_string()).collect()
-    };
-    let compile_refs: Vec<&str> = compile_vec.iter().map(String::as_str).collect();
-
-    let lib_path = bridgestan::compile_model(&bs_path, &stan_path, &stanc_refs, &compile_refs)
-        .map_err(r_err)?;
-    Ok(private_tbb_model_impl(&lib_path)?
-        .to_string_lossy()
-        .into_owned())
+    bs_path.to_string_lossy().into_owned()
 }
 
 /// Isolate Stan model TBB dependencies in a shared, content-addressed macOS bundle.
@@ -422,7 +386,7 @@ fn ensure_tbb_proxy_patched() {
     #[cfg(target_os = "macos")]
     {
         // Same path the bridgestan crate resolves to (see the download guard in
-        // compile_stan_model_impl); only touch it if it already exists so we
+        // bridgestan_sources); only touch it if it already exists so we
         // never kick off a network download from the cache-hit path.
         if let Some(home) = dirs::home_dir() {
             let bs_path = home
@@ -1666,7 +1630,7 @@ extendr_module! {
     mod nutpieR;
     fn bridgestan_version;
     fn bridgestan_stanc_path;
-    fn compile_stan_model;
+    fn prepare_bridgestan_build;
     fn private_tbb_model;
     fn tbb_proxy_live_progress_safe;
     fn ensure_tbb_proxy_patched;

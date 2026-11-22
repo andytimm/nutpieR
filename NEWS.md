@@ -1,6 +1,7 @@
 # nutpieR (development)
 
 * Stopping a sampler run now raises an R interrupt without a Rust panic message.
+* Stopping a model build cancels the compiler without reporting a compile failure.
 
 * Added per-chain progress rows on ANSI-capable consoles with cli >= 3.6.6.9000,
   keeping the aggregate rough ETA. Short panes, older cli versions, and custom
