@@ -35,6 +35,36 @@ resolve_progress_mode <- function(progress, refresh,
   )
 }
 
+# Prefer measured rows over LINES, which can be stale after resizing. IDEs
+# without a terminal may expose neither; keep that distinct from a short pane.
+progress_console_height <- function(tty_size = ps::ps_tty_size,
+                                    lines = Sys.getenv("LINES")) {
+  rows <- tryCatch(tty_size()[["height"]], error = function(e) NA_integer_)
+  if (length(rows) == 1L && is.finite(rows) && rows > 0) return(rows)
+  if (!grepl("^[0-9]+$", lines)) return(NA_integer_)
+  rows <- suppressWarnings(as.integer(lines))
+  if (is.na(rows) || rows < 1L) NA_integer_ else rows
+}
+
+#' Multiline rendering is new in cli's development version. Keep older cli
+#' installations and explicit custom formats on the existing aggregate layout.
+#' Check sinks ourselves: some IDE capability overrides do not inspect streams.
+#' @noRd
+supports_multiline_progress <- function(num_chains, chain_format = NULL,
+                                        cli_version = utils::packageVersion("cli"),
+                                        ansi = cli::is_ansi_tty(),
+                                        multiline = getOption("cli.progress_multiline", TRUE),
+                                        unsunk = sink.number() == 0L &&
+                                          sink.number("message") == 2L,
+                                        height = progress_console_height()) {
+  num_chains > 1L && is.null(chain_format) &&
+    cli_version >= "3.6.6.9000" && isTRUE(unname(ansi)) &&
+    isTRUE(multiline) && isTRUE(unsunk) &&
+    # Allow room for the header and cursor below the chain rows. In an IDE
+    # of unknown height, limit multiline output to the usual four chains.
+    num_chains <= (if (is.na(height)) 4L else height - 2L)
+}
+
 #' Guard against a stale, unpatched macOS `tbbmalloc_proxy` (GitHub #36). Once
 #' loaded, every subsequent R allocation is at risk of a garbage-collection
 #' crash until R is restarted, including result assembly after sampling. Stop
@@ -845,6 +875,13 @@ maybe_spread_hint <- function(hints, snapshot) {
 #' @noRd
 emit_progress_hint <- function(hints, level, msg) {
   sym <- switch(level, warning = cli::symbol$warning, info = cli::symbol$info)
+  if (progress_supports_color()) {
+    if (startsWith(msg, "div:")) {
+      msg <- sub("div:", cli::col_red("div:"), msg, fixed = TRUE)
+    } else if (startsWith(msg, "grad/draw:")) {
+      msg <- sub("grad/draw:", cli::col_yellow("grad/draw:"), msg, fixed = TRUE)
+    }
+  }
   line <- paste0(sym, " ", msg)
   if (!is.null(hints$cli_bar_id)) {
     # `{line}` interpolation keeps any backticks/braces in the hint literal.
@@ -907,6 +944,177 @@ format_cli_progress_line <- function(done = FALSE, custom = FALSE) {
 #' @noRd
 make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
                                        chain_format = NULL,
+                                       id = NULL, update = NULL, done = NULL,
+                                       num_cores = num_chains,
+                                       clock = function() proc.time()[["elapsed"]]) {
+  if (is.null(id) && is.null(update) && is.null(done) &&
+      supports_multiline_progress(num_chains, chain_format)) {
+    return(make_multi_cli_progress_callback(
+      num_chains, num_warmup, num_draws, num_cores = num_cores
+    ))
+  }
+  make_single_cli_progress_callback(
+    num_chains, num_warmup, num_draws, chain_format = chain_format,
+    id = id, update = update, done = done, num_cores = num_cores, clock = clock
+  )
+}
+
+#' Measure the whole row, not just its bar, so cursor-up always addresses one
+#' physical line per chain. cli owns bar styling and all multiline cursor work.
+#' @noRd
+format_multi_cli_progress_line <- function(header = FALSE, done = FALSE) {
+  width <- cli::console_width() - 1L
+  if (header) {
+    eta <- if (done) "" else "{cli::pb_eta_str}"
+    candidates <- c(
+      paste("Sampling {cli::pb_percent} {cli::pb_current}/{cli::pb_total}",
+            eta, "| {cli::pb_extra$chains}"),
+      paste("Sampling {cli::pb_percent}", eta, "| {cli::pb_extra$chains}"),
+      paste("Sampling {cli::pb_percent}", eta),
+      "Sampling {cli::pb_percent}"
+    )
+  } else {
+    phase <- "{cli::pb_name}{cli::pb_extra$phase} {cli::pb_percent}"
+    bar <- "|{cli::pb_bar}|"
+    counts <- "{cli::pb_current}/{cli::pb_total}"
+    div <- "{cli::pb_extra$div}"
+    grad <- "{cli::pb_extra$grad}"
+    candidates <- c(
+      paste(phase, bar, counts, div, grad, "step {cli::pb_extra$step}"),
+      paste(phase, bar, counts, div, grad),
+      paste(phase, bar, div, grad),
+      paste(phase, bar, div),
+      paste(phase, counts, div, grad, "step {cli::pb_extra$step}"),
+      paste(phase, div, grad),
+      paste(phase, div),
+      "{cli::pb_name}{cli::pb_percent} {cli::pb_extra$div}"
+    )
+  }
+  for (candidate in candidates) {
+    line <- cli::format_inline(candidate)
+    if (cli::ansi_nchar(line, type = "width") <= width) return(line)
+  }
+  cli::ansi_strtrim(line, width = max(1L, width))
+}
+
+#' The first id owns the aggregate ETA; remaining ids are stable chain rows.
+#' @noRd
+make_multi_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
+                                             num_cores = num_chains,
+                                             ids = NULL, update = NULL, done = NULL) {
+  if (is.null(update)) update <- cli::cli_progress_update
+  if (is.null(done)) done <- cli::cli_progress_done
+  total <- as.numeric(num_warmup) + as.numeric(num_draws)
+  muted <- progress_messages_muffled()
+  callback_failed <- FALSE
+  finished <- FALSE
+  owned_ids <- character()
+  finish <- function(success = TRUE) {
+    if (finished) return(invisible(NULL))
+    finished <<- TRUE
+    result <- if (success && !callback_failed) "done" else "clear"
+    for (id in owned_ids) try(done(id = id, result = result), silent = TRUE)
+    invisible(NULL)
+  }
+  # A partially created display must not leave live bars behind.
+  created <- FALSE
+  on.exit(if (!created) finish(success = FALSE), add = TRUE)
+  if (!muted) {
+    if (is.null(ids)) {
+      header_line <- function(done = FALSE) {
+        format_multi_cli_progress_line(header = TRUE, done = done)
+      }
+      chain_line <- function() format_multi_cli_progress_line()
+      owned_ids <- cli::cli_progress_bar(
+        name = "Sampling", total = num_chains * total, type = "custom",
+        format = "{header_line()}", format_done = "{header_line(done = TRUE)}",
+        extra = list(chains = sprintf("0 running, %d queued, 0 done", num_chains)),
+        current = FALSE, clear = FALSE, auto_terminate = FALSE, .auto_close = FALSE
+      )
+      for (chain in seq_len(num_chains)) {
+        owned_ids <- c(owned_ids, cli::cli_progress_bar(
+          name = sprintf("c%-*d", nchar(num_chains), chain), total = total, type = "custom",
+          format = "{chain_line()}", format_done = "{chain_line()}",
+          extra = list(phase = "queued", div = "div: 0", grad = "- grad/draw", step = "-"),
+          current = FALSE, clear = FALSE, auto_terminate = FALSE, .auto_close = FALSE
+        ))
+      }
+    } else {
+      owned_ids <- ids
+    }
+  }
+  hints <- new_progress_hints(cli_bar_id = if (length(owned_ids)) owned_ids[[1]] else NULL)
+  last_snapshot <- NULL
+  last_width <- NULL
+  last_rows <- vector("list", length(owned_ids))
+  update_row <- function(index, set, extra) {
+    row <- list(set = set, extra = extra)
+    if (!identical(row, last_rows[[index]])) {
+      update(id = owned_ids[[index]], set = set, extra = extra, force = TRUE)
+      last_rows[[index]] <<- row
+    }
+  }
+  callback <- function(snapshot) {
+    if (muted || callback_failed || finished || length(snapshot) == 0L) {
+      return(invisible(NULL))
+    }
+    width <- cli::console_width()
+    if (identical(snapshot, last_snapshot) && identical(width, last_width)) {
+      return(invisible(NULL))
+    }
+    last_snapshot <<- snapshot
+    if (!identical(width, last_width)) last_rows <<- vector("list", length(owned_ids))
+    last_width <<- width
+    tryCatch({
+      update_grad_baselines(hints, snapshot, num_warmup)
+      started <- vapply(snapshot, function(s) isTRUE(s$started), logical(1))
+      completed <- vapply(snapshot, function(s) {
+        as_progress_num(s$finished_draws) >= total
+      }, logical(1))
+      summary <- summarize_progress_snapshot(snapshot, num_warmup)
+      update_row(
+        1L, set = min(summary$total_finished, num_chains * total),
+        extra = list(chains = sprintf("%d running, %d queued, %d done",
+                                     sum(started & !completed),
+                                     num_chains - sum(started), sum(completed)))
+      )
+      for (s in snapshot) {
+        chain <- as.integer(s$chain)
+        phase <- if (!isTRUE(s$started)) "queued" else if (
+          as_progress_num(s$finished_draws) >= total
+        ) "done" else if (isTRUE(s$tuning)) "warmup" else "sample"
+        div <- style_progress_status(
+          format_divergence_status(as_progress_num(s$divergences)),
+          color = progress_supports_color()
+        )
+        grad <- style_progress_status(
+          format_gradient_status(chain_grad_per_draw(hints, s)),
+          color = progress_supports_color()
+        )
+        step <- as_progress_num(s$step_size, NA_real_)
+        update_row(
+          chain + 1L,
+          set = min(as_progress_num(s$finished_draws), total),
+          extra = list(phase = sprintf("%-6s", phase), div = div, grad = grad,
+                       step = if (is.finite(step) && step > 0) sprintf("%.3g", step) else "-")
+        )
+      }
+      maybe_div_hint(hints, summary$total_divergences)
+      maybe_grad_hint(hints, snapshot, walnuts = summary$walnuts)
+    }, error = function(e) {
+      callback_failed <<- TRUE
+      finish(success = FALSE)
+    })
+    invisible(NULL)
+  }
+  attr(callback, "finish") <- finish
+  created <- TRUE
+  callback
+}
+
+#' @noRd
+make_single_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
+                                       chain_format = NULL,
                                        id = NULL,
                                        update = NULL,
                                        done = NULL,
@@ -929,6 +1137,7 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
       extra = list(phase = "warmup", status_compact = "div: 0", status_minimal = "div: 0"),
       format = "{progress_line()}",
       format_done = "{progress_line(done = TRUE)}",
+      auto_terminate = FALSE,
       .auto_close = FALSE
     )
   }
@@ -992,8 +1201,12 @@ make_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
     invisible(NULL)
   }
 
-  attr(callback, "finish") <- function() {
-    try(done(id = id), silent = TRUE)
+  finished <- FALSE
+  attr(callback, "finish") <- function(success = TRUE) {
+    if (finished) return(invisible(NULL))
+    finished <<- TRUE
+    try(done(id = id, result = if (success && !callback_failed) "done" else "clear"),
+        silent = TRUE)
     invisible(NULL)
   }
   callback
@@ -1078,13 +1291,13 @@ make_text_progress_callback <- function(num_chains, num_warmup, num_draws,
     invisible(NULL)
   }
 
-  attr(callback, "finish") <- function() invisible(NULL)
+  attr(callback, "finish") <- function(success = TRUE) invisible(NULL)
   callback
 }
 
 #' @noRd
-finish_progress_callback <- function(callback) {
+finish_progress_callback <- function(callback, success = TRUE) {
   finish <- attr(callback, "finish")
-  if (is.function(finish)) finish()
+  if (is.function(finish)) finish(success = success)
   invisible(NULL)
 }

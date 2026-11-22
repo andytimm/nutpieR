@@ -54,6 +54,14 @@
 #'   `"none"` suppresses progress. `refresh = 0` always disables progress.
 #'   In non-interactive scripts, use `"text"` for live log output; forced
 #'   `"cli"` output may only render the final summary.
+#'   With the default `chain_format`, `"auto"`/`"cli"` show per-chain rows
+#'   on ANSI-capable consoles with `cli >= 3.6.6.9000`, keeping the same
+#'   aggregate rough ETA. The layout is chosen at startup: short panes use one bar;
+#'   when height is unknown, per-chain rows are limited to four chains. Console support (including Positron and recent
+#'   RStudio) is detected by `cli`. Set `options(cli.progress_multiline = FALSE)`
+#'   to keep the aggregate single bar. `cli` 3.6.6 and earlier retain that bar;
+#'   no upgrade is required or installed automatically. Custom `chain_format`
+#'   values keep the existing aggregate layout. `"text"` and `"none"` are unchanged.
 #' @param chain_format A format string controlling what the status field of the
 #'   progress bar shows. Use `{token}` placeholders. Available tokens for
 #'   `"cli"` mode: `{div}` (post-warmup divergence count, red when positive),
@@ -62,8 +70,9 @@
 #'   `spread 23-78%`, shown only once chains diverge enough), `{draws}`
 #'   (per-chain draw range), `{spark}` (gap-from-leader sparkline), `{lag}`
 #'   (slow chain indicator), `{step}` (min step size), `{tdepth}` (estimated
-#'   latest treedepth, prefixed with `~`). The default is
-#'   `"{div} | {grad} | {spread}"`. For `"text"`
+#'   latest treedepth, prefixed with `~`). The aggregate bar's default is
+#'   `"{div} | {grad} | {spread}"`. An explicit format string keeps the
+#'   aggregate layout instead of per-chain rows. For `"text"`
 #'   mode, per-chain tokens are
 #'   also available: `{chain}`, `{phase}`, `{pct}`, `{draws}`, `{total}`,
 #'   `{elapsed}`, `{div}`, `{grad}`, `{tdepth}`. `NULL` uses the
@@ -359,7 +368,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
         num_chains, num_warmup, num_draws,
         chain_format = chain_format, num_cores = cores
       )
-      on.exit(finish_progress_callback(progress_callback), add = TRUE)
+      on.exit(finish_progress_callback(progress_callback, success = FALSE), add = TRUE)
       sample_result <- call_sample_stan(progress_callback)
       finish_progress_callback(progress_callback)
       sample_result

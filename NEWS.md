@@ -1,5 +1,8 @@
 # nutpieR (development)
 
+* Added per-chain progress rows on ANSI-capable consoles with cli >= 3.6.6.9000,
+  keeping the aggregate rough ETA. Short panes, older cli versions, and custom
+  `chain_format` values retain the single bar; `options(cli.progress_multiline = FALSE)` opts out.
 * Updated nuts-rs to 0.19.1, including its default soft gradient clipping.
   Building from source now requires Rust 1.88 or later.
 * Unified sampling cleanup for Stan models and custom density kernels.

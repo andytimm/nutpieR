@@ -13,7 +13,8 @@ Imports:
     cli,
     digest,
     jsonlite,
-    posterior
+    posterior,
+    ps
 Suggests:
     bayesplot,
     posteriordb,

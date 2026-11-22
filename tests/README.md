@@ -18,6 +18,20 @@ NUTPIER_RUN_SLOW_TESTS=1 Rscript -e 'devtools::test()'
 NUTPIER_DISABLE_COMPILE_CACHE=1 Rscript -e 'devtools::test()'
 ```
 
+## Terminal screen and scrollback
+
+From the repository root on macOS or Linux, run with development cli
+(3.6.6.9000 or newer) and `ps` installed:
+
+```sh
+R_LIBS=/path/to/dev-cli-library uv run --with pyte python tests/manual/progress-screen.py
+```
+
+This drives the real cli renderer with four synthetic chains in a pseudo-terminal.
+It checks the visible rows and scrollback before and after a divergence hint,
+on completion, and after clearing an interrupted display. A four-row pane must
+use the aggregate bar instead. No sampler build is needed.
+
 ## Compile-failure surfacing
 
 `tests/testthat/helper-models.R` compiles the test models once and caches them

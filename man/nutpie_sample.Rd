@@ -100,7 +100,15 @@ log. \code{"cli"} shows a compact sampler-aware bar, \code{"text"} prints
 line-oriented updates (one line per chain, every \code{refresh} draws), and
 \code{"none"} suppresses progress. \code{refresh = 0} always disables progress.
 In non-interactive scripts, use \code{"text"} for live log output; forced
-\code{"cli"} output may only render the final summary.}
+\code{"cli"} output may only render the final summary.
+With the default \code{chain_format}, \code{"auto"}/\code{"cli"} show per-chain rows
+on ANSI-capable consoles with \code{cli >= 3.6.6.9000}, keeping the same
+aggregate rough ETA. The layout is chosen at startup: short panes use one bar;
+when height is unknown, per-chain rows are limited to four chains. Console support (including Positron and recent
+RStudio) is detected by \code{cli}. Set \code{options(cli.progress_multiline = FALSE)}
+to keep the aggregate single bar. \code{cli} 3.6.6 and earlier retain that bar;
+no upgrade is required or installed automatically. Custom \code{chain_format}
+values keep the existing aggregate layout. \code{"text"} and \code{"none"} are unchanged.}
 
 \item{chain_format}{A format string controlling what the status field of the
 progress bar shows. Use \code{{token}} placeholders. Available tokens for
@@ -110,8 +118,9 @@ threshold), \code{{spread}} (percent-range spread across chains, e.g.
 \verb{spread 23-78\%}, shown only once chains diverge enough), \code{{draws}}
 (per-chain draw range), \code{{spark}} (gap-from-leader sparkline), \code{{lag}}
 (slow chain indicator), \code{{step}} (min step size), \code{{tdepth}} (estimated
-latest treedepth, prefixed with \code{~}). The default is
-\code{"{div} | {grad} | {spread}"}. For \code{"text"}
+latest treedepth, prefixed with \code{~}). The aggregate bar's default is
+\code{"{div} | {grad} | {spread}"}. An explicit format string keeps the
+aggregate layout instead of per-chain rows. For \code{"text"}
 mode, per-chain tokens are
 also available: \code{{chain}}, \code{{phase}}, \code{{pct}}, \code{{draws}}, \code{{total}},
 \code{{elapsed}}, \code{{div}}, \code{{grad}}, \code{{tdepth}}. \code{NULL} uses the
