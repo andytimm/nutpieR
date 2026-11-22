@@ -1020,7 +1020,8 @@ make_multi_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
     if (finished) return(invisible(NULL))
     finished <<- TRUE
     result <- if (success && !callback_failed) "done" else "clear"
-    for (id in owned_ids) try(done(id = id, result = result), silent = TRUE)
+    ids <- if (result == "clear") rev(owned_ids) else owned_ids
+    for (id in ids) try(done(id = id, result = result), silent = TRUE)
     invisible(NULL)
   }
   # A partially created display must not leave live bars behind.

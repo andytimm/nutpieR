@@ -29,6 +29,10 @@ for (case in c("cleanup", "callback", "callback-interrupt", "interrupt-none", "i
           shQuote(core), shQuote(mode)), stdout=log, stderr=log, timeout=180)
       output <- paste(readLines(log, warn=FALSE), collapse="\n")
       expect_equal(status, 0L, info=paste("log", log, output))
+      if (grepl("interrupt", mode, fixed=TRUE)) {
+        expect_false(grepl("panicked at|fatal runtime error", output, ignore.case=TRUE),
+                     info=paste("log", log, output))
+      }
       expect_match(output, paste("density kernel lifecycle", mode, "passed"), fixed=TRUE)
     })
   })

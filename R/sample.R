@@ -328,7 +328,6 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   chain_format <- validate_chain_format(chain_format, resolved_progress)
 
   call_sample_stan <- function(progress_callback) {
-    progress_callback <- protect_progress_callback(progress_callback)
     started <- proc.time()[["elapsed"]]
     raw <- sample_stan(
       handle,
@@ -355,10 +354,11 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
       keep_indices,
       flags$include_tp,
       flags$include_gq,
-      progress_callback,
+      protect_progress_callback(progress_callback),
       kernel = if (kernel_bound) model$kernel_ptr else NULL,
       walnuts = walnuts_json
     )
+    check_sampling_interrupt(raw, progress_callback)
     list(raw = raw, sampling_time = proc.time()[["elapsed"]] - started)
   }
 
@@ -414,6 +414,14 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   warn_on_expand_errors(raw$expand_errors %||% 0L)
 
   draws
+}
+
+check_sampling_interrupt <- function(result, callback = NULL) {
+  if (isTRUE(result$interrupted)) {
+    finish_progress_callback(callback, success = FALSE)
+    stop(structure(list(message = "Sampling interrupted.", call = NULL),
+                   class = c("interrupt", "condition")))
+  }
 }
 
 assemble_sample_result <- function(raw, num_draws, num_warmup, num_chains,

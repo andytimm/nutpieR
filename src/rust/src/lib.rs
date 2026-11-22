@@ -17,6 +17,7 @@ mod model;
 mod sampling;
 mod walnuts;
 use sampling::run_sampler;
+use std::ops::ControlFlow;
 #[cfg(target_os = "macos")]
 mod private_tbb;
 
@@ -748,7 +749,7 @@ fn sample_stan(
             })?)
         };
 
-        let (results, sampler_config_json) = match adaptation {
+        let outcome = match adaptation {
             "low_rank" => {
                 let mut settings = LowRankNutsSettings::default();
                 configure_settings!(settings);
@@ -793,6 +794,9 @@ fn sample_stan(
             }
         };
 
+        let ControlFlow::Continue((results, sampler_config_json)) = outcome else {
+            return Ok(list!(interrupted = true));
+        };
         let post_warmup_skip = if save_warmup { num_tune } else { 0 };
 
         let draws_robj = build_draws_matrix(
@@ -913,7 +917,7 @@ fn run_with_settings<S: Settings + serde::Serialize>(
     save_warmup: bool,
     progress_callback: Option<Function>,
     walnuts: bool,
-) -> Result<(Vec<ArrowTrace>, String)> {
+) -> Result<ControlFlow<(), (Vec<ArrowTrace>, String)>> {
     let json = serde_json::to_string(&settings)
         .map_err(|e| Error::Other(format!("failed to serialize sampler settings: {}", e)))?;
     let traces = run_sampler(
@@ -924,7 +928,7 @@ fn run_with_settings<S: Settings + serde::Serialize>(
         progress_callback,
         walnuts,
     )?;
-    Ok((traces, json))
+    Ok(traces.map_continue(|traces| (traces, json)))
 }
 
 /// Build a draws matrix from Arrow traces.
@@ -1583,14 +1587,17 @@ fn bs_reference_pilot(handle: Robj, num_points: i32, seed: i32) -> Result<List> 
         };
         settings.adapt_options.step_size_settings.target_accept = 0.8;
         let config = serde_json::to_string(&settings).map_err(r_err)?;
-        let traces = run_sampler(
+        let ControlFlow::Continue(traces) = run_sampler(
             model::StanModel::reference_pilot(reference),
             settings,
             1,
             false,
             None,
             false,
-        )?;
+        )?
+        else {
+            return Ok(list!(interrupted = true));
+        };
         let columns: Vec<_> = (0..reference.ndim_unc).collect();
         let points = build_draws_matrix(
             &traces,

@@ -5,6 +5,7 @@ use extendr_api::prelude::*;
 use nuts_rs::{
     ArrowConfig, ArrowTrace, ChainProgress, ProgressCallback, Sampler, SamplerWaitResult, Settings,
 };
+use std::ops::ControlFlow::{self, Break, Continue};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -107,7 +108,7 @@ pub(super) fn run_sampler<S: Settings>(
     save_warmup: bool,
     mut progress_cb: Option<Function>,
     walnuts: bool,
-) -> Result<Vec<ArrowTrace>> {
+) -> Result<ControlFlow<(), Vec<ArrowTrace>>> {
     let native_error = stan_model.run_state.clone();
     let chains = settings.num_chains();
     let rows = settings.hint_num_draws()
@@ -171,35 +172,46 @@ pub(super) fn run_sampler<S: Settings>(
             sampler.wait_timeout(Duration::from_millis(200))
         })) {
             Ok(SamplerWaitResult::Timeout(sampler)) => owner = Some(sampler),
-            Ok(SamplerWaitResult::Trace(traces)) => break Ok(traces),
+            Ok(SamplerWaitResult::Trace(traces)) => break Ok(Continue(traces)),
             Ok(SamplerWaitResult::Err(error, _)) => break Err(r_err(error)),
             Err(panic) => break Err(r_err(format!("Sampler panicked: {}", panic_text(panic)))),
         }
         // Owner has been restored before any host code runs.
-        let monitored = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
+        let monitored = catch_unwind(AssertUnwindSafe(|| {
             if interrupt_pending() {
-                return Err(r_err("Sampling interrupted."));
+                return Ok(Break(()));
             }
             pump_r_events()?;
             if interrupt_pending() {
-                return Err(r_err("Sampling interrupted."));
+                return Ok(Break(()));
             }
             report_progress(&progress, &mut progress_cb)
         }));
-        let failure = match monitored {
-            Ok(Ok(())) => continue,
-            Ok(Err(error)) => error,
-            Err(panic) => r_err(format!("Sampler monitor panicked: {}", panic_text(panic))),
+        let stop = match monitored {
+            Ok(Ok(Continue(()))) => continue,
+            Ok(Ok(Break(()))) => Ok(Break(())),
+            Ok(Err(error)) => Err(error),
+            Err(panic) => Err(r_err(format!(
+                "Sampler monitor panicked: {}",
+                panic_text(panic)
+            ))),
         };
         // abort joins before rethrowing a controller panic; preserve the host
         // failure unless the kernel retained a more actionable native error.
-        let _joined = catch_unwind(AssertUnwindSafe(|| owner.take().unwrap().abort()));
-        break Err(failure);
+        if let Err(panic) = catch_unwind(AssertUnwindSafe(|| owner.take().unwrap().abort())) {
+            break Err(r_err(format!(
+                "Sampler abort panicked: {}",
+                panic_text(panic)
+            )));
+        }
+        break stop;
     };
     if let Some(error) = native_error.and_then(|state| state.error()) {
         return Err(r_err(error));
     }
-    let traces = outcome?;
+    let Continue(traces) = outcome? else {
+        return Ok(Break(()));
+    };
     if traces.len() != chains
         || traces.iter().any(|trace| {
             trace.posterior.num_rows() != rows || trace.sample_stats.num_rows() != rows
@@ -212,20 +224,19 @@ pub(super) fn run_sampler<S: Settings>(
         return Err(r_err(format!("Sampling stopped before all draws completed; run discarded. Expected {chains} chains with {rows} rows; got {actual:?}.")));
     }
     // Terminal results are joined before the final R callback.
-    report_progress(&progress, &mut progress_cb)?;
-    Ok(traces)
+    Ok(report_progress(&progress, &mut progress_cb)?.map_continue(|()| traces))
 }
 
 fn report_progress(
     progress: &Mutex<Vec<ChainState>>,
     callback: &mut Option<Function>,
-) -> Result<()> {
+) -> Result<ControlFlow<()>> {
     let Some(cb) = callback.as_ref() else {
-        return Ok(());
+        return Ok(Continue(()));
     };
     let snapshot = progress.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if snapshot.is_empty() {
-        return Ok(());
+        return Ok(Continue(()));
     }
     // Defer automatic R interrupt processing until the callback returns so a
     // Ctrl-C cannot be consumed as an ordinary callback error. Explicit R
@@ -243,13 +254,13 @@ fn report_progress(
         R_interrupts_suspended = previous;
     }
     if interrupt_pending() {
-        return Err(r_err("Sampling interrupted."));
+        return Ok(Break(()));
     }
     let failure = match called {
         Ok(Ok(value)) if value.inherits("nutpie_sampling_interrupt") => {
-            return Err(r_err("Sampling interrupted."));
+            return Ok(Break(()));
         }
-        Ok(Ok(_)) => return Ok(()),
+        Ok(Ok(_)) => return Ok(Continue(())),
         Ok(Err(error)) | Err(error) => error,
     };
     *callback = None;
@@ -258,7 +269,8 @@ fn report_progress(
             "nutpieR: progress callback failed ({}); disabling further callbacks for this run.",
             failure
         );
-    })
+    })?;
+    Ok(Continue(()))
 }
 
 /// Build a `List` of per-chain named lists for the R progress callback.

@@ -118,9 +118,7 @@ if (mode == "cleanup") {
         cores=1L, seed=42L, progress="text", refresh=1L)
       NULL
     }, interrupt=identity, error=identity)
-    stopifnot(calls == 1L, inherits(interrupted, "condition"),
-      inherits(interrupted, "interrupt") ||
-        grepl("interrupt", conditionMessage(interrupted), ignore.case=TRUE))
+    stopifnot(calls == 1L, inherits(interrupted, "interrupt"))
     joined()
   })
   sample_ok()
@@ -148,8 +146,7 @@ if (mode == "cleanup") {
       cores=1L, seed=42L, progress=progress, refresh=1L)
     NULL
   }, interrupt=identity, error=identity)
-  stopifnot(inherits(interrupted, "condition"),
-    inherits(interrupted, "interrupt") || grepl("interrupt", conditionMessage(interrupted), ignore.case=TRUE))
+  stopifnot(inherits(interrupted, "interrupt"))
   Sys.unsetenv("NUTPIER_LIFECYCLE_SLOW")
   joined()
   stopifnot(file.exists(done), identical(readLines(done), "sent"))

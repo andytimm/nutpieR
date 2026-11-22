@@ -138,6 +138,7 @@ kernel_check_pilot <- function(model, num_points, seed) {
   result <- tryCatch(bs_reference_pilot(model$bs_ptr, num_points, seed),
     error = function(e) stop("Reference pilot failed; check discarded: ",
                              conditionMessage(e), call. = FALSE))
+  check_sampling_interrupt(result)
   list(points = result$points, pilot = list(
     settings = list(num_chains = 1L, cores = 1L, num_warmup = 200L,
       num_draws = num_points, seed = seed, target_accept = 0.8,
