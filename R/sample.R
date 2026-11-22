@@ -1,6 +1,8 @@
 #' Sample from a Stan model using the NUTS sampler
 #'
-#' Runs the nuts-rs NUTS sampler on a compiled Stan model.
+#' Runs the nuts-rs NUTS sampler on a compiled Stan model. Uses upstream's
+#' default soft gradient clipping (`gradient_clipping = 1e10`), which changes
+#' integration for extreme gradients without changing the model log density.
 #'
 #' @param model A `"nutpie_model"` object from [nutpie_compile_model()], a
 #'   path to a compiled shared library, or a bound
@@ -52,6 +54,15 @@
 #'   `"none"` suppresses progress. `refresh = 0` always disables progress.
 #'   In non-interactive scripts, use `"text"` for live log output; forced
 #'   `"cli"` output may only render the final summary.
+#'   With the default `chain_format`, `"auto"`/`"cli"` show per-chain rows
+#'   on ANSI-capable consoles with `cli >= 3.6.6.9000`, keeping the same
+#'   aggregate rough ETA. Short panes use one bar; per-chain rows return when
+#'   the pane has room again. If height is unknown at startup, at most four
+#'   chains get separate rows. Console support (including Positron and recent
+#'   RStudio) is detected by `cli`. Set `options(cli.progress_multiline = FALSE)`
+#'   to keep the aggregate single bar. `cli` 3.6.6 and earlier retain that bar;
+#'   no upgrade is required or installed automatically. Custom `chain_format`
+#'   values keep the existing aggregate layout. `"text"` and `"none"` are unchanged.
 #' @param chain_format A format string controlling what the status field of the
 #'   progress bar shows. Use `{token}` placeholders. Available tokens for
 #'   `"cli"` mode: `{div}` (post-warmup divergence count, red when positive),
@@ -60,11 +71,12 @@
 #'   `spread 23-78%`, shown only once chains diverge enough), `{draws}`
 #'   (per-chain draw range), `{spark}` (gap-from-leader sparkline), `{lag}`
 #'   (slow chain indicator), `{step}` (min step size), `{tdepth}` (estimated
-#'   latest treedepth, prefixed with `~`). The default is
-#'   `"{div} | {grad} | {spread}"`. For `"text"`
-#'   mode, per-chain tokens are
-#'   also available: `{chain}`, `{phase}`, `{pct}`, `{draws}`, `{total}`,
-#'   `{elapsed}`, `{div}`, `{grad}`, `{tdepth}`. `NULL` uses the
+#'   latest treedepth, prefixed with `~`). The aggregate bar's default is
+#'   `"{div} | {grad} | {spread}"`. An explicit format string keeps the
+#'   aggregate layout instead of per-chain rows. For `"text"` mode, the
+#'   supported tokens are `{chain}`, `{phase}`, `{pct}`, `{draws}`, `{total}`,
+#'   `{elapsed}`, `{div}`, `{grad}`, `{tdepth}`; `{draws}` is the current chain's
+#'   phase-relative draw count, not a range across chains. `NULL` uses the
 #'   mode-appropriate default.
 #' @param init Initial values for each chain. Single entry point that
 #'   dispatches on the input shape:
@@ -89,17 +101,13 @@
 #'       treated as constrained named lists.}
 #'   }
 #'   No jitter is applied; starting points are used exactly (after any
-#'   random fill for partial constrained inits). To work on the unconstrained
-#'   scale, see [nutpie_unconstrain()] to convert constrained values first.
+#'   random fill for partial constrained inits). Use [nutpie_unconstrain()] to
+#'   inspect unconstrained coordinates, not to supply `init`: numeric `init`
+#'   specifies a uniform radius, not an unconstrained starting position.
 #'
-#'   **Chain assignment is unspecified.** When supplying per-chain starts
-#'   (list-of-lists or `function(chain_id)`), the N positions are guaranteed
-#'   to be distributed one-per-chain, but the mapping from list index /
-#'   `chain_id` to the output chain dimension is not currently guaranteed.
-#'   Use this to provide N dispersed starts; do not rely on "chain 1 starts
-#'   at element 1" for downstream identifiability. (Threading the true
-#'   chain id requires an upstream change in nuts-rs; tracked for a future
-#'   release.)
+#'   Per-chain starts are assigned in output chain order: element `i` of a
+#'   list of starts, or the result of `function(chain_id)` with `chain_id = i`,
+#'   initializes output chain `i`, regardless of parallel scheduling.
 #' @param init_mean Deprecated. Scalar or numeric vector on the unconstrained
 #'   scale, with ±0.5 uniform jitter per chain. Use
 #'   `init = function(chain_id) ...`, `init = <scalar>` for Uniform(-x, x), or
@@ -160,6 +168,35 @@
 #'   Eigenvalues outside `(1/cutoff, cutoff)` are ignored. Only used when
 #'   `adaptation = "low_rank"`; ignored otherwise. Default `NULL` keeps the
 #'   nuts-rs default (currently `2.0`).
+#' @param walnuts Experimental within-orbit adaptive step sizes (WALNUTS).
+#'   `NULL` (default) keeps ordinary NUTS. `TRUE` or `list()` enables WALNUTS
+#'   with upstream defaults. A named list overrides any of these controls:
+#'   \describe{
+#'     \item{`max_step_halvings`}{Maximum micro-step halvings after the first
+#'       attempt, from 0 to 63 (default 8). Exhausting attempts is a divergence.}
+#'     \item{`max_error`}{Positive finite energy-error tolerance (default 0.5).
+#'       Replaces the ordinary `max_energy_error` divergence threshold.}
+#'     \item{`min_micro_steps`}{Positive integer micro steps in the first
+#'       attempt of each macro step (default 1).}
+#'     \item{`energy_criterion`}{`"max_min"` (default) measures the energy range
+#'       within a macro step; `"endpoint"` uses the absolute endpoint difference.}
+#'     \item{`target_macro_steps`}{Positive finite target for adapting
+#'       `min_micro_steps` during warmup; `NULL` (default) disables this adaptation.}
+#'     \item{`max_min_micro_steps`}{Positive integer upper bound for adapted
+#'       `min_micro_steps` (default 1024). Must be at least `min_micro_steps`
+#'       when `target_macro_steps` is set.}
+#'     \item{`max_leapfrog_steps`}{Optional positive integer limit on accepted
+#'       micro steps per draw (default `NULL`, no limit). Rejected attempts and
+#'       reversibility checks require extra gradient evaluations, so this is
+#'       not a strict gradient-evaluation budget.}
+#'   }
+#'   Integer controls other than `max_step_halvings` are limited to
+#'   `.Machine$integer.max`; combinations that overflow upstream's unsigned
+#'   64-bit micro-step count are rejected. With WALNUTS, `max_treedepth` and
+#'   `mindepth` refer to macro steps, not individual micro steps. The effective
+#'   controls are recorded in `sampler_config`. This API is experimental and
+#'   may change. Default WALNUTS can adapt or mix poorly on some models, even
+#'   without divergences. Check R-hat and ESS and compare with ordinary NUTS.
 #' @return A `posterior::draws_array` with dimensions
 #'   `(num_draws, num_chains, n_params)`. Sampler diagnostics are attached
 #'   as an attribute and can be retrieved with [nutpie_diagnostics()]; see
@@ -212,11 +249,13 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
                           adaptation = c("diag", "low_rank", "low-rank", "draw_diag"),
                           low_rank_modified_mass_matrix = FALSE,
                           mass_matrix_gamma = NULL,
-                          mass_matrix_eigval_cutoff = NULL) {
+                          mass_matrix_eigval_cutoff = NULL,
+                          walnuts = NULL) {
   # Fail before doing any model/data work when a stale macOS allocator is
   # already present. Opening a model can load that allocator, so check again
   # immediately after bs_open() below.
   gate_progress_for_tbb("none")
+  walnuts_json <- resolve_walnuts(walnuts)
   kernel_bound <- inherits(model, "nutpie_density_kernel_model")
   if (kernel_bound && !is.null(data)) {
     stop("Do not supply `data` for a bound kernel model; use nutpie_attach_density_kernel() to rebind.", call. = FALSE)
@@ -287,10 +326,8 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
 
   resolved_progress <- resolve_progress_mode(progress, refresh)
   chain_format <- validate_chain_format(chain_format, resolved_progress)
-  # Will be replaced with the effective maxdepth from sampler_config after sampling.
 
   call_sample_stan <- function(progress_callback) {
-    progress_callback <- protect_progress_callback(progress_callback)
     started <- proc.time()[["elapsed"]]
     raw <- sample_stan(
       handle,
@@ -317,9 +354,11 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
       keep_indices,
       flags$include_tp,
       flags$include_gq,
-      progress_callback,
-      kernel = if (kernel_bound) model$kernel_ptr else NULL
+      protect_progress_callback(progress_callback),
+      kernel = if (kernel_bound) model$kernel_ptr else NULL,
+      walnuts = walnuts_json
     )
+    check_sampling_interrupt(raw, progress_callback)
     list(raw = raw, sampling_time = proc.time()[["elapsed"]] - started)
   }
 
@@ -328,9 +367,9 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
     "cli" = {
       progress_callback <- make_cli_progress_callback(
         num_chains, num_warmup, num_draws,
-        chain_format = chain_format
+        chain_format = chain_format, num_cores = cores
       )
-      on.exit(finish_progress_callback(progress_callback), add = TRUE)
+      on.exit(finish_progress_callback(progress_callback, success = FALSE), add = TRUE)
       sample_result <- call_sample_stan(progress_callback)
       finish_progress_callback(progress_callback)
       sample_result
@@ -375,6 +414,13 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
   warn_on_expand_errors(raw$expand_errors %||% 0L)
 
   draws
+}
+
+check_sampling_interrupt <- function(result, callback = NULL) {
+  if (isTRUE(result$interrupted)) {
+    finish_progress_callback(callback, success = FALSE)
+    rlang::interrupt()
+  }
 }
 
 assemble_sample_result <- function(raw, num_draws, num_warmup, num_chains,

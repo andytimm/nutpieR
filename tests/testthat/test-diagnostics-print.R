@@ -1,6 +1,6 @@
 # Failure-flag behaviour of print.nutpie_diagnostics(). All cases are synthetic
 # (no compiled model needed): we build a posterior::draws_array, attach the same
-# attributes nutpie_sample() does (sample.R:306-311), and assert on the printed
+# attributes assemble_sample_result() does, and assert on the printed
 # output. cat() lines go to stdout (expect_output); cli_alert_* flag lines go to
 # the message stream (capture_messages).
 

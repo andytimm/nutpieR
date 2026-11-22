@@ -8,7 +8,7 @@ seeded by the first run on a given machine.
 | Env var | Default | Effect |
 |---|---|---|
 | `NUTPIER_RUN_SLOW_TESTS` | unset | Set to `1` to run `test-posteriordb.R`, which downloads posteriordb fixtures and runs reference comparisons (~+70s). |
-| `NUTPIER_RUN_DENSITY_KERNEL_TESTS` | unset | Set to `1` after a release install to run the density kernel ABI, failure-mode, and sampling tests in child R processes. |
+| `NUTPIER_RUN_DENSITY_KERNEL_TESTS` | unset | Set to `1` after a release install to run density kernel ABI, sampling, cleanup, callback-failure, and interrupt tests in child R processes. Unix signal tests skip on Windows. |
 | `NUTPIER_DISABLE_COMPILE_CACHE` | unset | Set to `1` to bypass the on-disk compile cache and recompile from scratch on every `nutpie_compile_model()` call. Useful when isolating a cache-related bug. |
 
 ```sh
@@ -17,6 +17,20 @@ NUTPIER_RUN_DENSITY_KERNEL_TESTS=1 Rscript -e 'devtools::test(filter = "density-
 NUTPIER_RUN_SLOW_TESTS=1 Rscript -e 'devtools::test()'
 NUTPIER_DISABLE_COMPILE_CACHE=1 Rscript -e 'devtools::test()'
 ```
+
+## Terminal screen and scrollback
+
+From the repository root on macOS or Linux, run with development cli
+(3.6.6.9000 or newer) and `ps` installed:
+
+```sh
+R_LIBS=/path/to/dev-cli-library uv run --with pyte python tests/manual/progress-screen.py
+```
+
+This drives the real cli renderer with four synthetic chains in a pseudo-terminal.
+It checks the visible rows and scrollback before and after a divergence hint,
+on completion, and after clearing an interrupted display. A four-row pane must
+use the aggregate bar instead. No sampler build is needed.
 
 ## Compile-failure surfacing
 

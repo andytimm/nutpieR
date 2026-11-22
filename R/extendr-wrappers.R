@@ -14,17 +14,12 @@ bridgestan_version <- function() .Call(wrap__bridgestan_version)
 #' @noRd
 bridgestan_stanc_path <- function() .Call(wrap__bridgestan_stanc_path)
 
-#' Compile a Stan model to a shared library using BridgeStan.
-#' Downloads BridgeStan sources if needed (first call is slow).
-#' @param stan_file Path to the .stan file.
-#' @param stanc_args Character vector of extra arguments for stanc compiler.
-#' @param compile_args Character vector of extra arguments for make.
-#' @return Path to the compiled shared library.
+#' Prepare BridgeStan sources and its macOS allocator before running make.
 #' @noRd
-compile_stan_model <- function(stan_file, stanc_args, compile_args) .Call(wrap__compile_stan_model, stan_file, stanc_args, compile_args)
+prepare_bridgestan_build <- function() .Call(wrap__prepare_bridgestan_build)
 
-#' Resolve a macOS Stan model to a copy linked against nutpieR's private TBB.
-#' No-op on other platforms or for an already-private model.
+#' Isolate Stan model TBB dependencies in a shared, content-addressed macOS bundle.
+#' Also migrates models from the existing compile cache without modifying them.
 #' @noRd
 private_tbb_model <- function(lib_path) .Call(wrap__private_tbb_model, lib_path)
 
@@ -38,7 +33,7 @@ tbb_proxy_live_progress_safe <- function() .Call(wrap__tbb_proxy_live_progress_s
 #' whose model is already cached would never re-run `ensure_safe_tbb_proxy` and
 #' would keep shipping the stale, unpatched dylib. This re-applies the patch,
 #' but ONLY when the BridgeStan source tree already exists on disk — it must
-#' never trigger the ~235 MB download on a cache hit. macOS-cheap, idempotent,
+#' never trigger the source download on a cache hit. macOS-cheap, idempotent,
 #' and a no-op elsewhere.
 #' @noRd
 ensure_tbb_proxy_patched <- function() .Call(wrap__ensure_tbb_proxy_patched)
@@ -95,10 +90,12 @@ tbb_patch_strings <- function() .Call(wrap__tbb_patch_strings)
 #'   `divergent_draws`). When supplied, the built-in per-chain text log is
 #'   suppressed; errors raised by the closure are warned once and further calls
 #'   suppressed for the run.
+#' @param walnuts NULL for ordinary NUTS, or a JSON string of experimental
+#'   WALNUTS options validated again at the Rust boundary.
 #' @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 #'   sampler_config (JSON), and optionally warmup_draws and warmup_diagnostics.
 #' @noRd
-sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq, progress_callback, kernel = NULL) .Call(wrap__sample_stan, handle, num_draws, num_warmup, num_chains, seed, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq, progress_callback, kernel)
+sample_stan <- function(handle, num_draws, num_warmup, num_chains, seed, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq, progress_callback, kernel = NULL, walnuts = NULL) .Call(wrap__sample_stan, handle, num_draws, num_warmup, num_chains, seed, init_positions, jitter, save_warmup, num_cores, store_divergences, store_mass_matrix, store_unconstrained, store_gradient, adaptation, max_treedepth, mindepth, target_accept, max_energy_error, extra_doublings, mass_matrix_gamma, eigval_cutoff, keep_indices, include_tp, include_gq, progress_callback, kernel, walnuts)
 
 #' Open a BridgeStan model and return an `ExternalPtr<BSHandle>` that caches
 #' parameter-name metadata. The handle may be used by any of the `bs_*`
@@ -114,13 +111,13 @@ density_kernel_bind <- function(handle, library, data_json) .Call(wrap__density_
 #' @noRd
 density_kernel_evaluate <- function(handle, points) .Call(wrap__density_kernel_evaluate, handle, points)
 
-#' Internal reference-only pilot. No kernel handle is accepted here.
-#' @noRd
-bs_reference_pilot <- function(handle, num_points, seed) .Call(wrap__bs_reference_pilot, handle, num_points, seed)
-
 #' Reference evaluation with propto=true and jacobian=true.
 #' @noRd
 bs_evaluate <- function(handle, points) .Call(wrap__bs_evaluate, handle, points)
+
+#' Internal reference-only pilot. No kernel handle is accepted here.
+#' @noRd
+bs_reference_pilot <- function(handle, num_points, seed) .Call(wrap__bs_reference_pilot, handle, num_points, seed)
 
 #' Block-level parameter names (no transformed parameters / generated
 #' quantities), dot-indexed. Length equals `bs_ndim_block()`.

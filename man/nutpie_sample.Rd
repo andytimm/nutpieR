@@ -32,7 +32,8 @@ nutpie_sample(
   adaptation = c("diag", "low_rank", "low-rank", "draw_diag"),
   low_rank_modified_mass_matrix = FALSE,
   mass_matrix_gamma = NULL,
-  mass_matrix_eigval_cutoff = NULL
+  mass_matrix_eigval_cutoff = NULL,
+  walnuts = NULL
 )
 }
 \arguments{
@@ -99,7 +100,16 @@ log. \code{"cli"} shows a compact sampler-aware bar, \code{"text"} prints
 line-oriented updates (one line per chain, every \code{refresh} draws), and
 \code{"none"} suppresses progress. \code{refresh = 0} always disables progress.
 In non-interactive scripts, use \code{"text"} for live log output; forced
-\code{"cli"} output may only render the final summary.}
+\code{"cli"} output may only render the final summary.
+With the default \code{chain_format}, \code{"auto"}/\code{"cli"} show per-chain rows
+on ANSI-capable consoles with \verb{cli >= 3.6.6.9000}, keeping the same
+aggregate rough ETA. Short panes use one bar; per-chain rows return when
+the pane has room again. If height is unknown at startup, at most four
+chains get separate rows. Console support (including Positron and recent
+RStudio) is detected by \code{cli}. Set \code{options(cli.progress_multiline = FALSE)}
+to keep the aggregate single bar. \code{cli} 3.6.6 and earlier retain that bar;
+no upgrade is required or installed automatically. Custom \code{chain_format}
+values keep the existing aggregate layout. \code{"text"} and \code{"none"} are unchanged.}
 
 \item{chain_format}{A format string controlling what the status field of the
 progress bar shows. Use \code{{token}} placeholders. Available tokens for
@@ -109,11 +119,12 @@ threshold), \code{{spread}} (percent-range spread across chains, e.g.
 \verb{spread 23-78\%}, shown only once chains diverge enough), \code{{draws}}
 (per-chain draw range), \code{{spark}} (gap-from-leader sparkline), \code{{lag}}
 (slow chain indicator), \code{{step}} (min step size), \code{{tdepth}} (estimated
-latest treedepth, prefixed with \code{~}). The default is
-\code{"{div} | {grad} | {spread}"}. For \code{"text"}
-mode, per-chain tokens are
-also available: \code{{chain}}, \code{{phase}}, \code{{pct}}, \code{{draws}}, \code{{total}},
-\code{{elapsed}}, \code{{div}}, \code{{grad}}, \code{{tdepth}}. \code{NULL} uses the
+latest treedepth, prefixed with \code{~}). The aggregate bar's default is
+\code{"{div} | {grad} | {spread}"}. An explicit format string keeps the
+aggregate layout instead of per-chain rows. For \code{"text"} mode, the
+supported tokens are \code{{chain}}, \code{{phase}}, \code{{pct}}, \code{{draws}}, \code{{total}},
+\code{{elapsed}}, \code{{div}}, \code{{grad}}, \code{{tdepth}}; \code{{draws}} is the current chain's
+phase-relative draw count, not a range across chains. \code{NULL} uses the
 mode-appropriate default.}
 
 \item{init}{Initial values for each chain. Single entry point that
@@ -139,17 +150,13 @@ named list of constrained parameter values.}
 treated as constrained named lists.}
 }
 No jitter is applied; starting points are used exactly (after any
-random fill for partial constrained inits). To work on the unconstrained
-scale, see \code{\link[=nutpie_unconstrain]{nutpie_unconstrain()}} to convert constrained values first.
+random fill for partial constrained inits). Use \code{\link[=nutpie_unconstrain]{nutpie_unconstrain()}} to
+inspect unconstrained coordinates, not to supply \code{init}: numeric \code{init}
+specifies a uniform radius, not an unconstrained starting position.
 
-\strong{Chain assignment is unspecified.} When supplying per-chain starts
-(list-of-lists or \verb{function(chain_id)}), the N positions are guaranteed
-to be distributed one-per-chain, but the mapping from list index /
-\code{chain_id} to the output chain dimension is not currently guaranteed.
-Use this to provide N dispersed starts; do not rely on "chain 1 starts
-at element 1" for downstream identifiability. (Threading the true
-chain id requires an upstream change in nuts-rs; tracked for a future
-release.)}
+Per-chain starts are assigned in output chain order: element \code{i} of a
+list of starts, or the result of \verb{function(chain_id)} with \code{chain_id = i},
+initializes output chain \code{i}, regardless of parallel scheduling.}
 
 \item{init_mean}{Deprecated. Scalar or numeric vector on the unconstrained
 scale, with ±0.5 uniform jitter per chain. Use
@@ -223,6 +230,36 @@ Default \code{NULL} keeps the nuts-rs default (currently \code{1e-5}).}
 Eigenvalues outside \verb{(1/cutoff, cutoff)} are ignored. Only used when
 \code{adaptation = "low_rank"}; ignored otherwise. Default \code{NULL} keeps the
 nuts-rs default (currently \code{2.0}).}
+
+\item{walnuts}{Experimental within-orbit adaptive step sizes (WALNUTS).
+\code{NULL} (default) keeps ordinary NUTS. \code{TRUE} or \code{list()} enables WALNUTS
+with upstream defaults. A named list overrides any of these controls:
+\describe{
+\item{\code{max_step_halvings}}{Maximum micro-step halvings after the first
+attempt, from 0 to 63 (default 8). Exhausting attempts is a divergence.}
+\item{\code{max_error}}{Positive finite energy-error tolerance (default 0.5).
+Replaces the ordinary \code{max_energy_error} divergence threshold.}
+\item{\code{min_micro_steps}}{Positive integer micro steps in the first
+attempt of each macro step (default 1).}
+\item{\code{energy_criterion}}{\code{"max_min"} (default) measures the energy range
+within a macro step; \code{"endpoint"} uses the absolute endpoint difference.}
+\item{\code{target_macro_steps}}{Positive finite target for adapting
+\code{min_micro_steps} during warmup; \code{NULL} (default) disables this adaptation.}
+\item{\code{max_min_micro_steps}}{Positive integer upper bound for adapted
+\code{min_micro_steps} (default 1024). Must be at least \code{min_micro_steps}
+when \code{target_macro_steps} is set.}
+\item{\code{max_leapfrog_steps}}{Optional positive integer limit on accepted
+micro steps per draw (default \code{NULL}, no limit). Rejected attempts and
+reversibility checks require extra gradient evaluations, so this is
+not a strict gradient-evaluation budget.}
+}
+Integer controls other than \code{max_step_halvings} are limited to
+\code{.Machine$integer.max}; combinations that overflow upstream's unsigned
+64-bit micro-step count are rejected. With WALNUTS, \code{max_treedepth} and
+\code{mindepth} refer to macro steps, not individual micro steps. The effective
+controls are recorded in \code{sampler_config}. This API is experimental and
+may change. Default WALNUTS can adapt or mix poorly on some models, even
+without divergences. Check R-hat and ESS and compare with ordinary NUTS.}
 }
 \value{
 A \code{posterior::draws_array} with dimensions
@@ -240,7 +277,9 @@ left unspecified by the caller, and exposing \code{num_warmup} to match the
 function argument name); parse with \code{\link[jsonlite:fromJSON]{jsonlite::fromJSON()}}.
 }
 \description{
-Runs the nuts-rs NUTS sampler on a compiled Stan model.
+Runs the nuts-rs NUTS sampler on a compiled Stan model. Uses upstream's
+default soft gradient clipping (\code{gradient_clipping = 1e10}), which changes
+integration for extreme gradients without changing the model log density.
 }
 \examples{
 \dontrun{

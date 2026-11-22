@@ -320,8 +320,7 @@ test_that("multi-space, missing, and nested #include all invalidate properly", {
   dir.create(d, recursive = TRUE)
   on.exit(unlink(d, recursive = TRUE), add = TRUE)
 
-  # a -> b -> c, with deliberately weird whitespace so the regex has to
-  # accept multi-space after `#include`.
+  # a -> b -> c, with varied whitespace for stanc's include resolver.
   a <- file.path(d, "a.stan")
   b <- file.path(d, "b.stan")
   c <- file.path(d, "c.stan")
@@ -487,8 +486,8 @@ test_that("entries without ok marker don't count toward cap", {
 test_that("missing #include errors at compile time, not silently no-ops", {
   # Regression: read_or_empty() used to materialize missing deps as
   # empty files, so `#include missing.stan` silently compiled to a
-  # no-op include. The bundle now records missing deps but does not
-  # stage them, so stanc surfaces its native "could not find" error.
+  # no-op include. stanc's dependency resolver must report missing includes
+  # before a cache lookup or staging can hide the error.
   skip_if_no_make()
 
   d <- tempfile("nutpieR-missing-inc-")

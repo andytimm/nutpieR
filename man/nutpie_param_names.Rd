@@ -19,8 +19,9 @@ Required if the model has a \code{data} block.}
 
 \item{which}{One of \code{"block"}, \code{"unconstrained"}, \code{"full"}:
 \describe{
-\item{\code{"block"} (default)}{Block-level parameter names — the names you
-pass as keys to \code{\link[=nutpie_sample]{nutpie_sample()}}'s \code{init} argument.}
+\item{\code{"block"} (default)}{Names from the Stan \code{parameters} block,
+indexed for vectors and matrices (e.g. \code{beta[1]}). For
+\code{\link[=nutpie_sample]{nutpie_sample()}}'s \code{init} keys, use unindexed names (e.g. \code{beta}).}
 \item{\code{"unconstrained"}}{Unconstrained internal parameter names.}
 \item{\code{"full"}}{Block parameters plus transformed parameters and
 generated quantities (the full output draws space).}

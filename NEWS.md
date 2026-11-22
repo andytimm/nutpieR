@@ -1,3 +1,18 @@
+# nutpieR (development)
+
+* Stopping a sampler run now raises an R interrupt without a Rust panic message.
+* Stopping a model build cancels the compiler without reporting a compile failure.
+
+* Added per-chain progress rows on ANSI-capable consoles with cli >= 3.6.6.9000,
+  keeping the aggregate rough ETA. Short panes, older cli versions, and custom
+  `chain_format` values retain the single bar; `options(cli.progress_multiline = FALSE)` opts out.
+* Updated nuts-rs to 0.19.1, including its default soft gradient clipping.
+  Building from source now requires Rust 1.88 or later.
+* Unified sampling cleanup for Stan models and custom density kernels.
+* Per-chain initial values now map to the corresponding output chains.
+* Added opt-in experimental WALNUTS sampling via `walnuts = TRUE` or a
+  named list of controls, with gradient-work diagnostics and progress.
+
 # nutpieR 1.9.2
 
 * Added `adaptation = "draw_diag"` for diagonal mass matrix adaptation using

@@ -11,8 +11,8 @@ nutpie_warmup_draws(draws)
 \code{save_warmup = TRUE}.}
 }
 \value{
-A \code{posterior::draws_array} containing the warmup draws, or \code{NULL}
-if warmup draws were not saved.
+A \code{posterior::draws_array} containing the warmup draws. Raises an
+error if warmup draws were not saved.
 }
 \description{
 Extract warmup draws from nutpie output

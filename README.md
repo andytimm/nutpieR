@@ -28,7 +28,7 @@ remotes::install_github("andytimm/nutpieR")
   - Windows: [Rtools](https://cran.r-project.org/bin/windows/Rtools/)
   - macOS: Xcode Command Line Tools (`xcode-select --install`)
   - Linux: `build-essential` (Debian/Ubuntu) or equivalent
-- **Rust**: `rustc >= 1.85` and `cargo` ([install via rustup](https://rustup.rs/)) — only needed when installing from source
+- **Rust**: `rustc >= 1.88` and `cargo` ([install via rustup](https://rustup.rs/)) — only needed when installing from source
 
 ## Usage
 
@@ -103,6 +103,25 @@ draws <- nutpie_sample(
 )
 ```
 
+### Experimental WALNUTS
+
+WALNUTS adapts integration steps within each trajectory. It is opt-in and is
+not a guaranteed speed improvement:
+
+```r
+draws <- nutpie_sample(model, data = dat, walnuts = TRUE)
+# Optional endpoint criterion and micro-step adaptation:
+draws <- nutpie_sample(model, data = dat,
+  walnuts = list(energy_criterion = "endpoint", target_macro_steps = 15))
+```
+
+Ordinary NUTS remains the default. In broad posteriorDB checks, default WALNUTS
+was not generally more efficient and mixed poorly on some models, including
+runs with no divergences. Check R-hat and ESS, and compare with ordinary NUTS.
+Use ESS per second and `n_gradients` to compare work; WALNUTS tree steps are not
+gradient counts. Effective controls are saved in `attr(draws, "sampler_config")`.
+See `?nutpie_sample` for controls and cost limits.
+
 ### Draw-based diagonal mass matrix adaptation
 
 Use `adaptation = "draw_diag"` to adapt the diagonal mass matrix from draw
@@ -145,7 +164,7 @@ To write your own kernel, I'd suggest starting with the kernel-writing guide at
 
 ## How it works
 
-nutpieR compiles Stan models via the BridgeStan Rust crate and samples using the nuts-rs NUTS sampler. During sampling, Rust calls the compiled Stan shared library directly through BridgeStan's C ABI -- R is not involved in the sampling loop. Each chain runs on its own thread via rayon.
+nutpieR compiles Stan models via the BridgeStan Rust crate and samples using the nuts-rs NUTS sampler. During sampling, Rust calls the compiled Stan shared library directly through BridgeStan's C ABI -- R is not involved in the sampling loop. Sampling workers run entirely in Rust using native threads.
 
 Results are transferred from Rust to R via Apache Arrow and returned as a `posterior::draws_array`.
 

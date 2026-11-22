@@ -36,7 +36,7 @@ test_that("init = function(chain_id) samples and yields distinct starts", {
   positions <- resolved$positions
   expect_length(positions, 3)
   mu_starts <- vapply(positions, `[`, numeric(1), 1L)
-  expect_equal(sort(mu_starts), c(-1, 0, 1))
+  expect_equal(mu_starts, c(-1, 0, 1))
 })
 
 test_that("partial init is reproducible from sampler seed", {
@@ -114,7 +114,7 @@ test_that("list-of-lists init produces one position per chain", {
   # Each chain's mu (unconstrained = constrained for unbounded mu) should
   # match the supplied value.
   mu_starts <- vapply(resolved$positions, `[`, numeric(1), 1L)
-  expect_setequal(mu_starts, c(-2, 0, 2))
+  expect_equal(mu_starts, c(-2, 0, 2))
 })
 
 test_that("init from JSON file path parses and resolves", {

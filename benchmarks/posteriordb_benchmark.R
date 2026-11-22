@@ -68,7 +68,6 @@ NUM_DRAWS   <- 1000L
 NUM_WARMUP  <- 400L
 NUM_CHAINS  <- 4L
 SEED        <- 12345L
-SAMPLE_TIMEOUT_S <- 600  # 10 minutes per posterior
 
 
 # -- helpers -------------------------------------------------------------------

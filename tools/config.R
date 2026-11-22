@@ -33,7 +33,7 @@ if (!is_not_cran) {
   ""
 )
 
-# when DEBUG env var is present we use `--debug` build
+# When DEBUG is present, omit --release to use Cargo's default debug profile.
 .profile <- ifelse(is_debug, "", "--release")
 .clean_targets <- ifelse(is_debug, "", "$(TARGET_DIR)")
 

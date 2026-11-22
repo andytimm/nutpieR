@@ -64,21 +64,22 @@ new_path <- paste0(
 # set the path with the new path
 Sys.setenv("PATH" = new_path)
 
-# check for rustc installation
-rustc_version <- tryCatch(
-  system("rustc --version", intern = TRUE),
-  error = function(e) {
-    stop(paste(no_rustc_msg, collapse = "\n"))
+# Reject failed commands and empty output before parsing their versions.
+tool_version <- function(command, error_message) {
+  version <- tryCatch(
+    suppressWarnings(system(command, intern = TRUE)),
+    error = function(e) character()
+  )
+  status <- attr(version, "status")
+  if ((!is.null(status) && status != 0L) || length(version) != 1L ||
+      !nzchar(version) || !grepl("\\d+\\.\\d+(\\.\\d+)?", version)) {
+    stop(paste(error_message, collapse = "\n"))
   }
-)
+  version
+}
 
-# check for cargo installation
-cargo_version <- tryCatch(
-  system("cargo --version", intern = TRUE),
-  error = function(e) {
-    stop(paste(no_cargo_msg, collapse = "\n"))
-  }
-)
+rustc_version <- tool_version("rustc --version", no_rustc_msg)
+cargo_version <- tool_version("cargo --version", no_cargo_msg)
 
 # helper function to extract versions
 extract_semver <- function(ver) {

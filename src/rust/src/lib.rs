@@ -7,58 +7,17 @@ use arrow::array::{
 use arrow::datatypes::DataType;
 use extendr_api::error::Result;
 use extendr_api::prelude::*;
-use nuts_rs::{
-    ArrowConfig, ArrowTrace, ChainProgress, DiagNutsSettings, LowRankNutsSettings,
-    ProgressCallback, Sampler, SamplerWaitResult, Settings,
-};
+use nuts_rs::{ArrowTrace, DiagNutsSettings, LowRankNutsSettings, Settings};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-extern "C" {
-    static mut R_interrupts_pending: std::os::raw::c_int;
-    static mut R_interrupts_suspended: std::os::raw::c_int;
-    // Pump R's event loop. Front-ends (RStudio, Positron) buffer console output
-    // produced during a blocking native call and only repaint when R processes
-    // events, so without this the progress callback's output is invisible until
-    // sample_stan() returns. See `pump_r_events`.
-    fn R_ProcessEvents();
-}
-
-/// Flush front-end consoles mid-sampling by pumping R's event loop.
-///
-/// Interrupts are suspended across the call: on Unix `R_ProcessEvents` longjmps
-/// (via `onintr`) when an interrupt is pending, which would skip the Rust
-/// `Sampler` teardown and corrupt the in-flight result. Suspending lets it
-/// flush output without jumping; the pending flag is left set and handled at the
-/// top of the poll loop, which returns a clean error there instead.
-fn pump_r_events() {
-    unsafe {
-        let prev = R_interrupts_suspended;
-        R_interrupts_suspended = 1;
-        R_ProcessEvents();
-        R_interrupts_suspended = prev;
-    }
-}
-
-/// Read and clear a pending R interrupt. Returns `true` if one was pending; the
-/// caller should then return a clean `Err` so extendr raises a normal R error
-/// at the call site ("Sampling interrupted.") rather than longjmp'ing past the
-/// in-flight `Sampler` teardown.
-fn interrupt_pending() -> bool {
-    unsafe {
-        if R_interrupts_pending != 0 {
-            R_interrupts_pending = 0;
-            true
-        } else {
-            false
-        }
-    }
-}
+use std::sync::Arc;
 
 mod density_kernel;
 mod model;
+mod sampling;
+mod walnuts;
+use sampling::run_sampler;
+use std::ops::ControlFlow;
 #[cfg(target_os = "macos")]
 mod private_tbb;
 
@@ -96,7 +55,7 @@ fn or_throw<T>(r: Result<T>) -> T {
 }
 
 /// Return the linked BridgeStan crate version, e.g. "2.8.0". Used by the
-/// inline-code compile cache key so a BridgeStan version bump invalidates
+/// compile cache key so a BridgeStan version bump invalidates
 /// cached entries automatically.
 /// @noRd
 #[extendr]
@@ -114,8 +73,23 @@ fn bridgestan_stanc_path() -> String {
     or_throw(bridgestan_stanc_path_impl())
 }
 
+fn bridgestan_sources() -> Result<std::path::PathBuf> {
+    let cache = dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".bridgestan")
+        .join(format!("bridgestan-{}", bridgestan::VERSION));
+    if !cache.exists() {
+        rprintln!(
+            "Downloading BridgeStan {} sources (~35 MB compressed) to {}. Future models reuse this copy.",
+            bridgestan::VERSION,
+            cache.display()
+        );
+    }
+    bridgestan::download_bridgestan_src().map_err(r_err)
+}
+
 fn bridgestan_stanc_path_impl() -> Result<String> {
-    let bs_path = bridgestan::download_bridgestan_src().map_err(r_err)?;
+    let bs_path = bridgestan_sources()?;
     let executable = if cfg!(target_os = "windows") {
         "stanc.exe"
     } else {
@@ -131,60 +105,13 @@ fn bridgestan_stanc_path_impl() -> Result<String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
-/// Compile a Stan model to a shared library using BridgeStan.
-/// Downloads BridgeStan sources if needed (first call is slow).
-/// @param stan_file Path to the .stan file.
-/// @param stanc_args Character vector of extra arguments for stanc compiler.
-/// @param compile_args Character vector of extra arguments for make.
-/// @return Path to the compiled shared library.
+/// Prepare BridgeStan sources and its macOS allocator before running make.
 /// @noRd
 #[extendr]
-fn compile_stan_model(stan_file: &str, stanc_args: Strings, compile_args: Strings) -> String {
-    or_throw(compile_stan_model_impl(stan_file, stanc_args, compile_args))
-}
-
-fn compile_stan_model_impl(
-    stan_file: &str,
-    stanc_args: Strings,
-    compile_args: Strings,
-) -> Result<String> {
-    // Mirror the bridgestan crate's own cache-presence guard so the message
-    // only fires on the genuine first-compile path. ~150s silent pause for
-    // a 235 MB fetch was the single most reported dogfood surprise.
-    if let Some(home) = dirs::home_dir() {
-        let cache = home
-            .join(".bridgestan")
-            .join(format!("bridgestan-{}", bridgestan::VERSION));
-        if !cache.exists() {
-            rprintln!("Downloading BridgeStan sources (one-time, ~235 MB)...");
-        }
-    }
-    let bs_path = bridgestan::download_bridgestan_src().map_err(r_err)?;
-    // Make Stan's bundled macOS tbbmalloc_proxy safe to keep (GitHub #36).
-    // No-op off macOS, when already patched, or when opted out via
-    // NUTPIER_NO_TBB_PROXY_PATCH. `true`: a compile follows immediately, so it is
-    // safe to purge and rebuild the proxy dylib.
+fn prepare_bridgestan_build() -> String {
+    let bs_path = or_throw(bridgestan_sources());
     ensure_safe_tbb_proxy(&bs_path, true);
-    let stan_path = PathBuf::from(stan_file);
-
-    let stanc_vec: Vec<String> = if stanc_args.is_empty() {
-        Vec::new()
-    } else {
-        stanc_args.iter().map(|s| s.to_string()).collect()
-    };
-    let stanc_refs: Vec<&str> = stanc_vec.iter().map(String::as_str).collect();
-    let compile_vec: Vec<String> = if compile_args.is_empty() {
-        Vec::new()
-    } else {
-        compile_args.iter().map(|s| s.to_string()).collect()
-    };
-    let compile_refs: Vec<&str> = compile_vec.iter().map(String::as_str).collect();
-
-    let lib_path = bridgestan::compile_model(&bs_path, &stan_path, &stanc_refs, &compile_refs)
-        .map_err(r_err)?;
-    Ok(private_tbb_model_impl(&lib_path)?
-        .to_string_lossy()
-        .into_owned())
+    bs_path.to_string_lossy().into_owned()
 }
 
 /// Isolate Stan model TBB dependencies in a shared, content-addressed macOS bundle.
@@ -221,7 +148,7 @@ fn private_tbb_model_impl(lib_path: &std::path::Path) -> Result<PathBuf> {
 // the other registered zones first whenever the probe would cross below a page
 // boundary, and rebuild just the proxy dylib. The patched proxy also exports a
 // marker symbol so the R layer can confirm at runtime that the *loaded* proxy is
-// the safe one before it renders live progress (see `tbb_proxy_live_progress_safe`).
+// the safe one before sampling (see `tbb_proxy_live_progress_safe`).
 
 /// Sentinel string in the patched header; also the exported marker symbol name.
 #[cfg(target_os = "macos")]
@@ -229,8 +156,8 @@ const TBB_PATCH_MARKER: &str = "nutpie_tbb_proxy_safe_probe";
 
 /// Exact stock `impl_malloc_usable_size` from tbb_2020.3
 /// `src/tbbmalloc/proxy_overload_osx.h`. Byte-stable across the BridgeStan
-/// versions we bundle; if it ever changes, the patch declines cleanly and the
-/// runtime gate takes over.
+/// versions we bundle; if it ever changes, the patch declines cleanly and
+/// private-TBB packaging rejects models requiring the unpatched proxy.
 #[cfg(target_os = "macos")]
 const TBB_STOCK_FN: &str = r#"/* note: impl_malloc_usable_size() is called for each free() call, so it must be fast */
 static size_t impl_malloc_usable_size(struct _malloc_zone_t *, const void *ptr)
@@ -255,7 +182,7 @@ static size_t impl_malloc_usable_size(struct _malloc_zone_t *, const void *ptr)
 #[cfg(target_os = "macos")]
 const TBB_PATCHED_FN: &str = r#"/* nutpieR (GitHub #36): exported marker so the R layer can confirm at runtime,
    via dlsym, that the loaded tbbmalloc_proxy carries the page-boundary-safe zone
-   size() probe below. A proxy loaded WITHOUT this symbol gates off live progress
+   size() probe below. A proxy loaded WITHOUT this symbol stops sampling
    to avoid the GC-time segfault in __TBB_malloc_safer_msize. */
 extern "C" int nutpie_tbb_proxy_safe_probe = 1;
 
@@ -320,8 +247,9 @@ fn patch_proxy_source(content: &str) -> Option<String> {
 }
 
 /// Patch Stan's bundled tbbmalloc_proxy source and (optionally) force a rebuild
-/// of the proxy dylib. Idempotent; best-effort (any IO problem leaves the source
-/// untouched and the runtime gate takes over). macOS-only.
+/// of the proxy dylib. Idempotent and best-effort. Private-TBB packaging rejects
+/// an unpatched proxy; the runtime gate rejects unsafe proxies already loaded
+/// in the process. macOS-only.
 ///
 /// `will_recompile` MUST be true only when a model compile immediately follows
 /// (the compile path), because purging the artifacts deletes
@@ -330,8 +258,8 @@ fn patch_proxy_source(content: &str) -> Option<String> {
 /// From the cache-hit path no compile follows, so we pass `false`: we still
 /// patch the header (so the *next* real compile produces the safe proxy) but
 /// never delete the dylib — deleting it would break the cached model that is
-/// about to be loaded. Until that next compile, the current session is covered
-/// by the runtime gate (`tbb_proxy_live_progress_safe`).
+/// about to be loaded. Private-TBB packaging rejects an unpatched proxy until
+/// a compile rebuilds it; the runtime gate also rejects unsafe loaded proxies.
 #[cfg(target_os = "macos")]
 fn ensure_safe_tbb_proxy(bs_path: &std::path::Path, will_recompile: bool) {
     use std::fs;
@@ -395,7 +323,8 @@ fn ensure_safe_tbb_proxy(bs_path: &std::path::Path, will_recompile: bool) {
         None => {
             rprintln!(
                 "nutpieR: bundled tbbmalloc_proxy source is not in the expected form; \
-                 leaving it unpatched and gating live progress at runtime (GitHub #36)."
+                 leaving it unpatched. Models requiring this proxy will be rejected; \
+                 use compile_args = \"TBB_LIBRARIES=tbb\" to omit it (GitHub #36)."
             );
             return;
         }
@@ -449,7 +378,7 @@ fn ensure_safe_tbb_proxy(_bs_path: &std::path::Path, _will_recompile: bool) {}
 /// whose model is already cached would never re-run `ensure_safe_tbb_proxy` and
 /// would keep shipping the stale, unpatched dylib. This re-applies the patch,
 /// but ONLY when the BridgeStan source tree already exists on disk — it must
-/// never trigger the ~235 MB download on a cache hit. macOS-cheap, idempotent,
+/// never trigger the source download on a cache hit. macOS-cheap, idempotent,
 /// and a no-op elsewhere.
 /// @noRd
 #[extendr]
@@ -457,7 +386,7 @@ fn ensure_tbb_proxy_patched() {
     #[cfg(target_os = "macos")]
     {
         // Same path the bridgestan crate resolves to (see the download guard in
-        // compile_stan_model_impl); only touch it if it already exists so we
+        // bridgestan_sources); only touch it if it already exists so we
         // never kick off a network download from the cache-hit path.
         if let Some(home) = dirs::home_dir() {
             let bs_path = home
@@ -473,14 +402,14 @@ fn ensure_tbb_proxy_patched() {
     }
 }
 
-/// Runtime companion to the compile-time patch: is it safe to render live
-/// progress (which allocates R memory mid-sample and can trigger GC)?
+/// Runtime companion to the compile-time patch: is the loaded allocator safe
+/// for sampling and R result assembly (which can trigger GC)?
 ///
 /// Safe when no `tbbmalloc_proxy` is loaded in the process, or when the loaded
 /// one exports our marker symbol (i.e. it is the patched, page-safe build). The
 /// only unsafe case is a stale, unpatched proxy already loaded in this session —
 /// e.g. a model compiled before the patch and loaded in the same R session. The
-/// R layer downgrades live progress to a static summary in that case (#36).
+/// R layer stops sampling in that case, regardless of progress mode (#36).
 #[cfg(target_os = "macos")]
 mod tbb_gate {
     use std::os::raw::c_char;
@@ -518,8 +447,8 @@ mod tbb_gate {
     }
 }
 
-/// Whether nutpieR's live progress renderer is safe to run given the currently
-/// loaded allocator (GitHub #36). Always TRUE off macOS.
+/// Whether the currently loaded allocator is safe for sampling and R result
+/// assembly (GitHub #36). Always TRUE off macOS.
 /// @noRd
 #[extendr]
 fn tbb_proxy_live_progress_safe() -> bool {
@@ -549,345 +478,6 @@ fn tbb_patch_strings() -> Vec<String> {
     {
         Vec::new()
     }
-}
-
-#[derive(Clone, Default)]
-struct ChainState {
-    chain: usize,
-    finished_draws: usize,
-    total_draws: usize,
-    divergences: usize,
-    tuning: bool,
-    started: bool,
-    latest_num_steps: usize,
-    total_num_steps: usize,
-    step_size: f64,
-    runtime: Duration,
-    divergent_draws: Vec<usize>,
-}
-
-/// Extract a caught Rust panic message for the R-facing error.
-fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
-    if let Some(text) = payload.downcast_ref::<String>() {
-        text.clone()
-    } else if let Some(text) = payload.downcast_ref::<&str>() {
-        (*text).into()
-    } else {
-        "non-string Rust panic".into()
-    }
-}
-
-/// Run sampling with progress reporting and retain the joinable owner.
-/// Never use the consuming wait_timeout error path here: it loses the owner.
-/// Completion notifications only wake the monitor; the host must still join.
-fn run_joinable_sampler<S: Settings>(
-    stan_model: model::StanModel,
-    settings: S,
-    num_cores: i32,
-    save_warmup: bool,
-    mut progress_cb: Option<Function>,
-) -> Result<Vec<ArrowTrace>> {
-    use std::panic::{catch_unwind, AssertUnwindSafe};
-    let state = stan_model.run_state.as_ref().unwrap().clone();
-    let chains = settings.num_chains();
-    let rows = settings.hint_num_draws()
-        + if save_warmup {
-            settings.hint_num_tune()
-        } else {
-            0
-        };
-    let progress_state = Arc::new(Mutex::new(Vec::<ChainState>::new()));
-    let snapshot = progress_state.clone();
-    let callback = progress_cb.as_ref().map(|_| ProgressCallback {
-        callback: Box::new(move |_, progress: Box<[ChainProgress]>| {
-            *snapshot.lock().unwrap_or_else(|e| e.into_inner()) = progress
-                .iter()
-                .enumerate()
-                .map(|(i, c)| ChainState {
-                    chain: i + 1,
-                    finished_draws: c.finished_draws,
-                    total_draws: c.total_draws,
-                    divergences: c.divergences,
-                    tuning: c.tuning,
-                    started: c.started,
-                    latest_num_steps: c.latest_num_steps,
-                    total_num_steps: c.total_num_steps,
-                    step_size: c.step_size,
-                    runtime: c.runtime,
-                    divergent_draws: c.divergent_draws.clone(),
-                })
-                .collect();
-        }),
-        rate: Duration::from_millis(100),
-    });
-    let mut config = ArrowConfig::default();
-    config.store_warmup = save_warmup;
-    let created = catch_unwind(AssertUnwindSafe(|| {
-        Sampler::new(stan_model, settings, config, num_cores as usize, callback)
-    }));
-    let sampler = match created {
-        Ok(Ok(sampler)) => sampler,
-        Ok(Err(error)) => return Err(r_err(error)),
-        Err(panic) => {
-            return Err(r_err(format!(
-                "Sampler startup panicked: {}",
-                panic_text(panic)
-            )))
-        }
-    };
-    // The sampler remains outside the caught monitor closure. Even a monitor
-    // panic reaches abort below before an R-facing error is constructed.
-    let monitored = catch_unwind(AssertUnwindSafe(|| -> std::result::Result<(), String> {
-        loop {
-            if state.wait(Duration::from_millis(200), chains) {
-                return Ok(());
-            }
-            if interrupt_pending() {
-                return Err("Sampling interrupted.".into());
-            }
-            pump_r_events();
-            if interrupt_pending() {
-                return Err("Sampling interrupted.".into());
-            }
-            if let Some(cb) = &progress_cb {
-                let current = progress_state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clone();
-                if !current.is_empty() {
-                    let arguments =
-                        Pairlist::from_pairs([("", Robj::from(build_progress_snapshot(&current)))]);
-                    if cb.call(arguments).is_err() {
-                        progress_cb = None;
-                    }
-                }
-            }
-        }
-    }));
-    // abort disconnects commands, joins the controller, then resumes any
-    // controller panic. The Rayon scope has joined all model-using tasks;
-    // this does not mean every Rayon OS thread has exited.
-    let joined = catch_unwind(AssertUnwindSafe(|| sampler.abort()));
-    if let Some(error) = state.error() {
-        return Err(r_err(error));
-    }
-    match monitored {
-        Err(panic) => {
-            return Err(r_err(format!(
-                "Sampler monitor panicked: {}",
-                panic_text(panic)
-            )))
-        }
-        Ok(Err(error)) => return Err(r_err(error)),
-        Ok(Ok(())) => (),
-    }
-    let traces = match joined {
-        Err(panic) => return Err(r_err(format!("Sampler panicked: {}", panic_text(panic)))),
-        Ok(Err(error)) => return Err(r_err(error)),
-        Ok(Ok((Some(error), _))) => return Err(r_err(error)),
-        Ok(Ok((None, traces))) => traces,
-    };
-    // abort does not drain worker results. Ordinary worker errors can therefore
-    // return partial traces without Some(error); reject them before R allocation.
-    if traces.len() != chains
-        || traces.iter().any(|trace| {
-            trace.posterior.num_rows() != rows || trace.sample_stats.num_rows() != rows
-        })
-    {
-        let actual: Vec<_> = traces
-            .iter()
-            .map(|trace| (trace.posterior.num_rows(), trace.sample_stats.num_rows()))
-            .collect();
-        return Err(r_err(format!("Sampling stopped before all draws completed; run discarded (initialization or worker failure). Expected {chains} chains with {rows} rows; got {actual:?}.")));
-    }
-    Ok(traces)
-}
-
-fn run_sampler<S: Settings>(
-    stan_model: model::StanModel,
-    settings: S,
-    num_cores: i32,
-    save_warmup: bool,
-    progress_cb: Option<Function>,
-) -> Result<Vec<ArrowTrace>> {
-    if stan_model.run_state.is_some() {
-        return run_joinable_sampler(stan_model, settings, num_cores, save_warmup, progress_cb);
-    }
-    let mut progress_cb = progress_cb;
-    let use_callback = progress_cb.is_some();
-
-    let progress_state: Arc<Mutex<Vec<ChainState>>> = Arc::new(Mutex::new(Vec::new()));
-    let state_clone = progress_state.clone();
-
-    // Only install the nuts-rs progress callback when R wants per-poll
-    // snapshots. With `progress = "none"` there is no R callback, so we skip
-    // the snapshot bookkeeping — but the wait loop below still runs to service
-    // interrupts.
-    let callback = if use_callback {
-        Some(ProgressCallback {
-            callback: Box::new(move |_elapsed: Duration, progress: Box<[ChainProgress]>| {
-                let snapshot: Vec<ChainState> = progress
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| ChainState {
-                        chain: i + 1,
-                        finished_draws: c.finished_draws,
-                        total_draws: c.total_draws,
-                        divergences: c.divergences,
-                        tuning: c.tuning,
-                        started: c.started,
-                        latest_num_steps: c.latest_num_steps,
-                        total_num_steps: c.total_num_steps,
-                        step_size: c.step_size,
-                        runtime: c.runtime,
-                        divergent_draws: c.divergent_draws.clone(),
-                    })
-                    .collect();
-                *state_clone.lock().unwrap() = snapshot;
-            }),
-            rate: Duration::from_millis(100),
-        })
-    } else {
-        None
-    };
-
-    let mut arrow_config = ArrowConfig::default();
-    arrow_config.store_warmup = save_warmup;
-    let mut sampler_opt = Some(
-        Sampler::new(
-            stan_model,
-            settings,
-            arrow_config,
-            num_cores as usize,
-            callback,
-        )
-        .map_err(r_err)?,
-    );
-
-    // Interrupt teardown, written once for the two poll sites below (a macro
-    // rather than a closure/fn only because `Sampler`'s concrete generic type is
-    // not nameable here). nuts-rs `Sampler` has no Drop impl, so simply dropping
-    // it only detaches the rayon pool — the worker threads keep finalizing in the
-    // background into R's post-interrupt GC, and the two then push concurrent
-    // allocator traffic that can segfault during GC (#36). abort() signals the
-    // controller (drop of the command channel) and joins the threads before we
-    // unwind, then extendr raises a clean R error at the call site.
-    macro_rules! abort_on_interrupt {
-        ($opt:expr) => {{
-            if let Some(sampler) = $opt.take() {
-                let _ = sampler.abort();
-            }
-            return Err(Error::Other("Sampling interrupted.".into()));
-        }};
-    }
-
-    let results = loop {
-        let sampler = sampler_opt.take().unwrap();
-        let wait_dur = Duration::from_millis(200);
-        match sampler.wait_timeout(wait_dur) {
-            SamplerWaitResult::Trace(traces) => break traces,
-            SamplerWaitResult::Timeout(s) => {
-                sampler_opt = Some(s);
-                // Check interrupt BEFORE calling back into R, so extendr raises a
-                // clean R error at the call site ("Sampling interrupted.") rather
-                // than longjmp'ing past the assignment and leaving the user with a
-                // confusing "object not found" on the next line.
-                if interrupt_pending() {
-                    abort_on_interrupt!(sampler_opt);
-                }
-                // Repaint the front-end console each poll so progress streams
-                // live instead of appearing all at once when sampling ends
-                // (GitHub #34: RStudio buffers native-call output).
-                pump_r_events();
-                // pump_r_events() suspends interrupts, so R_ProcessEvents() can
-                // latch a pending interrupt without longjmp'ing. Re-check before
-                // the R progress callback runs, or it could service the flag by
-                // longjmp'ing across these Rust frames.
-                if interrupt_pending() {
-                    abort_on_interrupt!(sampler_opt);
-                }
-                let state_snapshot: Vec<ChainState> = {
-                    let state = progress_state.lock().unwrap();
-                    state.clone()
-                };
-                if state_snapshot.is_empty() {
-                    continue;
-                }
-
-                let cb_failed = if let Some(ref cb) = progress_cb {
-                    let snapshot_list = build_progress_snapshot(&state_snapshot);
-                    let pairlist = Pairlist::from_pairs([("", Robj::from(snapshot_list))]);
-                    match cb.call(pairlist) {
-                        Ok(_) => false,
-                        Err(e) => {
-                            rprintln!(
-                                "nutpieR: progress callback failed ({}); disabling further callbacks for this run.",
-                                e
-                            );
-                            true
-                        }
-                    }
-                } else {
-                    false
-                };
-                if cb_failed {
-                    progress_cb = None;
-                }
-            }
-            // Residual unjoined-threads race (#36): nuts-rs 0.18.2's wait_timeout
-            // Ok(Err(e)) path drops the `Sampler` here — dropping the command
-            // channel and the JoinHandle *unjoined* — so worker threads can still
-            // be finalizing while R unwinds and runs GC, the same hazard the
-            // interrupt path guards against. We cannot guard it here: this arm
-            // hands back only the error, not the sampler, so there is no handle to
-            // abort()/join. Fixing it needs upstream nuts-rs support (a Drop impl
-            // on Sampler, or an Err variant that carries the sampler back).
-            SamplerWaitResult::Err(e, _) => return Err(r_err(e)),
-        }
-    };
-
-    if let Some(ref cb) = progress_cb {
-        let state_snapshot: Vec<ChainState> = {
-            let state = progress_state.lock().unwrap();
-            state.clone()
-        };
-        if !state_snapshot.is_empty() {
-            let snapshot_list = build_progress_snapshot(&state_snapshot);
-            let pairlist = Pairlist::from_pairs([("", Robj::from(snapshot_list))]);
-            let _ = cb.call(pairlist);
-        }
-    }
-
-    Ok(results)
-}
-
-/// Build a `List` of per-chain named lists for the R progress callback.
-/// Field set must match the R-side progress helpers in `R/progress.R`.
-fn build_progress_snapshot(state: &[ChainState]) -> List {
-    let entries: Vec<Robj> = state
-        .iter()
-        .map(|c| {
-            list!(
-                chain = c.chain as i32,
-                finished_draws = c.finished_draws as i32,
-                total_draws = c.total_draws as i32,
-                divergences = c.divergences as i32,
-                tuning = c.tuning,
-                started = c.started,
-                latest_num_steps = c.latest_num_steps as i32,
-                total_num_steps = c.total_num_steps as f64,
-                step_size = c.step_size,
-                runtime = c.runtime.as_secs_f64(),
-                divergent_draws = c
-                    .divergent_draws
-                    .iter()
-                    .map(|x| *x as i32)
-                    .collect::<Vec<i32>>()
-            )
-            .into_robj()
-        })
-        .collect();
-    List::from_values(entries)
 }
 
 /// @param handle An `ExternalPtr<BSHandle>` from `bs_open()`.
@@ -929,11 +519,15 @@ fn build_progress_snapshot(state: &[ChainState]) -> List {
 ///   when `TRUE`, since GQ may reference TP.
 /// @param progress_callback NULL or an R closure invoked on each poll wakeup
 ///   with one argument: a list of `num_chains` per-chain snapshots
-///   (`chain`, `finished_draws`, `total_draws`, `divergences`, `tuning`,
-///   `started`, `latest_num_steps`, `total_num_steps`, `step_size`, `runtime`,
-///   `divergent_draws`). When supplied, the built-in per-chain text log is
-///   suppressed; errors raised by the closure are warned once and further calls
-///   suppressed for the run.
+///   (`chain`, `walnuts`, `finished_draws`, `total_draws`, `divergences`,
+///   `tuning`, `started`, `latest_num_steps`, `total_num_steps`,
+///   `latest_num_gradients`, `total_num_gradients`, `step_size`, `runtime`,
+///   `divergent_draws`). The R wrapper silently disables its renderer after a
+///   callback error. An unguarded callback error reaching this native boundary
+///   prints one diagnostic and disables further callbacks for the run.
+///   Interrupts stop sampling.
+/// @param walnuts NULL for ordinary NUTS, or a JSON string of experimental
+///   WALNUTS options validated again at the Rust boundary.
 /// @return A named list with draws matrix, num_warmup, num_chains, diagnostics,
 ///   sampler_config (JSON), and optionally warmup_draws and warmup_diagnostics.
 /// @noRd
@@ -966,8 +560,9 @@ fn sample_stan(
     include_gq: bool,
     progress_callback: Robj,
     #[extendr(default = "NULL")] kernel: Robj,
-) -> List {
-    or_throw((|| -> Result<List> {
+    #[extendr(default = "NULL")] walnuts: Robj,
+) -> Result<List> {
+    (|| -> Result<List> {
         // Defensive guards before unsigned casts. The R wrapper validates these
         // already; we re-check here so direct callers (or malformed inputs that
         // somehow slip past the R layer) can't turn negative ints into huge
@@ -989,6 +584,14 @@ fn sample_stan(
         }
         check_seed(seed)?;
 
+        let walnuts_options = if walnuts.is_null() {
+            None
+        } else {
+            let json = walnuts
+                .as_str()
+                .ok_or_else(|| r_err("walnuts must be NULL or a JSON options string"))?;
+            Some(walnuts::parse(json).map_err(r_err)?)
+        };
         let max_treedepth_opt = opt_count(&max_treedepth, "max_treedepth", 1)?;
         let mindepth_opt = opt_count(&mindepth, "mindepth", 0)?;
         let target_accept_opt = opt_finite_in_open_unit(&target_accept, "target_accept")?;
@@ -1086,6 +689,12 @@ fn sample_stan(
                 if let Some(v) = extra_doublings_opt {
                     $settings.extra_doublings = v as u64;
                 }
+                // Adopt nuts-rs 0.19's soft gradient clipping for extreme gradients.
+                $settings.gradient_clipping = Some(1e10);
+                if let Some((options, limit)) = walnuts_options {
+                    $settings.walnuts = Some(options);
+                    $settings.max_leapfrog_steps = limit;
+                }
                 $settings.store_divergences = store_divergences;
                 $settings.store_unconstrained = store_unconstrained;
                 $settings.store_gradient = store_gradient;
@@ -1104,7 +713,7 @@ fn sample_stan(
             })?)
         };
 
-        let (results, sampler_config_json) = match adaptation {
+        let outcome = match adaptation {
             "low_rank" => {
                 let mut settings = LowRankNutsSettings::default();
                 configure_settings!(settings);
@@ -1120,13 +729,17 @@ fn sample_stan(
                     num_cores,
                     save_warmup,
                     progress_callback.clone(),
+                    walnuts_options.is_some(),
                 )?
             }
             "diag" | "draw_diag" => {
                 let mut settings = DiagNutsSettings::default();
                 configure_settings!(settings);
                 if adaptation == "draw_diag" {
-                    settings.adapt_options.mass_matrix_options.use_grad_based_estimate = false;
+                    settings
+                        .adapt_options
+                        .mass_matrix_options
+                        .use_grad_based_estimate = false;
                 }
                 run_with_settings(
                     stan_model,
@@ -1134,6 +747,7 @@ fn sample_stan(
                     num_cores,
                     save_warmup,
                     progress_callback.clone(),
+                    walnuts_options.is_some(),
                 )?
             }
             other => {
@@ -1144,6 +758,9 @@ fn sample_stan(
             }
         };
 
+        let ControlFlow::Continue((results, sampler_config_json)) = outcome else {
+            return Ok(list!(interrupted = true));
+        };
         let post_warmup_skip = if save_warmup { num_tune } else { 0 };
 
         let draws_robj = build_draws_matrix(
@@ -1191,7 +808,7 @@ fn sample_stan(
             expand_errors = n_expand_errors,
             sampler_config = sampler_config_json
         ))
-    })())
+    })()
 }
 
 /// Optional finite scalar (`NULL` -> None, REAL scalar -> Some). Caller does
@@ -1263,7 +880,8 @@ fn run_with_settings<S: Settings + serde::Serialize>(
     num_cores: i32,
     save_warmup: bool,
     progress_callback: Option<Function>,
-) -> Result<(Vec<ArrowTrace>, String)> {
+    walnuts: bool,
+) -> Result<ControlFlow<(), (Vec<ArrowTrace>, String)>> {
     let json = serde_json::to_string(&settings)
         .map_err(|e| Error::Other(format!("failed to serialize sampler settings: {}", e)))?;
     let traces = run_sampler(
@@ -1272,8 +890,9 @@ fn run_with_settings<S: Settings + serde::Serialize>(
         num_cores,
         save_warmup,
         progress_callback,
+        walnuts,
     )?;
-    Ok((traces, json))
+    Ok(traces.map_continue(|traces| (traces, json)))
 }
 
 /// Build a draws matrix from Arrow traces.
@@ -1908,9 +1527,10 @@ fn density_kernel_evaluate(handle: Robj, points: List) -> List {
 }
 
 /// Internal reference-only pilot. No kernel handle is accepted here.
+/// @noRd
 #[extendr]
-fn bs_reference_pilot(handle: Robj, num_points: i32, seed: i32) -> List {
-    or_throw((|| -> Result<List> {
+fn bs_reference_pilot(handle: Robj, num_points: i32, seed: i32) -> Result<List> {
+    (|| -> Result<List> {
         let seed = check_seed(seed)?;
         if num_points < 2 {
             return Err(r_err("num_points must be at least two"));
@@ -1921,21 +1541,27 @@ fn bs_reference_pilot(handle: Robj, num_points: i32, seed: i32) -> List {
         let reference = handle.try_addr().map_err(|_| {
             r_err("Dead reference handle; rebind with nutpie_attach_density_kernel().")
         })?;
-        let mut settings = DiagNutsSettings::default();
-        settings.num_tune = 200;
-        settings.num_draws = num_points as u64;
-        settings.num_chains = 1;
-        settings.seed = seed as u64;
-        settings.maxdepth = 10;
+        let mut settings = DiagNutsSettings {
+            num_tune: 200,
+            num_draws: num_points as u64,
+            num_chains: 1,
+            seed: seed as u64,
+            maxdepth: 10,
+            ..DiagNutsSettings::default()
+        };
         settings.adapt_options.step_size_settings.target_accept = 0.8;
         let config = serde_json::to_string(&settings).map_err(r_err)?;
-        let traces = run_joinable_sampler(
+        let ControlFlow::Continue(traces) = run_sampler(
             model::StanModel::reference_pilot(reference),
             settings,
             1,
             false,
             None,
-        )?;
+            false,
+        )?
+        else {
+            return Ok(list!(interrupted = true));
+        };
         let columns: Vec<_> = (0..reference.ndim_unc).collect();
         let points = build_draws_matrix(
             &traces,
@@ -1955,7 +1581,7 @@ fn bs_reference_pilot(handle: Robj, num_points: i32, seed: i32) -> List {
             diagnostics = diagnostics,
             sampler_config = config
         ))
-    })())
+    })()
 }
 
 /// Reference evaluation with propto=true and jacobian=true.
@@ -2004,7 +1630,7 @@ extendr_module! {
     mod nutpieR;
     fn bridgestan_version;
     fn bridgestan_stanc_path;
-    fn compile_stan_model;
+    fn prepare_bridgestan_build;
     fn private_tbb_model;
     fn tbb_proxy_live_progress_safe;
     fn ensure_tbb_proxy_patched;
