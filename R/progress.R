@@ -55,14 +55,20 @@ supports_multiline_progress <- function(num_chains, chain_format = NULL,
                                         ansi = cli::is_ansi_tty(),
                                         multiline = getOption("cli.progress_multiline", TRUE),
                                         unsunk = sink.number() == 0L &&
-                                          sink.number("message") == 2L,
-                                        height = progress_console_height()) {
+                                          sink.number("message") == 2L) {
   num_chains > 1L && is.null(chain_format) &&
     cli_version >= "3.6.6.9000" && isTRUE(unname(ansi)) &&
-    isTRUE(multiline) && isTRUE(unsunk) &&
-    # Allow room for the header and cursor below the chain rows. In an IDE
-    # of unknown height, limit multiline output to the usual four chains.
-    num_chains <= (if (is.na(height)) 4L else height - 2L)
+    isTRUE(multiline) && isTRUE(unsunk)
+}
+
+# Reserve one row each for the header and cursor. After collapsing, require
+# one extra row to expand, so a pane at the boundary doesn't flicker.
+progress_chain_rows_fit <- function(num_chains, height, current = NULL) {
+  if (is.na(height)) {
+    if (is.null(current)) return(num_chains <= 4L)
+    return(current)
+  }
+  height >= num_chains + 2L + identical(current, FALSE)
 }
 
 #' Guard against a stale, unpatched macOS `tbbmalloc_proxy` (GitHub #36). Once
@@ -1001,7 +1007,8 @@ format_multi_cli_progress_line <- function(header = FALSE, done = FALSE) {
 #' @noRd
 make_multi_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
                                              num_cores = num_chains,
-                                             ids = NULL, update = NULL, done = NULL) {
+                                             ids = NULL, update = NULL, done = NULL,
+                                             height = progress_console_height) {
   if (is.null(update)) update <- cli::cli_progress_update
   if (is.null(done)) done <- cli::cli_progress_done
   total <- as.numeric(num_warmup) + as.numeric(num_draws)
@@ -1019,29 +1026,31 @@ make_multi_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
   # A partially created display must not leave live bars behind.
   created <- FALSE
   on.exit(if (!created) finish(success = FALSE), add = TRUE)
-  if (!muted) {
-    if (is.null(ids)) {
-      header_line <- function(done = FALSE) {
-        format_multi_cli_progress_line(header = TRUE, done = done)
-      }
-      chain_line <- function() format_multi_cli_progress_line()
-      owned_ids <- cli::cli_progress_bar(
-        name = "Sampling", total = num_chains * total, type = "custom",
-        format = "{header_line()}", format_done = "{header_line(done = TRUE)}",
-        extra = list(chains = sprintf("0 running, %d queued, 0 done", num_chains)),
+  chain_line <- function() format_multi_cli_progress_line()
+  add_chain_rows <- function() {
+    for (chain in seq_len(num_chains)) {
+      id <- if (!is.null(ids)) ids[chain + 1L] else cli::cli_progress_bar(
+        name = sprintf("c%-*d", nchar(num_chains), chain), total = total, type = "custom",
+        format = "{chain_line()}", format_done = "{chain_line()}",
+        extra = list(phase = "queued", div = "div: 0", grad = "- grad/draw", step = "-"),
         current = FALSE, clear = FALSE, auto_terminate = FALSE, .auto_close = FALSE
       )
-      for (chain in seq_len(num_chains)) {
-        owned_ids <- c(owned_ids, cli::cli_progress_bar(
-          name = sprintf("c%-*d", nchar(num_chains), chain), total = total, type = "custom",
-          format = "{chain_line()}", format_done = "{chain_line()}",
-          extra = list(phase = "queued", div = "div: 0", grad = "- grad/draw", step = "-"),
-          current = FALSE, clear = FALSE, auto_terminate = FALSE, .auto_close = FALSE
-        ))
-      }
-    } else {
-      owned_ids <- ids
+      owned_ids <<- c(owned_ids, id)
     }
+  }
+  show_chains <- FALSE
+  if (!muted) {
+    header_line <- function(done = FALSE) {
+      format_multi_cli_progress_line(header = TRUE, done = done)
+    }
+    owned_ids <- if (!is.null(ids)) ids[1L] else cli::cli_progress_bar(
+      name = "Sampling", total = num_chains * total, type = "custom",
+      format = "{header_line()}", format_done = "{header_line(done = TRUE)}",
+      extra = list(chains = sprintf("0 running, %d queued, 0 done", num_chains)),
+      current = FALSE, clear = FALSE, auto_terminate = FALSE, .auto_close = FALSE
+    )
+    show_chains <- progress_chain_rows_fit(num_chains, height())
+    if (show_chains) add_chain_rows()
   }
   hints <- new_progress_hints(cli_bar_id = if (length(owned_ids)) owned_ids[[1]] else NULL)
   last_snapshot <- NULL
@@ -1059,13 +1068,24 @@ make_multi_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
       return(invisible(NULL))
     }
     width <- cli::console_width()
-    if (identical(snapshot, last_snapshot) && identical(width, last_width)) {
-      return(invisible(NULL))
-    }
-    last_snapshot <<- snapshot
-    if (!identical(width, last_width)) last_rows <<- vector("list", length(owned_ids))
-    last_width <<- width
     tryCatch({
+      fits <- progress_chain_rows_fit(num_chains, height(), show_chains)
+      changed <- fits != show_chains
+      if (changed) {
+        if (fits) {
+          add_chain_rows()
+        } else {
+          for (id in rev(owned_ids[-1L])) done(id = id, result = "clear")
+          owned_ids <<- owned_ids[1L]
+        }
+        show_chains <<- fits
+      }
+      if (!changed && identical(snapshot, last_snapshot) && identical(width, last_width)) {
+        return(invisible(NULL))
+      }
+      last_snapshot <<- snapshot
+      if (changed || !identical(width, last_width)) last_rows <<- vector("list", length(owned_ids))
+      last_width <<- width
       update_grad_baselines(hints, snapshot, num_warmup)
       started <- vapply(snapshot, function(s) isTRUE(s$started), logical(1))
       completed <- vapply(snapshot, function(s) {
@@ -1078,7 +1098,7 @@ make_multi_cli_progress_callback <- function(num_chains, num_warmup, num_draws,
                                      sum(started & !completed),
                                      num_chains - sum(started), sum(completed)))
       )
-      for (s in snapshot) {
+      if (show_chains) for (s in snapshot) {
         chain <- as.integer(s$chain)
         phase <- if (!isTRUE(s$started)) "queued" else if (
           as_progress_num(s$finished_draws) >= total

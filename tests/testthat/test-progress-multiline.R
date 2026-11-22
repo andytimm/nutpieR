@@ -194,6 +194,7 @@ test_that("a failed multiline update disables updates and clears all IDs", {
 local_multiline_renderer <- function(.local_envir = parent.frame()) {
   skip_if(utils::packageVersion("cli") < "3.6.6.9000")
   testthat::local_mocked_bindings(
+    progress_console_height = function() 24L,
     progress_messages_muffled = function() FALSE,
     .package = "nutpieR", .env = .local_envir
   )

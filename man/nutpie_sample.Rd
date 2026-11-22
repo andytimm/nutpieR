@@ -103,8 +103,9 @@ In non-interactive scripts, use \code{"text"} for live log output; forced
 \code{"cli"} output may only render the final summary.
 With the default \code{chain_format}, \code{"auto"}/\code{"cli"} show per-chain rows
 on ANSI-capable consoles with \code{cli >= 3.6.6.9000}, keeping the same
-aggregate rough ETA. The layout is chosen at startup: short panes use one bar;
-when height is unknown, per-chain rows are limited to four chains. Console support (including Positron and recent
+aggregate rough ETA. Short panes use one bar; per-chain rows return when
+the pane has room again. If height is unknown at startup, at most four
+chains get separate rows. Console support (including Positron and recent
 RStudio) is detected by \code{cli}. Set \code{options(cli.progress_multiline = FALSE)}
 to keep the aggregate single bar. \code{cli} 3.6.6 and earlier retain that bar;
 no upgrade is required or installed automatically. Custom \code{chain_format}

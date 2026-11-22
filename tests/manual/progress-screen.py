@@ -57,7 +57,7 @@ def check(rows, outcome):
 
     lines = replay(before)
     if rows == 4:
-        assert len(lines) == 1 and "warmup" in lines[0], lines
+        assert len(lines) == 1 and "90/400" in lines[0] and "1 queued" in lines[0], lines
     else:
         check_rows(lines, ["warmup"] * 3 + ["queued"], [40, 30, 20, 0])
 
@@ -65,7 +65,7 @@ def check(rows, outcome):
     assert "divergent transitions detected" in lines[0], lines
     hint = lines.pop(0)
     if rows == 4:
-        assert len(lines) == 1 and "sample" in lines[0], lines
+        assert len(lines) == 1 and "170/400" in lines[0] and "4 running" in lines[0], lines
     else:
         check_rows(lines, ["sample"] + ["warmup"] * 3, [80, 45, 40, 5])
 
@@ -80,7 +80,43 @@ def check(rows, outcome):
     print(f"PASS {WIDTH}x{rows} {outcome}")
 
 
+def check_resize():
+    chunks = capture(24, "resize")
+    before, short, resumed, finished = chunks
+    hint = "divergent transitions detected"
+    assert short.count(hint) == 1 and "".join(chunks).count(hint) == 1
+
+    # Model only the viewport; a terminal need not bring back clipped rows.
+    screen = pyte.Screen(WIDTH, 24)
+    stream = pyte.Stream(screen)
+
+    def visible(chunk):
+        stream.feed(chunk)
+        return [s.rstrip() for s in screen.display if s.strip()]
+
+    lines = visible(before)
+    assert lines[-5].startswith("Sampling") and lines[-1].startswith("c4 queued"), lines
+    screen.resize(lines=4)
+    screen.ensure_vbounds()  # pyte clips rows but leaves the old cursor position.
+    lines = visible(short)
+    assert len(lines) == 2 and hint in lines[0], lines
+    assert lines[1].startswith("Sampling") and "170/400" in lines[1], lines
+
+    screen.resize(lines=24)
+    lines = visible(resumed)
+    bars = [s for s in lines if hint not in s]
+    assert len(bars) == 5 and "235/400" in bars[0], lines
+    for i, count in enumerate([90, 65, 55, 25], 1):
+        assert bars[i].startswith(f"c{i} ") and f" {count}/100" in bars[i], lines
+
+    lines = visible(finished)
+    assert [s for s in lines if hint not in s] == ["after sampling"], lines
+    assert not screen.cursor.hidden, "cursor was not restored"
+    print(f"PASS {WIDTH}x24 -> 4 -> 24 clear")
+
+
 if __name__ == "__main__":
     check(24, "success")
     check(24, "clear")
     check(4, "clear")
+    check_resize()

@@ -19,9 +19,16 @@ writeLines(sprintf("prior %d", seq_len(as.integer(commandArgs(TRUE)[2]))), stder
 cb <- make_cli_progress_callback(4L, 50L, 50L)
 cb(snapshot(c(40L, 30L, 20L, 0L)))
 checkpoint()
+resize <- commandArgs(TRUE)[1] == "resize"
+if (resize) stopifnot(system("stty rows 4 < /dev/tty") == 0L)
 cb(snapshot(c(75L, 45L, 40L, 5L), div = 1L))
 cb(snapshot(c(80L, 45L, 40L, 5L), div = 1L))
 checkpoint()
+if (resize) {
+  stopifnot(system("stty rows 24 < /dev/tty") == 0L)
+  cb(snapshot(c(90L, 65L, 55L, 25L), div = 1L))
+  checkpoint()
+}
 success <- commandArgs(TRUE)[1] == "success"
 if (success) cb(snapshot(rep(100L, 4L), div = 1L))
 finish_progress_callback(cb, success = success)
