@@ -14,7 +14,8 @@ Imports:
     digest,
     jsonlite,
     posterior,
-    ps
+    ps,
+    rlang
 Suggests:
     bayesplot,
     posteriordb,

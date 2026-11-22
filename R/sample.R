@@ -419,8 +419,7 @@ nutpie_sample <- function(model, data = NULL, num_draws = 1000L,
 check_sampling_interrupt <- function(result, callback = NULL) {
   if (isTRUE(result$interrupted)) {
     finish_progress_callback(callback, success = FALSE)
-    stop(structure(list(message = "Sampling interrupted.", call = NULL),
-                   class = c("interrupt", "condition")))
+    rlang::interrupt()
   }
 }
 
